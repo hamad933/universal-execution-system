@@ -24,6 +24,14 @@ This first version is intentionally read-only. It provides:
 
 Mutating bridge operations such as `format-fix`, `commit`, and `push` are deliberately deferred until exact-SHA authority and recovery behavior are validated.
 
+## Codespaces
+
+The repository now includes `.devcontainer/devcontainer.json` for GitHub Codespaces. It provisions only the Python 3.11 environment required by the current Universal Core and runs the unit tests after the workspace is created.
+
+No Node, PHP, Java, browser, database, or other project-family stack is installed globally. Those capabilities belong in optional adapters or repository-specific overrides and should load only when a project needs them.
+
+Prebuilds are intentionally off by default. They should be enabled only when measured startup time and usage frequency justify their extra storage and GitHub Actions consumption.
+
 ## Quick start
 
 ```bash
