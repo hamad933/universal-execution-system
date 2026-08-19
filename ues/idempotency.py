@@ -6,6 +6,19 @@ ACTIVE_STATES = {"PLANNED", "EXECUTING", "UNKNOWN"}
 TERMINAL_STATES = {"CONFIRMED", "REJECTED", "CANCELLED"}
 
 
+def latest_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for record in records:
+        operation_id = str(record.get("operation_id") or "")
+        if not operation_id:
+            continue
+        if operation_id not in latest:
+            order.append(operation_id)
+        latest[operation_id] = record
+    return [latest[operation_id] for operation_id in order]
+
+
 def evaluate_idempotency(
     operation_id: str,
     request_digest: str,
@@ -14,7 +27,7 @@ def evaluate_idempotency(
     matches = [record for record in records if record.get("operation_id") == operation_id]
     if not matches:
         return {
-            "schema_version": "0.5",
+            "schema_version": "0.6",
             "decision": "NEW_OPERATION",
             "operation_id": operation_id,
             "safe_to_execute": True,
@@ -24,7 +37,7 @@ def evaluate_idempotency(
     record = matches[-1]
     if record.get("request_digest") != request_digest:
         return {
-            "schema_version": "0.5",
+            "schema_version": "0.6",
             "decision": "OPERATION_ID_COLLISION",
             "operation_id": operation_id,
             "safe_to_execute": False,
@@ -39,7 +52,7 @@ def evaluate_idempotency(
     else:
         decision = "TERMINAL_REPLAY_REJECTED"
     return {
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "decision": decision,
         "operation_id": operation_id,
         "existing_state": state,
@@ -60,7 +73,7 @@ def evaluate_branch_serialization(
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
     conflicts = []
-    for record in records:
+    for record in latest_records(records):
         if record.get("operation_id") == operation_id:
             continue
         if record.get("repository") != repository or record.get("ref") != ref:
@@ -72,7 +85,7 @@ def evaluate_branch_serialization(
             "state": record.get("state"),
         })
     return {
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "serialization_key": branch_serialization_key(repository, ref),
         "available": not conflicts,
         "conflicts": conflicts,
@@ -93,7 +106,7 @@ def make_operation_receipt(
     if state not in ACTIVE_STATES | TERMINAL_STATES:
         raise ValueError(f"unsupported operation state: {state}")
     return {
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "operation_id": operation_id,
         "request_digest": request_digest,
         "repository": repository,
@@ -143,11 +156,11 @@ def evaluate_write_boundary(
 
     ready = not failures
     return {
-        "schema_version": "0.5",
-        "decision": "READY_FOR_EXECUTOR_INTEGRATION" if ready else "BLOCKED",
+        "schema_version": "0.6",
+        "decision": "READY_FOR_EXECUTION_BOUNDARY" if ready else "BLOCKED",
         "ready": ready,
-        "execution_enabled": False,
-        "safe_to_execute_now": False,
+        "execution_enabled": ready,
+        "safe_to_execute_now": ready,
         "safe_to_blind_retry": False,
         "operation_id": operation_id,
         "idempotency": idem,
