@@ -22,10 +22,7 @@
     "write_policy": {
       "type": "object",
       "properties": {
-        "max_changed_paths": {"type": "integer", "minimum": 0},
-        "require_clean_worktree": {"type": "boolean"},
-        "allow_new_files": {"type": "boolean"},
-        "allow_delete": {"type": "boolean"}
+        "max_changed_paths": {"type": "integer", "minimum": 0}
       },
       "additionalProperties": true
     },
