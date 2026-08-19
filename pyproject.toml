@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "universal-execution-system"
+version = "0.0.1"
+description = "Lean universal execution-control reference implementation"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+ues = "ues.cli:main"
+
+[tool.setuptools]
+packages = ["ues"]

@@ -1,0 +1,29 @@
+{
+  "schema_version": "0.3",
+  "families": {
+    "generic": {"description": "Lean default; compose only detected or declared capabilities.", "capabilities": []},
+    "web": {"description": "Web application family; language/runtime capabilities stay composable.", "capabilities": []},
+    "service": {"description": "Backend/service family; repository signals decide runtime.", "capabilities": []},
+    "library": {"description": "Reusable package/library family.", "capabilities": []},
+    "mobile": {"description": "Mobile family; platform packs remain opt-in.", "capabilities": []},
+    "infrastructure": {"description": "Infrastructure-as-code family; destructive apply is never implied.", "capabilities": []},
+    "data": {"description": "Data/pipeline family; production mutation is never implied.", "capabilities": []},
+    "node": {"description": "Compatibility family for Node-first repositories.", "capabilities": ["node"]},
+    "php": {"description": "Compatibility family for PHP-first repositories.", "capabilities": ["php"]},
+    "python": {"description": "Compatibility family for Python-first repositories.", "capabilities": ["python"]},
+    "rust": {"description": "Compatibility family for Rust-first repositories.", "capabilities": ["rust"]},
+    "go": {"description": "Compatibility family for Go-first repositories.", "capabilities": ["go"]},
+    "java-gradle": {"description": "Compatibility family for Gradle repositories.", "capabilities": ["java-gradle"]},
+    "java-maven": {"description": "Compatibility family for Maven repositories.", "capabilities": ["java-maven"]}
+  },
+  "capabilities": {
+    "node": {"tools": ["node"], "kind": "runtime"},
+    "php": {"tools": ["php", "composer"], "kind": "runtime"},
+    "python": {"tools": ["python"], "kind": "runtime"},
+    "rust": {"tools": ["cargo"], "kind": "runtime"},
+    "go": {"tools": ["go"], "kind": "runtime"},
+    "java-gradle": {"tools": ["java"], "kind": "runtime"},
+    "java-maven": {"tools": ["java"], "kind": "runtime"},
+    "docker": {"tools": ["docker"], "kind": "container"}
+  }
+}

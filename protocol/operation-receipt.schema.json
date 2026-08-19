@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://universal-execution-system.invalid/protocol/operation-receipt.schema.json",
+  "title": "UES Operation Receipt",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "operation_id",
+    "request_digest",
+    "repository",
+    "ref",
+    "authority_event_id",
+    "start_sha",
+    "state",
+    "safe_to_blind_retry"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "operation_id": {"type": "string", "minLength": 1},
+    "request_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "repository": {"type": "string", "minLength": 1},
+    "ref": {"type": "string", "minLength": 1},
+    "authority_event_id": {"type": "string", "minLength": 1},
+    "start_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{40,64}$"},
+    "start_tree_sha": {"type": ["string", "null"], "pattern": "^[0-9a-fA-F]{40,64}$"},
+    "final_sha": {"type": ["string", "null"]},
+    "final_tree_sha": {"type": ["string", "null"]},
+    "state": {"enum": ["PLANNED", "EXECUTING", "UNKNOWN", "CONFIRMED", "REJECTED", "CANCELLED"]},
+    "safe_to_blind_retry": {"const": false},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://universal-execution-system.invalid/protocol/trusted-authority-event.schema.json",
+  "title": "UES Trusted Authority Event",
+  "type": "object",
+  "required": [
+    "source",
+    "event_id",
+    "actor",
+    "repository_owner",
+    "repository",
+    "pr_number",
+    "candidate_ref",
+    "candidate_head_sha",
+    "issued_at",
+    "expires_at"
+  ],
+  "properties": {
+    "source": {"const": "github_issue_comment"},
+    "event_id": {"type": "string", "minLength": 1},
+    "actor": {"type": "string", "minLength": 1},
+    "repository_owner": {"type": "string", "minLength": 1},
+    "repository": {"type": "string", "minLength": 1},
+    "pr_number": {"type": "integer", "minimum": 1},
+    "candidate_ref": {"type": "string", "minLength": 1},
+    "candidate_head_sha": {"type": "string", "pattern": "^[0-9a-fA-F]{40,64}$"},
+    "candidate_tree_sha": {"type": ["string", "null"], "pattern": "^[0-9a-fA-F]{40,64}$"},
+    "issued_at": {"type": "string"},
+    "expires_at": {"type": "string"}
+  },
+  "additionalProperties": false
+}

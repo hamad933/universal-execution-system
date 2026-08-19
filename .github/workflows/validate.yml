@@ -1,0 +1,74 @@
+name: Validate Universal Core
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Capture exact checked-out HEAD
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Exercise exact-SHA preflight
+        run: python -m ues.cli preflight --repo . --expected-sha "${{ steps.head.outputs.sha }}"
+      - name: Validate JSON protocol files
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          paths = (
+              list(Path('protocol').glob('*.json'))
+              + list(Path('examples').glob('*.json'))
+              + list(Path('adapters').glob('*.json'))
+          )
+          for path in paths:
+              json.loads(path.read_text(encoding='utf-8'))
+              print(f'valid-json: {path}')
+          PY
+      - name: Validate example project contract
+        run: python -m ues.cli validate-contract examples/project.contract.json
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Exercise capability discovery
+        run: python -m ues.cli detect --repo .
+      - name: Exercise adapter planning
+        run: python -m ues.adapter_cli --repo . --contract examples/project.contract.json
+      - name: Exercise resource advisory
+        run: python -m ues.cli resource-advice examples/resource.metrics.json
+      - name: Exercise read-only exec bridge
+        run: |
+          python -m ues.bridge_cli \
+            --comment "/exec preflight" \
+            --repo . \
+            --repository "$GITHUB_REPOSITORY" \
+            --workstream-id "CI-SMOKE" \
+            --operation-id "run-$GITHUB_RUN_ID" \
+            --expected-sha "${{ steps.head.outputs.sha }}"
+          python -m ues.bridge_cli \
+            --comment "/exec adapter-plan contract=examples/project.contract.json" \
+            --repo . \
+            --repository "$GITHUB_REPOSITORY" \
+            --workstream-id "CI-SMOKE" \
+            --operation-id "run-$GITHUB_RUN_ID-adapter" \
+            --expected-sha "${{ steps.head.outputs.sha }}"

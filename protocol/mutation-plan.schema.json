@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://universal-execution-system.invalid/protocol/mutation-plan.schema.json",
+  "title": "Dry-Run Mutation Plan",
+  "type": "object",
+  "required": ["schema_version", "mode", "decision", "execution_enabled", "safe_to_execute_now", "authority", "lease_conflicts", "cas", "retry_policy"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "mode": {"const": "DRY_RUN_ONLY"},
+    "decision": {"enum": ["AUTHORIZED_DRY_RUN", "REJECTED"]},
+    "eligible_for_future_execution": {"type": "boolean"},
+    "execution_enabled": {"const": false},
+    "safe_to_execute_now": {"const": false},
+    "operation_id": {"type": ["string", "null"]},
+    "workstream_id": {"type": ["string", "null"]},
+    "request_failures": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+    "authority": {"type": "object", "additionalProperties": true},
+    "lease_conflicts": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+    "cas": {"type": "object", "additionalProperties": true},
+    "lease_request": {"type": ["object", "null"], "additionalProperties": true},
+    "retry_policy": {"const": "RECONCILE_LIVE_STATE_BEFORE_ANY_RETRY"}
+  },
+  "additionalProperties": true
+}

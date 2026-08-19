@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://universal-execution-system.invalid/protocol/failure-classification.schema.json",
+  "title": "UES Failure Classification",
+  "type": "object",
+  "required": ["schema_version", "category", "confidence", "reasons"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "category": {
+      "enum": [
+        "CANDIDATE_CODE_DEFECT",
+        "CANDIDATE_TEST_DEFECT",
+        "CANDIDATE_FORMAT_DEFECT",
+        "CANDIDATE_BUILD_DEFECT",
+        "SHARED_BASELINE_DEFECT",
+        "DEPENDENCY_SECURITY_DEFECT",
+        "INFRASTRUCTURE_TRANSIENT",
+        "INFRASTRUCTURE_PERSISTENT",
+        "CI_CONFIGURATION_DEFECT",
+        "AUTHORIZATION_OR_BILLING_BLOCKER",
+        "UPSTREAM_SERVICE_FAILURE",
+        "FLAKY_TEST_SUSPECTED",
+        "STALE_OR_WRONG_CANDIDATE",
+        "NOT_APPLICABLE",
+        "UNKNOWN_REQUIRES_TRIAGE"
+      ]
+    },
+    "confidence": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+    "reasons": {"type": "array", "items": {"type": "string"}},
+    "input": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}

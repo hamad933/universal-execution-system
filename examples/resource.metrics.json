@@ -1,0 +1,6 @@
+{
+  "bootstrap_seconds": 45,
+  "dependency_mb": 320,
+  "uses_per_month": 8,
+  "cache_hit_rate": 0.75
+}

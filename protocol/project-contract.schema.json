@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://universal-execution-system.invalid/protocol/project-contract.schema.json",
+  "title": "Universal Execution Project Contract",
+  "type": "object",
+  "required": ["schema_version", "project", "repository", "adapter"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "project": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "repository": {
+      "type": "object",
+      "required": ["provider", "full_name"],
+      "properties": {
+        "provider": {"type": "string"},
+        "full_name": {"type": "string", "minLength": 1},
+        "default_branch": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "adapter": {
+      "type": "object",
+      "required": ["family"],
+      "properties": {
+        "family": {"type": "string", "minLength": 1},
+        "capabilities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "commands": {"type": "object", "additionalProperties": true}
+      },
+      "additionalProperties": true
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "privileged_paths": {"type": "array", "items": {"type": "string"}},
+        "protected_paths": {"type": "array", "items": {"type": "string"}},
+        "resource_mode": {"enum": ["lean", "balanced", "performance"]}
+      },
+      "additionalProperties": true
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Project-specific extension namespace. Universal core must ignore unknown extension keys unless an installed extension owns them.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

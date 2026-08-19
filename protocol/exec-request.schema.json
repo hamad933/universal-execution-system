@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://universal-execution-system.invalid/protocol/exec-request.schema.json",
+  "title": "UES Read-Only Exec Request",
+  "type": "object",
+  "required": ["schema_version", "command", "arguments"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "command": {
+      "enum": [
+        "adapter-plan",
+        "capabilities",
+        "detect",
+        "doctor",
+        "evidence",
+        "failure-classify",
+        "mutation-authorize",
+        "mutation-plan",
+        "preflight",
+        "reconcile",
+        "status"
+      ]
+    },
+    "arguments": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://universal-execution-system.invalid/protocol/lease.schema.json",
+  "title": "Execution Lease",
+  "type": "object",
+  "required": ["lease_id", "operation_id", "repository", "ref", "path_patterns", "resource_classes", "state"],
+  "properties": {
+    "lease_id": {"type": "string", "minLength": 1},
+    "operation_id": {"type": "string", "minLength": 1},
+    "workstream_id": {"type": "string"},
+    "repository": {"type": "string", "minLength": 1},
+    "ref": {"type": "string", "minLength": 1},
+    "path_patterns": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "resource_classes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "acquired_at": {"type": "string"},
+    "expires_at": {"type": "string"},
+    "state": {"enum": ["ACTIVE", "RELEASED"]},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": true
+}
