@@ -2,6 +2,7 @@ import hashlib
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ues.operation_records import render_receipt_comment
@@ -40,7 +41,7 @@ def prepare(head: str, tree: str, comments=None, comment_id="100"):
         repository="owner/repo",
         pr_number=7,
         comment_id=comment_id,
-        comment_created_at="2026-08-19T19:00:00Z",
+        comment_created_at=datetime.now(timezone.utc).isoformat(),
         candidate_ref="feature/x",
         candidate_head_sha=head,
         candidate_tree_sha=tree,
