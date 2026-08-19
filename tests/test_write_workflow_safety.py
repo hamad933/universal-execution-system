@@ -34,6 +34,11 @@ class WriteWorkflowSafetyTests(unittest.TestCase):
         self.assertNotIn("--force", self.write)
         self.assertNotIn("force-with-lease", self.write)
 
+    def test_safe_recovery_receipts_are_published_durably(self):
+        self.assertIn("recovery_receipts", self.write)
+        self.assertIn("Publish recovered durable receipts", self.write)
+        self.assertIn("render_receipt_comment", self.write)
+
 
 if __name__ == "__main__":
     unittest.main()
