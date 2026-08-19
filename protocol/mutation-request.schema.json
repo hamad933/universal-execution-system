@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://universal-execution-system.invalid/protocol/mutation-request.schema.json",
+  "title": "Mutation Planning Request",
+  "type": "object",
+  "required": ["schema_version", "operation", "proposed_paths"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "operation": {"type": "string", "minLength": 1},
+    "proposed_paths": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "resource_classes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "metadata": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
