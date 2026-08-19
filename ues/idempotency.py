@@ -157,10 +157,10 @@ def evaluate_write_boundary(
     ready = not failures
     return {
         "schema_version": "0.6",
-        "decision": "READY_FOR_EXECUTION_BOUNDARY" if ready else "BLOCKED",
+        "decision": "READY_FOR_EXECUTOR_INTEGRATION" if ready else "BLOCKED",
         "ready": ready,
-        "execution_enabled": ready,
-        "safe_to_execute_now": ready,
+        "execution_enabled": False,
+        "safe_to_execute_now": False,
         "safe_to_blind_retry": False,
         "operation_id": operation_id,
         "idempotency": idem,
