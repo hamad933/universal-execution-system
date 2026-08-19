@@ -16,9 +16,15 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Capture exact checked-out HEAD
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Validate JSON protocol files
         run: |
           python - <<'PY'
@@ -37,3 +43,14 @@ jobs:
         run: python -m ues.cli detect --repo .
       - name: Exercise resource advisory
         run: python -m ues.cli resource-advice examples/resource.metrics.json
+      - name: Exercise exact-SHA preflight
+        run: python -m ues.cli preflight --repo . --expected-sha "${{ steps.head.outputs.sha }}"
+      - name: Exercise read-only exec bridge
+        run: |
+          python -m ues.bridge_cli \
+            --comment "/exec preflight" \
+            --repo . \
+            --repository "$GITHUB_REPOSITORY" \
+            --workstream-id "CI-SMOKE" \
+            --operation-id "run-$GITHUB_RUN_ID" \
+            --expected-sha "${{ steps.head.outputs.sha }}"
