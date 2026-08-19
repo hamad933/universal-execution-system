@@ -37,7 +37,11 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          paths = list(Path('protocol').glob('*.json')) + list(Path('examples').glob('*.json'))
+          paths = (
+              list(Path('protocol').glob('*.json'))
+              + list(Path('examples').glob('*.json'))
+              + list(Path('adapters').glob('*.json'))
+          )
           for path in paths:
               json.loads(path.read_text(encoding='utf-8'))
               print(f'valid-json: {path}')
@@ -48,6 +52,8 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Exercise capability discovery
         run: python -m ues.cli detect --repo .
+      - name: Exercise adapter planning
+        run: python -m ues.adapter_cli --repo . --contract examples/project.contract.json
       - name: Exercise resource advisory
         run: python -m ues.cli resource-advice examples/resource.metrics.json
       - name: Exercise read-only exec bridge
@@ -58,4 +64,11 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --workstream-id "CI-SMOKE" \
             --operation-id "run-$GITHUB_RUN_ID" \
+            --expected-sha "${{ steps.head.outputs.sha }}"
+          python -m ues.bridge_cli \
+            --comment "/exec adapter-plan contract=examples/project.contract.json" \
+            --repo . \
+            --repository "$GITHUB_REPOSITORY" \
+            --workstream-id "CI-SMOKE" \
+            --operation-id "run-$GITHUB_RUN_ID-adapter" \
             --expected-sha "${{ steps.head.outputs.sha }}"
