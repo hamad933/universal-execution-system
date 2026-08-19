@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .adapters import load_contract, resolve_adapter_plan
 from .cli import detect, doctor, evidence, preflight, status
 
 
 READ_ONLY_COMMANDS = {
+    "adapter-plan",
     "capabilities",
     "detect",
     "doctor",
@@ -62,6 +64,16 @@ def _only(arguments: dict[str, str], allowed: set[str]) -> None:
         raise ValueError(f"unsupported arguments: {', '.join(unknown)}")
 
 
+def _repo_relative_path(repo: Path, value: str) -> Path:
+    root = repo.resolve()
+    candidate = (root / value).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("path escapes repository root") from exc
+    return candidate
+
+
 def execute_readonly_request(
     request: ExecRequest,
     repo: Path,
@@ -77,6 +89,20 @@ def execute_readonly_request(
     if command in {"capabilities", "detect"}:
         _only(args, set())
         return {"bridge_command": command, "result": detect(repo)}
+
+    if command == "adapter-plan":
+        _only(args, {"contract"})
+        contract = None
+        if "contract" in args:
+            contract = load_contract(_repo_relative_path(repo, args["contract"]))
+        return {
+            "bridge_command": command,
+            "result": resolve_adapter_plan(
+                repo,
+                detect(repo)["capabilities"],
+                contract=contract,
+            ),
+        }
 
     if command == "status":
         _only(args, set())
