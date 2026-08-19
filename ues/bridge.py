@@ -7,6 +7,8 @@ from typing import Any
 
 from .adapters import load_contract, resolve_adapter_plan
 from .cli import detect, doctor, evidence, preflight, status
+from .failures import classify_failure, scope_blocker
+from .recovery import reconcile_checkpoint
 
 
 READ_ONLY_COMMANDS = {
@@ -15,7 +17,9 @@ READ_ONLY_COMMANDS = {
     "detect",
     "doctor",
     "evidence",
+    "failure-classify",
     "preflight",
+    "reconcile",
     "status",
 }
 
@@ -102,6 +106,33 @@ def execute_readonly_request(
                 detect(repo)["capabilities"],
                 contract=contract,
             ),
+        }
+
+    if command == "failure-classify":
+        _only(args, {"input", "workstream"})
+        if "input" not in args:
+            raise ValueError("failure-classify requires input=<repository-relative JSON path>")
+        failure = load_contract(_repo_relative_path(repo, args["input"]))
+        classification = classify_failure(failure)
+        return {
+            "bridge_command": command,
+            "result": {
+                "classification": classification,
+                "blocker_scope": scope_blocker(
+                    classification,
+                    args.get("workstream") or workstream_id,
+                ),
+            },
+        }
+
+    if command == "reconcile":
+        _only(args, {"checkpoint"})
+        if "checkpoint" not in args:
+            raise ValueError("reconcile requires checkpoint=<repository-relative JSON path>")
+        checkpoint = load_contract(_repo_relative_path(repo, args["checkpoint"]))
+        return {
+            "bridge_command": command,
+            "result": reconcile_checkpoint(checkpoint, status(repo)["head_sha"]),
         }
 
     if command == "status":
