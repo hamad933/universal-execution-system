@@ -3,7 +3,9 @@ name: Validate Universal Core
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'bootstrap/**'
 
 permissions:
   contents: read
