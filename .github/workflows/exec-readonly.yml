@@ -1,0 +1,99 @@
+name: UES Read-Only Bridge
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: ues-readonly-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    if: >-
+      github.event.issue.pull_request &&
+      github.actor == github.repository_owner &&
+      startsWith(github.event.comment.body, '/exec ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Resolve exact PR candidate
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('head_ref', pr.head.ref);
+
+      - name: Checkout trusted UES core
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ues-core
+          persist-credentials: false
+
+      - name: Checkout exact candidate as data
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          path: target
+          persist-credentials: false
+          submodules: false
+
+      - name: Execute read-only request
+        id: exec
+        env:
+          UES_COMMENT: ${{ github.event.comment.body }}
+          UES_REPOSITORY: ${{ github.repository }}
+          UES_PR: ${{ github.event.issue.number }}
+          UES_COMMENT_ID: ${{ github.event.comment.id }}
+          UES_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set +e
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python -m ues.bridge_cli \
+            --comment "$UES_COMMENT" \
+            --repo "$GITHUB_WORKSPACE/target" \
+            --repository "$UES_REPOSITORY" \
+            --workstream-id "PR-$UES_PR" \
+            --operation-id "comment-$UES_COMMENT_ID" \
+            --expected-sha "$UES_HEAD_SHA" \
+            > ues-result.json
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish structured result
+        uses: actions/github-script@v7
+        env:
+          UES_EXIT_CODE: ${{ steps.exec.outputs.exit_code }}
+        with:
+          script: |
+            const fs = require('fs');
+            let result = fs.readFileSync('ues-result.json', 'utf8');
+            if (result.length > 50000) {
+              result = result.slice(0, 50000) + '\n...TRUNCATED...';
+            }
+            const body = [
+              `### UES read-only result`,
+              `Exit code: ${process.env.UES_EXIT_CODE}`,
+              '',
+              '```json',
+              result,
+              '```',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
