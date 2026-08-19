@@ -9,6 +9,7 @@ from .adapters import load_contract, resolve_adapter_plan
 from .cli import detect, doctor, evidence, preflight, status
 from .failures import classify_failure, scope_blocker
 from .recovery import reconcile_checkpoint
+from .transaction import plan_mutation
 
 
 READ_ONLY_COMMANDS = {
@@ -18,6 +19,7 @@ READ_ONLY_COMMANDS = {
     "doctor",
     "evidence",
     "failure-classify",
+    "mutation-plan",
     "preflight",
     "reconcile",
     "status",
@@ -86,6 +88,7 @@ def execute_readonly_request(
     workstream_id: str,
     operation_id: str,
     default_expected_sha: str | None = None,
+    default_ref: str | None = None,
 ) -> dict[str, Any]:
     args = request.arguments
     command = request.command
@@ -123,6 +126,33 @@ def execute_readonly_request(
                     args.get("workstream") or workstream_id,
                 ),
             },
+        }
+
+    if command == "mutation-plan":
+        _only(args, {"authority", "request", "leases"})
+        if "authority" not in args or "request" not in args:
+            raise ValueError("mutation-plan requires authority=<path> request=<path>")
+        authority = load_contract(_repo_relative_path(repo, args["authority"]))
+        mutation_request = load_contract(_repo_relative_path(repo, args["request"]))
+        active_leases: list[dict[str, Any]] = []
+        if "leases" in args:
+            lease_document = load_contract(_repo_relative_path(repo, args["leases"]))
+            raw_leases = lease_document.get("leases", [])
+            if not isinstance(raw_leases, list) or not all(isinstance(item, dict) for item in raw_leases):
+                raise ValueError("leases document must contain a leases array of objects")
+            active_leases = raw_leases
+        snapshot = status(repo)
+        return {
+            "bridge_command": command,
+            "result": plan_mutation(
+                authority,
+                mutation_request,
+                repository=repository,
+                ref=default_ref or snapshot["branch"],
+                live_head_sha=snapshot["head_sha"],
+                live_tree_sha=snapshot["tree_sha"],
+                active_leases=active_leases,
+            ),
         }
 
     if command == "reconcile":
