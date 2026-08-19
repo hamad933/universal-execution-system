@@ -15,7 +15,8 @@ jobs:
   authorize:
     if: >-
       github.event.issue.pull_request &&
-      github.actor == github.repository_owner &&
+      github.event.comment.user.login == github.repository_owner &&
+      github.event.comment.author_association == 'OWNER' &&
       startsWith(github.event.comment.body, '/exec format-fix ')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -77,7 +78,7 @@ jobs:
         id: authorize
         env:
           UES_COMMENT: ${{ github.event.comment.body }}
-          UES_ACTOR: ${{ github.actor }}
+          UES_ACTOR: ${{ github.event.comment.user.login }}
           UES_OWNER: ${{ github.repository_owner }}
           UES_REPOSITORY: ${{ github.repository }}
           UES_PR: ${{ github.event.issue.number }}
