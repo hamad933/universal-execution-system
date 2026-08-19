@@ -7,7 +7,17 @@
   "properties": {
     "schema_version": {"type": "string"},
     "command": {
-      "enum": ["capabilities", "detect", "doctor", "evidence", "preflight", "status"]
+      "enum": [
+        "adapter-plan",
+        "capabilities",
+        "detect",
+        "doctor",
+        "evidence",
+        "failure-classify",
+        "preflight",
+        "reconcile",
+        "status"
+      ]
     },
     "arguments": {
       "type": "object",
