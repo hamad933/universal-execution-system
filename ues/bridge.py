@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from .adapters import load_contract, resolve_adapter_plan
+from .authority_transport import derive_owner_comment_authority
 from .cli import detect, doctor, evidence, preflight, status
 from .failures import classify_failure, scope_blocker
+from .idempotency import evaluate_write_boundary, make_operation_receipt
 from .recovery import reconcile_checkpoint
 from .transaction import plan_mutation
 
@@ -19,6 +21,7 @@ READ_ONLY_COMMANDS = {
     "doctor",
     "evidence",
     "failure-classify",
+    "mutation-authorize",
     "mutation-plan",
     "preflight",
     "reconcile",
@@ -89,6 +92,7 @@ def execute_readonly_request(
     operation_id: str,
     default_expected_sha: str | None = None,
     default_ref: str | None = None,
+    authority_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     args = request.arguments
     command = request.command
@@ -125,6 +129,70 @@ def execute_readonly_request(
                     classification,
                     args.get("workstream") or workstream_id,
                 ),
+            },
+        }
+
+    if command == "mutation-authorize":
+        _only(args, {"operation", "sha", "ref", "paths", "resources", "max_paths"})
+        if authority_context is None:
+            raise ValueError("mutation-authorize requires trusted authority event context")
+        snapshot = status(repo)
+        candidate_ref = default_ref or str(authority_context.get("candidate_ref") or "")
+        transport = derive_owner_comment_authority(
+            args,
+            actor=str(authority_context.get("actor") or ""),
+            repository_owner=str(authority_context.get("repository_owner") or ""),
+            repository=repository,
+            pr_number=int(authority_context.get("pr_number") or 0),
+            comment_id=str(authority_context.get("event_id") or ""),
+            comment_created_at=str(authority_context.get("issued_at") or ""),
+            candidate_ref=candidate_ref,
+            candidate_head_sha=snapshot["head_sha"],
+            candidate_tree_sha=snapshot["tree_sha"],
+            workstream_id=workstream_id,
+        )
+        derived_operation_id = transport["operation_id"]
+        plan = plan_mutation(
+            transport["authority_envelope"],
+            transport["mutation_request"],
+            repository=repository,
+            ref=candidate_ref,
+            live_head_sha=snapshot["head_sha"],
+            live_tree_sha=snapshot["tree_sha"],
+            operation_id=derived_operation_id,
+            workstream_id=workstream_id,
+            active_leases=[],
+        )
+        records = authority_context.get("operation_records") or []
+        if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
+            raise ValueError("trusted operation_records must be an array of objects")
+        boundary = evaluate_write_boundary(
+            mutation_plan=plan,
+            operation_id=derived_operation_id,
+            request_digest=transport["request_digest"],
+            repository=repository,
+            ref=candidate_ref,
+            live_head_sha=snapshot["head_sha"],
+            live_tree_sha=snapshot["tree_sha"],
+            operation_records=records,
+        )
+        receipt = make_operation_receipt(
+            operation_id=derived_operation_id,
+            request_digest=transport["request_digest"],
+            repository=repository,
+            ref=candidate_ref,
+            authority_event_id=str(authority_context.get("event_id") or ""),
+            start_sha=snapshot["head_sha"],
+            start_tree_sha=snapshot["tree_sha"],
+        ) if boundary["ready"] else None
+        return {
+            "bridge_command": command,
+            "result": {
+                "transport": transport,
+                "mutation_plan": plan,
+                "write_boundary": boundary,
+                "preview_receipt": receipt,
+                "execution_enabled": False,
             },
         }
 
