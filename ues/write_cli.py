@@ -9,6 +9,7 @@ from typing import Any
 from .format_fix import format_in_sandbox
 from .operation_records import render_receipt_comment
 from .write_executor import apply_format_patch, fallback_final_receipt, prepare_format_fix
+from .write_recovery import recover_unobserved_format_operations
 
 
 def _load(path: str | Path) -> Any:
@@ -70,6 +71,19 @@ def main(argv: list[str] | None = None) -> int:
             comments = _load(args.comments_json)
             if not isinstance(comments, list):
                 raise ValueError("comments JSON must be an array")
+
+            recoveries = recover_unobserved_format_operations(
+                comments,
+                repository=args.repository,
+                ref=args.candidate_ref,
+                live_head_sha=args.candidate_sha,
+            )
+            effective_comments = list(comments)
+            for receipt in recoveries:
+                effective_comments.append(
+                    {"author": "github-actions[bot]", "body": render_receipt_comment(receipt)}
+                )
+
             prepared = prepare_format_fix(
                 args.comment,
                 actor=args.actor,
@@ -82,8 +96,9 @@ def main(argv: list[str] | None = None) -> int:
                 candidate_head_sha=args.candidate_sha,
                 candidate_tree_sha=args.candidate_tree,
                 workstream_id=args.workstream_id,
-                prior_comments=comments,
+                prior_comments=effective_comments,
             )
+            prepared["recovery_receipts"] = recoveries
             _write(args.prepared_output, prepared)
             receipt = prepared.get("receipt")
             if prepared.get("publish_receipt") and isinstance(receipt, dict):
@@ -122,6 +137,12 @@ def main(argv: list[str] | None = None) -> int:
                 format_result = None
                 if args.format_result and Path(args.format_result).exists():
                     format_result = _load(args.format_result)
+                    if format_result.get("state") == "FORMAT_CRASH":
+                        format_result = {
+                            **format_result,
+                            "state": "FORMAT_FAILED",
+                            "stderr": "formatter sandbox terminated before producing a structured result",
+                        }
                 receipt = fallback_final_receipt(prepared, format_result=format_result)
             _write(args.receipt_output, receipt)
             print(json.dumps(receipt, indent=2, sort_keys=True))
