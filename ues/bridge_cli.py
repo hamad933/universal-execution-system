@@ -16,6 +16,7 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--workstream-id", required=True)
     root.add_argument("--operation-id", required=True)
     root.add_argument("--expected-sha")
+    root.add_argument("--ref")
     return root
 
 
@@ -30,11 +31,12 @@ def main(argv: list[str] | None = None) -> int:
             workstream_id=args.workstream_id,
             operation_id=args.operation_id,
             default_expected_sha=args.expected_sha,
+            default_ref=args.ref,
         )
-        print(json.dumps({"schema_version": "0.2", "ok": True, **payload}, indent=2, sort_keys=True))
+        print(json.dumps({"schema_version": "0.4", "ok": True, **payload}, indent=2, sort_keys=True))
         return 0
     except (OSError, RuntimeError, ValueError) as exc:
-        print(json.dumps({"schema_version": "0.2", "ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+        print(json.dumps({"schema_version": "0.4", "ok": False, "error": str(exc)}, indent=2, sort_keys=True))
         return 2
 
 
