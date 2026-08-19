@@ -55,8 +55,11 @@ jobs:
         env:
           UES_COMMENT: ${{ github.event.comment.body }}
           UES_REPOSITORY: ${{ github.repository }}
+          UES_OWNER: ${{ github.repository_owner }}
+          UES_ACTOR: ${{ github.actor }}
           UES_PR: ${{ github.event.issue.number }}
           UES_COMMENT_ID: ${{ github.event.comment.id }}
+          UES_COMMENT_CREATED_AT: ${{ github.event.comment.created_at }}
           UES_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           UES_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
         run: |
@@ -69,6 +72,11 @@ jobs:
             --operation-id "comment-$UES_COMMENT_ID" \
             --expected-sha "$UES_HEAD_SHA" \
             --ref "$UES_HEAD_REF" \
+            --authority-actor "$UES_ACTOR" \
+            --authority-owner "$UES_OWNER" \
+            --authority-event-id "$UES_COMMENT_ID" \
+            --authority-issued-at "$UES_COMMENT_CREATED_AT" \
+            --pr-number "$UES_PR" \
             > ues-result.json
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
