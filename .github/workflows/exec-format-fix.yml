@@ -114,6 +114,35 @@ jobs:
           print('operation_id=' + str(value.get('operation_id') or ''))
           PY
 
+      - name: Render recovered durable receipts
+        id: recoveries
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python - <<'PY'
+          import json
+          import os
+          from ues.operation_records import render_receipt_comment
+
+          prepared = json.load(open('prepared.json', encoding='utf-8'))
+          receipts = prepared.get('recovery_receipts') or []
+          body = '\n\n'.join(render_receipt_comment(receipt) for receipt in receipts)
+          open('recovery-receipts.md', 'w', encoding='utf-8').write(body)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              print('has_recoveries=' + str(bool(receipts)).lower(), file=output)
+          PY
+
+      - name: Publish recovered durable receipts
+        if: steps.recoveries.outputs.has_recoveries == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: fs.readFileSync('recovery-receipts.md', 'utf8'),
+            });
+
       - name: Render initial durable receipt
         if: steps.decision.outputs.publish_receipt == 'true'
         run: |
