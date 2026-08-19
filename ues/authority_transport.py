@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40,64}$")
+FORMATTER_ALLOWLIST = {"prettier-pinned"}
+GLOB_META = set("*?[]")
 
 
 def _parse_time(value: str) -> datetime:
@@ -52,7 +54,7 @@ def derive_owner_comment_authority(
     if not SHA_RE.fullmatch(candidate_head_sha):
         raise ValueError("candidate head SHA is invalid")
 
-    allowed = {"operation", "sha", "ref", "paths", "resources", "max_paths"}
+    allowed = {"operation", "sha", "ref", "paths", "resources", "max_paths", "formatter"}
     unknown = sorted(set(arguments) - allowed)
     if unknown:
         raise ValueError(f"unsupported authority arguments: {', '.join(unknown)}")
@@ -75,6 +77,17 @@ def derive_owner_comment_authority(
     if not paths:
         raise ValueError("mutation-authorize requires at least one path")
     resources = _csv(arguments.get("resources"))
+
+    metadata: dict[str, Any] = {}
+    if operation == "format-fix":
+        if any(any(char in path for char in GLOB_META) for path in paths):
+            raise ValueError("format-fix requires exact file paths; glob patterns are not allowed")
+        formatter = arguments.get("formatter") or "prettier-pinned"
+        if formatter not in FORMATTER_ALLOWLIST:
+            raise ValueError(f"unsupported trusted formatter: {formatter}")
+        metadata["formatter"] = formatter
+    elif "formatter" in arguments:
+        raise ValueError("formatter is only valid for format-fix")
 
     max_paths_raw = arguments.get("max_paths")
     max_paths = len(paths)
@@ -103,13 +116,14 @@ def derive_owner_comment_authority(
         "expires_at": expires_at.isoformat(),
     }
     request = {
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "operation": operation,
         "proposed_paths": paths,
         "resource_classes": resources,
+        "metadata": metadata,
     }
     envelope = {
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "operation_id": operation_id,
         "workstream_id": workstream_id,
         "actor": actor,
@@ -131,7 +145,7 @@ def derive_owner_comment_authority(
         },
     }
     return {
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "trusted": True,
         "authority_event": authority_event,
         "authority_envelope": envelope,
