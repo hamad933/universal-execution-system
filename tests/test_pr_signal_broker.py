@@ -16,7 +16,7 @@ class PrSignalBrokerSafetyTests(unittest.TestCase):
 
     def test_signal_is_not_authority(self):
         self.assertIn("command.user.login !== context.repo.owner", self.workflow)
-        self.assertIn("comment.author_association !== 'OWNER'", self.workflow)
+        self.assertIn("command.author_association !== 'OWNER'", self.workflow)
         self.assertIn("authority comment is not /exec format-fix", self.workflow)
         self.assertIn("authority does not match live PR SHA/ref", self.workflow)
         self.assertIn("authority comment is expired or invalid", self.workflow)
