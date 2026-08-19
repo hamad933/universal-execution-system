@@ -3,12 +3,14 @@ name: Validate Universal Core
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - 'bootstrap/**'
+    branches: [main]
 
 permissions:
   contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   core:
