@@ -246,16 +246,20 @@ def plan_mutation(
     active_leases: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    operation = str(request.get("operation") or "")
-    proposed_paths = [str(item) for item in request.get("proposed_paths", [])]
-    resources = [str(item) for item in request.get("resource_classes", [])]
     request_failures: list[dict[str, Any]] = []
+    operation = str(request.get("operation") or "")
+    raw_paths = request.get("proposed_paths", [])
+    raw_resources = request.get("resource_classes", [])
     if not operation:
         request_failures.append({"code": "MUTATION_REQUEST_FIELD_MISSING", "field": "operation"})
-    if not isinstance(request.get("proposed_paths", []), list):
+    if not isinstance(raw_paths, list):
         request_failures.append({"code": "MUTATION_REQUEST_INVALID", "field": "proposed_paths"})
-    if not isinstance(request.get("resource_classes", []), list):
+        raw_paths = []
+    if not isinstance(raw_resources, list):
         request_failures.append({"code": "MUTATION_REQUEST_INVALID", "field": "resource_classes"})
+        raw_resources = []
+    proposed_paths = [str(item) for item in raw_paths]
+    resources = [str(item) for item in raw_resources]
 
     authority = validate_authority(
         envelope,
