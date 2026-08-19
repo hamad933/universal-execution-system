@@ -39,6 +39,16 @@ class WriteWorkflowSafetyTests(unittest.TestCase):
         self.assertIn("Publish recovered durable receipts", self.write)
         self.assertIn("render_receipt_comment", self.write)
 
+    def test_owner_identity_comes_from_comment_not_workflow_actor(self):
+        self.assertIn(
+            "github.event.comment.user.login == github.repository_owner",
+            self.write,
+        )
+        self.assertIn("github.event.comment.author_association == 'OWNER'", self.write)
+        self.assertIn("UES_ACTOR: ${{ github.event.comment.user.login }}", self.write)
+        self.assertNotIn("UES_ACTOR: ${{ github.actor }}", self.write)
+        self.assertNotIn("github.actor == github.repository_owner", self.write)
+
 
 if __name__ == "__main__":
     unittest.main()
