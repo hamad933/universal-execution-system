@@ -14,6 +14,7 @@
         "doctor",
         "evidence",
         "failure-classify",
+        "mutation-plan",
         "preflight",
         "reconcile",
         "status"
