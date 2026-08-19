@@ -58,6 +58,7 @@ jobs:
           UES_PR: ${{ github.event.issue.number }}
           UES_COMMENT_ID: ${{ github.event.comment.id }}
           UES_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          UES_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
         run: |
           set +e
           PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python -m ues.bridge_cli \
@@ -67,6 +68,7 @@ jobs:
             --workstream-id "PR-$UES_PR" \
             --operation-id "comment-$UES_COMMENT_ID" \
             --expected-sha "$UES_HEAD_SHA" \
+            --ref "$UES_HEAD_REF" \
             > ues-result.json
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
