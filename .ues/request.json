@@ -1,6 +1,6 @@
 {
-  "target_pr": 0,
-  "comment_id": 0,
-  "target_sha": "",
-  "target_ref": ""
+  "target_pr": 2,
+  "comment_id": 5349748393,
+  "target_sha": "7e75cdee5267ed6afb2950c42f4e06f7f8478add",
+  "target_ref": "pilot/ues-format-fix-v0"
 }
