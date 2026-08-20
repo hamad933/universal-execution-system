@@ -1,0 +1,444 @@
+name: UES Format Fix Control Queue
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ues-control-queue-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    if: >-
+      github.event.pull_request.head.ref == 'ues-control' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    outputs:
+      should_execute: ${{ steps.decision.outputs.should_execute }}
+      publish_receipt: ${{ steps.decision.outputs.publish_receipt }}
+      head_sha: ${{ steps.meta.outputs.head_sha }}
+      head_ref: ${{ steps.meta.outputs.head_ref }}
+      comment_id: ${{ steps.meta.outputs.comment_id }}
+      pr_number: ${{ steps.meta.outputs.pr_number }}
+    steps:
+      - name: Resolve trusted control request and owner authority
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const control = context.payload.pull_request;
+            const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+            if (!control.head.repo || control.head.repo.full_name !== expectedRepo || control.head.ref !== 'ues-control') {
+              core.setFailed('UES control queue requires same-repository ues-control PR');
+              return;
+            }
+
+            const { data: requestFile } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: '.ues/request.json',
+              ref: control.head.sha,
+            });
+            if (Array.isArray(requestFile) || requestFile.type !== 'file' || !requestFile.content) {
+              core.setFailed('UES control request file is missing or invalid');
+              return;
+            }
+            let request;
+            try {
+              request = JSON.parse(Buffer.from(requestFile.content, 'base64').toString('utf8'));
+            } catch (error) {
+              core.setFailed(`UES control request is invalid JSON: ${error.message}`);
+              return;
+            }
+
+            const targetPrNumber = Number(request.target_pr);
+            const commentId = Number(request.comment_id);
+            const expectedSha = String(request.target_sha || '');
+            const expectedRef = String(request.target_ref || '');
+            if (!Number.isInteger(targetPrNumber) || targetPrNumber <= 0 || !Number.isInteger(commentId) || commentId <= 0) {
+              core.setFailed('UES control request identifiers are invalid');
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: targetPrNumber,
+            });
+            if (pr.state !== 'open') {
+              core.setFailed('UES target PR must be open');
+              return;
+            }
+            if (!pr.head.repo || pr.head.repo.full_name !== expectedRepo) {
+              core.setFailed('UES control queue rejects fork target PRs');
+              return;
+            }
+            if (expectedSha !== pr.head.sha || expectedRef !== pr.head.ref) {
+              core.setFailed('UES control request does not match live target SHA/ref');
+              return;
+            }
+
+            const { data: command } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            if (!command.user || command.user.login !== context.repo.owner || command.author_association !== 'OWNER') {
+              core.setFailed('UES control queue requires owner-authored OWNER authority comment');
+              return;
+            }
+            const firstLine = (command.body || '').split(/\r?\n/).find(line => line.trim())?.trim() || '';
+            if (!firstLine.startsWith('/exec format-fix ')) {
+              core.setFailed('UES control authority comment is not /exec format-fix');
+              return;
+            }
+            const tokens = firstLine.split(/\s+/);
+            if (!tokens.includes(`sha=${pr.head.sha}`) || !tokens.includes(`ref=${pr.head.ref}`)) {
+              core.setFailed('UES control authority does not match live target SHA/ref');
+              return;
+            }
+            const created = Date.parse(command.created_at || '');
+            const ageMs = Date.now() - created;
+            if (!Number.isFinite(created) || ageMs < 0 || ageMs >= 14 * 60 * 1000) {
+              core.setFailed('UES control authority comment is expired or invalid');
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: targetPrNumber,
+              per_page: 100,
+            });
+            const { data: commit } = await github.rest.git.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: pr.head.sha,
+            });
+            fs.writeFileSync('prior-comments.json', JSON.stringify(comments.map(comment => ({
+              author: comment.user ? comment.user.login : '',
+              body: comment.body || '',
+              comment_id: String(comment.id),
+            }))));
+            core.setOutput('pr_number', String(targetPrNumber));
+            core.setOutput('comment_id', String(command.id));
+            core.setOutput('comment_body', command.body || '');
+            core.setOutput('comment_user', command.user.login);
+            core.setOutput('comment_created_at', command.created_at);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_tree', commit.tree.sha);
+
+      - name: Checkout trusted UES core
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ues-core
+          persist-credentials: false
+
+      - name: Authorize exact operation
+        id: authorize
+        env:
+          UES_COMMENT: ${{ steps.meta.outputs.comment_body }}
+          UES_ACTOR: ${{ steps.meta.outputs.comment_user }}
+          UES_OWNER: ${{ github.repository_owner }}
+          UES_REPOSITORY: ${{ github.repository }}
+          UES_PR: ${{ steps.meta.outputs.pr_number }}
+          UES_COMMENT_ID: ${{ steps.meta.outputs.comment_id }}
+          UES_COMMENT_CREATED_AT: ${{ steps.meta.outputs.comment_created_at }}
+          UES_HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          UES_HEAD_REF: ${{ steps.meta.outputs.head_ref }}
+          UES_HEAD_TREE: ${{ steps.meta.outputs.head_tree }}
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python -m ues.write_cli authorize \
+            --comment "$UES_COMMENT" \
+            --actor "$UES_ACTOR" \
+            --repository-owner "$UES_OWNER" \
+            --repository "$UES_REPOSITORY" \
+            --pr-number "$UES_PR" \
+            --comment-id "$UES_COMMENT_ID" \
+            --comment-created-at "$UES_COMMENT_CREATED_AT" \
+            --candidate-ref "$UES_HEAD_REF" \
+            --candidate-sha "$UES_HEAD_SHA" \
+            --candidate-tree "$UES_HEAD_TREE" \
+            --workstream-id "PR-$UES_PR" \
+            --comments-json prior-comments.json \
+            --prepared-output prepared.json \
+            --receipt-output initial-receipt.json
+
+      - name: Export authorization decision
+        id: decision
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          value = json.load(open('prepared.json', encoding='utf-8'))
+          print('should_execute=' + str(bool(value.get('should_execute'))).lower())
+          print('publish_receipt=' + str(bool(value.get('publish_receipt'))).lower())
+          PY
+
+      - name: Render recovered durable receipts
+        id: recoveries
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python - <<'PY'
+          import json
+          import os
+          from ues.operation_records import render_receipt_comment
+          prepared = json.load(open('prepared.json', encoding='utf-8'))
+          receipts = prepared.get('recovery_receipts') or []
+          open('recovery-receipts.md', 'w', encoding='utf-8').write(
+              '\n\n'.join(render_receipt_comment(receipt) for receipt in receipts)
+          )
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              print('has_recoveries=' + str(bool(receipts)).lower(), file=output)
+          PY
+
+      - name: Publish recovered durable receipts
+        if: steps.recoveries.outputs.has_recoveries == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.meta.outputs.pr_number }}'),
+              body: fs.readFileSync('recovery-receipts.md', 'utf8'),
+            });
+
+      - name: Render initial durable receipt
+        if: steps.decision.outputs.publish_receipt == 'true'
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python -m ues.write_cli render \
+            --receipt initial-receipt.json > initial-receipt.md
+
+      - name: Publish initial durable receipt
+        if: steps.decision.outputs.publish_receipt == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.meta.outputs.pr_number }}'),
+              body: fs.readFileSync('initial-receipt.md', 'utf8'),
+            });
+
+      - name: Preserve prepared authority
+        if: steps.decision.outputs.should_execute == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-control-prepared-${{ steps.meta.outputs.comment_id }}
+          path: prepared.json
+          retention-days: 1
+          if-no-files-found: error
+
+  format:
+    needs: authorize
+    if: needs.authorize.outputs.should_execute == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      format_state: ${{ steps.state.outputs.format_state }}
+    steps:
+      - name: Checkout trusted UES core
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ues-core
+          persist-credentials: false
+
+      - name: Checkout exact candidate without credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.authorize.outputs.head_sha }}
+          path: target
+          persist-credentials: false
+          submodules: false
+
+      - name: Setup isolated Node runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Restore prepared authority
+        uses: actions/download-artifact@v4
+        with:
+          name: ues-control-prepared-${{ needs.authorize.outputs.comment_id }}
+          path: .
+
+      - name: Run pinned formatter in read-only-token sandbox
+        run: |
+          set +e
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python -m ues.write_cli format \
+            --prepared prepared.json \
+            --repo "$GITHUB_WORKSPACE/target" \
+            --result-output format-result.json \
+            --patch-output format.patch
+          if [ ! -f format-result.json ]; then
+            printf '%s\n' '{"schema_version":"0.6","state":"FORMAT_CRASH","safe_to_blind_retry":false}' > format-result.json
+          fi
+          if [ ! -f format.patch ]; then
+            : > format.patch
+          fi
+          exit 0
+
+      - name: Export formatter state
+        id: state
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          value = json.load(open('format-result.json', encoding='utf-8'))
+          print('format_state=' + str(value.get('state') or 'FORMAT_CRASH'))
+          PY
+
+      - name: Preserve isolated patch evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-control-format-${{ needs.authorize.outputs.comment_id }}
+          path: |
+            format-result.json
+            format.patch
+          retention-days: 1
+          if-no-files-found: error
+
+  apply:
+    needs: [authorize, format]
+    if: >-
+      needs.authorize.outputs.should_execute == 'true' &&
+      (needs.format.outputs.format_state == 'FORMAT_READY' || needs.format.outputs.format_state == 'NO_CHANGE')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: ues-write-${{ github.repository }}-${{ needs.authorize.outputs.head_ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted UES core
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ues-core
+          persist-credentials: false
+
+      - name: Checkout candidate branch for trusted patch application
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.authorize.outputs.head_ref }}
+          path: target
+          persist-credentials: true
+          submodules: false
+
+      - name: Restore prepared authority
+        uses: actions/download-artifact@v4
+        with:
+          name: ues-control-prepared-${{ needs.authorize.outputs.comment_id }}
+          path: .
+
+      - name: Restore isolated patch
+        uses: actions/download-artifact@v4
+        with:
+          name: ues-control-format-${{ needs.authorize.outputs.comment_id }}
+          path: .
+
+      - name: Apply patch with immediate CAS and normal push
+        run: |
+          set +e
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python -m ues.write_cli apply \
+            --prepared prepared.json \
+            --format-result format-result.json \
+            --patch format.patch \
+            --repo "$GITHUB_WORKSPACE/target" \
+            --receipt-output final-receipt.json
+          exit 0
+
+      - name: Preserve apply receipt when available
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-control-final-${{ needs.authorize.outputs.comment_id }}
+          path: final-receipt.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  finalize:
+    needs: [authorize, format, apply]
+    if: always() && needs.authorize.outputs.should_execute == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout trusted UES core
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ues-core
+          persist-credentials: false
+
+      - name: Restore prepared authority
+        uses: actions/download-artifact@v4
+        with:
+          name: ues-control-prepared-${{ needs.authorize.outputs.comment_id }}
+          path: .
+
+      - name: Restore formatter evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ues-control-format-${{ needs.authorize.outputs.comment_id }}
+          path: .
+
+      - name: Restore final receipt if apply produced one
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ues-control-final-${{ needs.authorize.outputs.comment_id }}
+          path: .
+
+      - name: Resolve final operation state
+        run: |
+          args=(--prepared prepared.json --receipt-output resolved-receipt.json)
+          if [ -f format-result.json ]; then
+            args+=(--format-result format-result.json)
+          fi
+          if [ -f final-receipt.json ]; then
+            args+=(--final-receipt final-receipt.json)
+          fi
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python -m ues.write_cli finalize "${args[@]}"
+          PYTHONPATH="$GITHUB_WORKSPACE/ues-core" python -m ues.write_cli render \
+            --receipt resolved-receipt.json > resolved-receipt.md
+
+      - name: Publish final durable receipt
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ needs.authorize.outputs.pr_number }}'),
+              body: fs.readFileSync('resolved-receipt.md', 'utf8'),
+            });
+
+      - name: Preserve final receipt evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-control-receipt-${{ needs.authorize.outputs.comment_id }}
+          path: resolved-receipt.json
+          retention-days: 7
+          if-no-files-found: error
