@@ -12,27 +12,43 @@ A lean, extensible execution-control framework for safe, fast, recoverable, and 
 - Resource optimization is measured: cache/prebuild decisions are advisory and telemetry-driven.
 - Repository-native commands remain authoritative; the universal layer provides semantic command names.
 
-## Bootstrap v0
+## UES v1
 
-This first version is intentionally read-only. It provides:
+UES v1 has a proven bounded-write path using the ChatGPT GitHub Connector:
 
-- machine-readable protocol schemas;
-- a dependency-free Python reference CLI for `status`, `detect`, `doctor`, `validate-contract`, and `resource-advice`;
-- a sample project contract;
-- a lean resource policy;
-- repository-native validation in GitHub Actions.
+```text
+recover live state
+→ bind the change to the exact current parent SHA
+→ create the smallest authorized Git-object change
+→ fast-forward the target ref with force=false
+→ verify live HEAD, ancestry, and changed paths
+→ validate the exact final SHA
+→ record a durable receipt/checkpoint
+```
 
-Mutating bridge operations such as `format-fix`, `commit`, and `push` are deliberately deferred until exact-SHA authority and recovery behavior are validated.
+GitHub Actions remains the preferred verifier and long-running repository-native execution backend. Local workspaces, Codespaces, self-hosted runners, and other backends are optional capabilities rather than prerequisites.
+
+The primary operator rule is simple: live GitHub state is authoritative, and an uncertain write is never blindly retried.
+
+## Start here
+
+For a fresh ChatGPT execution chat, use:
+
+- [`docs/CHAT_OPERATOR_MANUAL.md`](docs/CHAT_OPERATOR_MANUAL.md) — the complete UES v1 operating manual, including the copy-paste bootstrap prompt for any chat.
+- [`docs/FUTURE_IMPROVEMENTS.md`](docs/FUTURE_IMPROVEMENTS.md) — optional future apps/tools/infrastructure, with clear triggers for when they are worth adding.
+- [`docs/architecture.md`](docs/architecture.md) — core architecture and extension model.
+- [`docs/adapters.md`](docs/adapters.md) — project-family adapter model.
+- [`docs/transactions.md`](docs/transactions.md) — authority, CAS, transaction, and recovery mechanics.
 
 ## Codespaces
 
-The repository now includes `.devcontainer/devcontainer.json` for GitHub Codespaces. It provisions only the Python 3.11 environment required by the current Universal Core and runs the unit tests after the workspace is created.
+The repository includes `.devcontainer/devcontainer.json` for GitHub Codespaces. It provisions only the Python environment required by the Universal Core and runs the unit tests after the workspace is created.
 
 No Node, PHP, Java, browser, database, or other project-family stack is installed globally. Those capabilities belong in optional adapters or repository-specific overrides and should load only when a project needs them.
 
 Prebuilds are intentionally off by default. They should be enabled only when measured startup time and usage frequency justify their extra storage and GitHub Actions consumption.
 
-## Quick start
+## Developer quick start
 
 ```bash
 python -m ues.cli detect --repo .
@@ -42,4 +58,4 @@ python -m ues.cli validate-contract examples/project.contract.json
 python -m unittest discover -s tests -v
 ```
 
-See `docs/architecture.md` for the extension model and safety boundaries.
+For operational use, start with `docs/CHAT_OPERATOR_MANUAL.md` rather than reconstructing the protocol from previous conversations.
