@@ -27,6 +27,9 @@
   },
   "project_auto_safe_actions": [],
   "task_budget": {
+    "ceiling": 30,
+    "reserve_target": null,
+    "reserve_status": "NOT_DEFINED_BY_CURRENT_GS_AUTHORITY",
     "new_task_authority": "PARENT_ONLY",
     "unknown_lifetime_capacity": "DENY",
     "automatic_new_task_creation": false
