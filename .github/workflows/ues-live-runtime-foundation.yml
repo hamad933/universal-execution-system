@@ -51,15 +51,27 @@ jobs:
           UES_STATE_REF_PREFIX: ues-runtime/v2
         run: python -m ues.live_runtime state-audit
 
+      - name: Check Jules secret availability without disclosure
+        id: jules_secret
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: |
+          if [ -n "$JULES_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Jules credential read-only probe
         id: jules_probe
+        if: steps.jules_secret.outputs.present == 'true'
         continue-on-error: true
         env:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: python -m ues.live_runtime jules-probe
 
       - name: Persist sanitized Jules probe success proof
-        if: steps.jules_probe.outcome == 'success'
+        if: steps.jules_secret.outputs.present == 'true' && steps.jules_probe.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
@@ -67,19 +79,27 @@ jobs:
         run: python -m ues.live_runtime record-jules-probe
 
       - name: Persist sanitized Jules probe failure status
-        if: steps.jules_probe.outcome != 'success'
+        if: steps.jules_secret.outputs.present != 'true' || steps.jules_probe.outcome != 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
+          JULES_SECRET_PRESENT: ${{ steps.jules_secret.outputs.present }}
         run: |
           python - <<'PY'
+          import os
           from hashlib import sha256
           from ues.identity import canonical_lane_id
           from ues.live_runtime import build_live_state_store, _iso, _utc_now
           from ues.state_store import OperationRecord, StateUnavailable
 
-          repository = __import__('os').environ['GITHUB_REPOSITORY']
+          repository = os.environ['GITHUB_REPOSITORY']
+          secret_present = os.environ.get('JULES_SECRET_PRESENT', '').strip().lower() == 'true'
+          classification = (
+              'PROVIDER_AUTH_OR_READ_FAILURE'
+              if secret_present
+              else 'JULES_API_KEY_NOT_AVAILABLE_TO_WORKFLOW'
+          )
           store = build_live_state_store()
           lane_id = canonical_lane_id('UES', 'INTERNAL:UES', 'LIVE-RUNTIME-PROBE')
           lane = store.read_workstream(lane_id)
@@ -92,7 +112,8 @@ jobs:
           now = _iso(_utc_now())
           receipt = {
               'result': 'JULES_READ_ONLY_AUTHENTICATION_NOT_PROVEN',
-              'classification': 'CREDENTIAL_OR_PROVIDER_READ_UNAVAILABLE',
+              'classification': classification,
+              'credential_present_to_workflow': secret_present,
               'read_only': True,
               'provider_mutation': False,
               'exception_text_persisted': False,
@@ -124,7 +145,7 @@ jobs:
           PY
 
       - name: Enforce Jules read-only proof gate
-        if: steps.jules_probe.outcome != 'success'
+        if: steps.jules_secret.outputs.present != 'true' || steps.jules_probe.outcome != 'success'
         run: |
           echo "Jules read-only authentication proof was not established; see sanitized durable status."
           exit 1
