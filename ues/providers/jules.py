@@ -25,6 +25,18 @@ def normalize_session_state(value: Any) -> str:
     return state if state in DOCUMENTED_SESSION_STATES else "UNKNOWN"
 
 
+def _readback_unavailable(exc: Exception) -> dict[str, Any]:
+    category = getattr(exc, "category", "PROVIDER_READ_ERROR")
+    return {
+        "schema_version": "0.5",
+        "verdict": "AUTHORITATIVE_READ_UNAVAILABLE",
+        "safe_to_blind_retry": False,
+        "retry_consideration": "BLOCKED_UNTIL_AUTHORITATIVE_READ",
+        "post_session_state": "UNKNOWN",
+        "evidence": {"read_error_category": str(category)},
+    }
+
+
 class JulesClient:
     def __init__(self, api_key: str, *, transport: HttpTransport | None = None,
                  endpoint: str = JULES_ENDPOINT, timeout: float = 15.0,
@@ -106,7 +118,27 @@ class JulesClient:
         except NetworkError:
             return self._recover_ambiguous(name, prompt, pre_ids, "NETWORK_ERROR")
         if 200 <= response.status <= 299:
-            recovery = self.recover_send_message_outcome(name, prompt, pre_activity_ids=pre_ids, write_outcome="CONFIRMED_HTTP")
+            try:
+                recovery = self.recover_send_message_outcome(
+                    name,
+                    prompt,
+                    pre_activity_ids=pre_ids,
+                    write_outcome="CONFIRMED_HTTP",
+                )
+            except (
+                AuthenticationError,
+                AuthorizationError,
+                NotFoundError,
+                RateLimitError,
+                ServerError,
+                NetworkError,
+                ProtocolError,
+            ) as exc:
+                raise WriteOutcomeUnknown(
+                    "Jules sendMessage succeeded at HTTP layer but authoritative post-write readback failed",
+                    operation="jules.sendMessage",
+                    recovery={"initial_write_result": "HTTP_SUCCESS", **_readback_unavailable(exc)},
+                ) from exc
             if recovery["verdict"] != "WRITE_CONFIRMED_BY_ACTIVITY":
                 raise WriteOutcomeUnknown("Jules sendMessage lacked authoritative activity readback",
                                           operation="jules.sendMessage", recovery=recovery)
@@ -132,9 +164,7 @@ class JulesClient:
         try:
             recovery = self.recover_send_message_outcome(name, prompt, pre_activity_ids=pre_ids)
         except (AuthenticationError, AuthorizationError, NotFoundError, RateLimitError, ServerError, NetworkError, ProtocolError) as exc:
-            recovery = {"schema_version": "0.5", "verdict": "AUTHORITATIVE_READ_UNAVAILABLE",
-                        "safe_to_blind_retry": False, "retry_consideration": "BLOCKED_UNTIL_AUTHORITATIVE_READ",
-                        "post_session_state": "UNKNOWN", "evidence": {"read_error_category": exc.category}}
+            recovery = _readback_unavailable(exc)
         if recovery["verdict"] == "WRITE_CONFIRMED_BY_ACTIVITY":
             result = _receipt(name, recovery, None, True); result["initial_write_error"] = cause; return result
         raise WriteOutcomeUnknown("Jules mutation result is ambiguous", status_code=status_code, retry_after=retry_after,
@@ -213,13 +243,11 @@ def _resource_name(value: str, kind: str) -> str:
     text = str(value or "").strip().strip("/"); prefix = f"{kind}/"; ident = text[len(prefix):] if text.startswith(prefix) else text
     if not ident or "/" in ident: raise ValueError(f"resource must be an id or {kind}/{{id}}")
     return f"{kind}/{quote(ident, safe='')}"
-
 def _repo(value: str | tuple[str, str]) -> str:
     if isinstance(value, tuple): value = f"{value[0]}/{value[1]}"
     text = str(value or "").strip().strip("/")
     if text.count("/") != 1 or any(not p for p in text.split("/")): raise ValueError("repository must be owner/repo")
     return text
-
 def _activity_id(activity: Mapping[str, Any]) -> str: return str(activity.get("name") or activity.get("id") or "")
 def _receipt(name: str, recovery: Mapping[str, Any], binding: Mapping[str, Any] | None, ambiguous: bool) -> dict[str, Any]:
     result = {"schema_version": "0.5", "provider": "JULES", "operation": "sendMessage", "session": name,
