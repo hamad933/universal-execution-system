@@ -14,7 +14,7 @@ class MetricsTests(unittest.TestCase):
                 "time_to_route_review_seconds": 30,
                 "time_to_correction_seconds": 45,
                 "forgotten": True,
-                "auto_safe_incident": True,
+                "auto_safe_incident_proven": True,
                 "auto_safe_treated": False,
                 "raw_prompt": "SECRET PROMPT VALUE",
                 "provider_message": "sensitive text",
