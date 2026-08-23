@@ -1,0 +1,84 @@
+{
+  "schema_version": "2.0",
+  "adapter_kind": "portfolio-project-control",
+  "adapter_id": "GS_SHADOW_V2",
+  "project": "GS",
+  "route": "GS",
+  "repository": "hamad933/GS-2",
+  "activation": {
+    "default_mode": "SHADOW",
+    "mutation_allowed": false,
+    "runtime_mode_is_authority": false
+  },
+  "truth_owners": {
+    "governed_state": "DRIVE",
+    "technical_state": "GITHUB",
+    "provider_state": "PROVIDER"
+  },
+  "canonical_lane": {
+    "components": ["project", "route", "workstream"],
+    "allow_bare_workstream_key": false
+  },
+  "actor_binding": {
+    "roles": ["WRITER", "REVIEWER"],
+    "external_effect_proof_required": "PROVEN_EXPLICIT",
+    "heuristic_match_status": "PROPOSED_UNVERIFIED",
+    "source_repository_must_match": true
+  },
+  "project_auto_safe_actions": [],
+  "task_budget": {
+    "new_task_authority": "PARENT_ONLY",
+    "unknown_lifetime_capacity": "DENY",
+    "automatic_new_task_creation": false
+  },
+  "evidence_profiles": {
+    "core_ci": {
+      "profile_id": "GS_CORE_CI_V1",
+      "requirements": [
+        {
+          "provider": "GITHUB_ACTIONS",
+          "workflow": "CI",
+          "job": "validate",
+          "exact_candidate_sha": true,
+          "required": true
+        }
+      ]
+    },
+    "visual_assurance": {
+      "profile_id": "GS_VISUAL_EVIDENCE_V1",
+      "requirements": [
+        {
+          "provider": "GITHUB_ACTIONS",
+          "workflow": "Visual Evidence",
+          "exact_candidate_sha": true,
+          "artifact_attempt_bound": true,
+          "required": true
+        }
+      ]
+    }
+  },
+  "waiting_classifier": {
+    "rules": [],
+    "unmatched": "UNCLASSIFIED",
+    "keyword_shortcuts_allowed": false
+  },
+  "stop_gates": [
+    "PARENT_AUTHORITY_REQUIRED",
+    "OWNER_AUTHORITY_REQUIRED",
+    "SHARED_CONTRACT_REQUIRED",
+    "UNCLASSIFIED_WAITING",
+    "EVIDENCE_INCOMPLETE",
+    "BINDING_DRIFT_RECONCILIATION_REQUIRED"
+  ],
+  "prohibitions": [
+    "MERGE",
+    "RELEASE",
+    "DEPLOY",
+    "PRODUCT_PUBLICATION",
+    "FORCE_PUSH",
+    "TEST_WEAKENING",
+    "GUESSED_SESSION_OWNERSHIP",
+    "BLIND_WRITE_RETRY",
+    "AUTOMATIC_NEW_JULES_TASK"
+  ]
+}
