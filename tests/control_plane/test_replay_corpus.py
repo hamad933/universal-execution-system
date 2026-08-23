@@ -6,7 +6,7 @@ import unittest
 
 from tests.control_plane.replay_harness import FIXTURE_DIR, ReferenceOracle, canonical, load_corpus
 
-EXPECTED_IDS = {f"CP-{n:03d}" for n in range(1, 42)}
+EXPECTED_IDS = {f"CP-{n:03d}" for n in range(1, 49)}
 SECRET_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{16,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{16,}"),
@@ -14,6 +14,7 @@ SECRET_PATTERNS = (
     re.compile(r"Bearer\s+[A-Za-z0-9._-]{12,}", re.I),
     re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----"),
 )
+
 
 class ReplayCorpusTests(unittest.TestCase):
     @classmethod
@@ -24,7 +25,7 @@ class ReplayCorpusTests(unittest.TestCase):
     def test_exact_required_scenarios_present(self):
         ids = {case.scenario_id for case in self.cases}
         self.assertEqual(ids, EXPECTED_IDS)
-        self.assertEqual(len(self.cases), 41)
+        self.assertEqual(len(self.cases), 48)
 
     def test_ids_are_unique_and_ordered(self):
         ids = [case.scenario_id for case in self.cases]
@@ -32,9 +33,10 @@ class ReplayCorpusTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_every_scenario_is_synthetic_and_has_domain_owner(self):
-        payload = json.loads((FIXTURE_DIR / "scenarios.json").read_text(encoding="utf-8"))
-        self.assertTrue(payload["synthetic"])
-        self.assertEqual(payload["schema_version"], "ues-control-plane-replay-v2")
+        for fixture in FIXTURE_DIR.glob("scenarios*.json"):
+            payload = json.loads(fixture.read_text(encoding="utf-8"))
+            self.assertTrue(payload["synthetic"])
+            self.assertEqual(payload["schema_version"], "ues-control-plane-replay-v2")
         for case in self.cases:
             self.assertTrue(case.domains)
             self.assertTrue(set(case.domains) <= {"A", "B", "C", "D", "INTEGRATION"})
@@ -79,6 +81,18 @@ class ReplayCorpusTests(unittest.TestCase):
     def test_control_cycle_parent_owner_only_blockers_do_not_false_fail(self):
         cp41 = next(case for case in self.cases if case.scenario_id == "CP-041")
         self.assertEqual(self.oracle.evaluate(cp41)["cycle"], "CONTROL_CYCLE_OK")
+
+    def test_r2_cross_domain_convergence_contracts_are_locked(self):
+        actual = {case.scenario_id: self.oracle.evaluate(case) for case in self.cases if case.scenario_id >= "CP-042"}
+        self.assertEqual(actual["CP-042"]["writer"], "PROVEN")
+        self.assertEqual(actual["CP-042"]["reviewer"], "PROVEN")
+        self.assertEqual(actual["CP-043"]["authority"], "PARENT_REQUIRED")
+        self.assertEqual(actual["CP-044"]["authority"], "PARENT_REQUIRED")
+        self.assertEqual(actual["CP-045"]["authority"], "PARENT_REQUIRED")
+        self.assertEqual(actual["CP-046"]["cycle"], "CONTROL_CYCLE_FAILED")
+        self.assertEqual(actual["CP-047"]["drift"], ["EVIDENCE_PROFILE"])
+        self.assertEqual(actual["CP-048"]["decision"], "EVIDENCE_INCOMPLETE")
+
 
 if __name__ == "__main__":
     unittest.main()

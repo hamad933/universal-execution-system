@@ -1,9 +1,7 @@
-"""Test-only integration binding inventory for Automation Control Plane V2 replay.
+"""Exact R2 production binding inventory for Automation Control Plane replay.
 
-The fixture semantics are authoritative. Concrete production names below describe the
-reviewed A-D heads where a callable already exists. Missing semantic bindings must fail
-integration mode until Integration Authority binds a corrected production API; they are
-not permission to move production logic into tests.
+Domain E is tests only. Names are frozen by Integration Authority. Missing symbols are
+hard failures; production replay does not search aliases or fall back to the oracle.
 """
 from __future__ import annotations
 
@@ -25,42 +23,42 @@ EXPECTED_PRODUCTION_MODULES = (
     "ues.transaction",
 )
 
-CURRENT_REVIEWED_BINDINGS = {
-    "lifecycle_next": "ues.lifecycle.resolve_next_action",
+R2_PUBLIC_BINDINGS = {
+    "action_capability": "ues.lifecycle.ActionCapability",
+    "actor_binding": "ues.reconciliation.ActorBinding",
+    "required_evidence_profile": "ues.reconciliation.RequiredEvidenceProfile",
+    "canonical_lane_key": "ues.reconciliation.canonical_lane_key",
+    "resolve_actor_binding": "ues.reconciliation.resolve_actor_binding",
     "reconcile_workstream": "ues.reconciliation.reconcile_workstream",
     "reconcile_portfolio": "ues.reconciliation.reconcile_portfolio",
     "jules_normalize_state": "ues.providers.jules.normalize_session_state",
     "jules_send_message": "ues.providers.jules.JulesClient.send_message",
-    "github_required_ci": "ues.providers.github.GitHubClient.get_ci_evidence",
+    "github_required_ci": "ues.providers.github.GitHubClient.get_required_ci_evidence",
     "github_workflow_binding": "ues.providers.github.GitHubClient.get_workflow_binding",
-    "github_pr_read": "ues.providers.github.GitHubClient.get_pull_request",
-    "provider_unknown_write_recovery": "ues.recovery.reconcile_provider_write",
-    "failure_classification": "ues.failures.classify_failure",
-    "provider_failure_classification": "ues.failures.classify_provider_failure",
-    "failure_scope": "ues.failures.scope_blocker",
+    "failure_cascade": "ues.failures.collapse_failure_cascade",
+    "waiting_classifier": "ues.routing.classify_waiting_activity",
     "waiting_routing": "ues.routing.route_waiting",
     "reviewer_to_writer": "ues.routing.route_reviewer_to_writer",
     "writer_to_reviewer": "ues.routing.route_writer_to_reviewer",
     "terminal_session_routing": "ues.routing.route_terminal_session_failure",
-    "lane_watchdog": "ues.watchdog.evaluate_lane_watchdog",
     "control_cycle": "ues.watchdog.evaluate_control_cycle",
-    "task_budget": "ues.task_budget.evaluate_task_budget",
-    "runtime_state": "ues.state_store.StateStore / WorkstreamRuntimeRecord",
-    "idempotency": "ues.idempotency.evaluate_idempotency",
-    "waiting_answer_identity": "ues.idempotency.waiting_answer_operation_key",
+    "lane_state": "ues.state_store.WorkstreamRuntimeRecord",
+    "effect_identity": "ues.idempotency.EffectIdentity",
+    "state_claim": "ues.state_store.claim_operation",
 }
 
-SEMANTIC_BINDINGS_REQUIRING_CORRECTED_A_D = (
-    "explicit/source-backed session binding proof",
-    "required CI identity classification with REQUIRED_CI_MISSING",
-    "attempt-bound artifact lineage including producer/digest",
-    "project/route/workstream portfolio identity and duplicate-session detection",
-    "base/head/scope drift reconciliation",
-    "cascaded shared-failure collapse",
-    "AWAITING_PLAN_APPROVAL Parent/policy mutation gate",
-    "structured waiting classifier that does not use keyword-only shortcuts",
-    "required browser/route-profile evidence gate",
-    "exact CANARY grant authorization",
-    "stable waiting-Activity external-effect identity independent of answer payload",
-    "project-specific AUTO_SAFE allowlist enforcement",
+R2_REQUIRED_SEMANTICS = (
+    "one lane can carry independent Writer and Reviewer actor bindings",
+    "unique heuristic actor or session binding remains unproven",
+    "project_auto_safe_actions gates every external-effect route",
+    "CI and review evidence-only waiting remains read-only",
+    "required CI identity uses get_required_ci_evidence",
+    "artifact evidence is run-attempt and producer bound or UNPROVEN",
+    "base scope and evidence-profile drift reconciles before action",
+    "FORGOTTEN_LANE makes the control cycle unhealthy",
+    "valid Parent or Owner Stop Gate alone does not fail the cycle",
+    "failure cascades collapse only with explicit common-root identity",
+    "lane_id plus project route workstream binds state and effect identity",
+    "same waiting Activity plus changed payload collides",
+    "missing or unknown activation state remains SHADOW",
 )
