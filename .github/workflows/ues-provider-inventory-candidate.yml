@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - work/ues-v2-live-provider-ingestion-r01
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -15,11 +19,15 @@ concurrency:
 
 jobs:
   prove:
+    if: github.event_name != 'pull_request' || github.head_ref == 'work/ues-v2-live-provider-ingestion-r01'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
