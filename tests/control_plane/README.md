@@ -1,54 +1,68 @@
-# UES Automation Control Plane V2 — deterministic replay corpus
+# UES Automation Control Plane V2 — deterministic replay gate
 
-This directory is the Domain E test-only regression harness for Issue #9 / PR #10.
-It contains only synthetic, sanitized fixtures and test infrastructure. It does not
-persist project truth, call external providers, mutate GitHub/Jules, or define
-production architecture.
+This directory is Domain E only. All fixtures are synthetic and sanitized. The harness
+must not call live GitHub/Jules services, persist project truth, weaken tests, or define
+production authority.
 
-## Running
+## Test modes
 
-Corpus-only validation on the frozen baseline:
+Normal isolated corpus validation:
 
 ```bash
 python -m unittest discover -s tests/control_plane -p 'test_*.py' -v
 ```
 
-Composed A-D integration expectation check:
+Composed production-backed validation:
 
 ```bash
 UES_CONTROL_PLANE_INTEGRATION=1 \
 python -m unittest discover -s tests/control_plane -p 'test_*.py' -v
 ```
 
-The second command intentionally fails while required A-D modules are absent.
-Those failures are integration expectations, not permission to weaken or delete a
-scenario.
+Normal mode validates fixture completeness, determinism, sanitization, the independent
+`ReferenceOracle`, and that every fixture kind has a production adapter. Production
+execution tests are skipped.
 
-## Semantic protocol stubs
+Integration mode is deliberately fail-hard. For every fixture it performs:
 
-`protocols.py` records the exact semantic operations the replay adapter will need
-once production interfaces freeze:
+`fixture -> test-side adapter -> actual A-D production callable -> normalized actual -> fixture expected`
 
-- Lifecycle: `resolve_next_transition(snapshot) -> decision`.
-- Reconciliation: `reconcile_binding(runtime, observed) -> decision`.
-- Routing: `route(snapshot) -> decision`.
-- Watchdog: `evaluate(snapshot) -> incidents`.
-- Task budget: `classify(snapshot) -> decision`.
-- Jules provider: `normalize_state(raw_state) -> normalized_state`.
-- GitHub provider: `read_evidence_binding(snapshot) -> decision`.
-- Metrics: `emit_sanitized_receipt(snapshot) -> decision`.
-- Recovery: `recover_unknown_write(snapshot) -> decision`.
-- Operation safety: `reserve_operation(operation_key, snapshot) -> decision`.
+Missing modules, missing semantic bindings, production exceptions, and wrong normalized
+results are test failures. There is no fallback from the production adapter to the
+`ReferenceOracle`.
 
-These are test-side `Protocol` stubs. Domains A-D do not need to copy these names
-into production. After cross-domain interfaces are frozen, the integration authority
-may bind concrete production APIs to these semantics without changing scenario
-inputs, expected outcomes, safety properties, or replay intent.
+## Reference oracle vs production adapter
 
-## Locked safety properties
+`replay_harness.py` contains the independent semantic expectation oracle. It imports no
+`ues` production modules.
 
-The corpus locks fail-closed binding, exact-SHA review freshness, exact CI artifact
-binding, no blind mutation retry, duplicate-operation suppression, conservative task
-budget behavior, independent-lane progress, forgotten-lane detection, same-writer
-correction routing, mandatory re-CI/re-review after SHA movement, cycle failure for
-untreated AUTO_SAFE incidents, and SHADOW default activation.
+`production_adapters.py` contains thin translations to the reviewed A-D APIs. It does
+not import or call the reference oracle. Provider tests use synthetic transport doubles
+at the network boundary while executing the real provider methods.
+
+`protocols.py` records the reviewed concrete bindings and the semantic capabilities that
+remain unavailable until corrected A-D interfaces are composed. Integration Authority
+may update only the test adapter binding for a frozen corrected interface; fixture input,
+expected output, and safety intent must not be weakened to obtain green tests.
+
+## R1 P0 additions
+
+The corpus now includes required-CI identity, workflow run-attempt/artifact lineage,
+explicit vs heuristic session proof, duplicate provider session detection, cross-project
+lane identity, base/head/scope drift, mixed and cascaded CI causes, closed-unmerged PRs,
+`AWAITING_PLAN_APPROVAL`, keyword false positives, SHADOW trigger enforcement, browser
+route/profile evidence, restart-after-send recovery, correction re-CI/re-review,
+waiting-Activity effect deduplication, exact CANARY grant mismatch, and project-specific
+`ENVIRONMENT_MISMATCH` authority.
+
+A unique heuristic Writer session is `PROPOSED_UNVERIFIED`; only explicit/source-backed
+binding can be `PROVEN`.
+
+## Safety invariants locked by the suite
+
+The suite locks fail-closed binding, exact candidate/evidence freshness, required-CI
+identity, attempt-bound artifacts, no blind mutation retry, durable effect deduplication,
+conservative task budget handling, blocked-lane isolation, `FORGOTTEN_LANE`, same-Writer
+correction routing, mandatory re-CI/re-review after a new SHA, control-cycle failure only
+for untreated proven AUTO_SAFE incidents, and SHADOW as the default when activation
+authority is missing.

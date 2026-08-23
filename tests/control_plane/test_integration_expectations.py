@@ -1,73 +1,59 @@
-"""Integration expectations for Domains A-D.
+"""Production-backed replay gate for a composed A-D candidate.
 
-Default discovery skips these assertions so the synthetic corpus can be validated
-on the frozen baseline. Set UES_CONTROL_PLANE_INTEGRATION=1 after composing A-D
-onto a candidate tree to turn missing production modules into hard failures.
+Normal test discovery skips production execution. With UES_CONTROL_PLANE_INTEGRATION=1,
+every fixture is executed through actual production modules and normalized back to the
+fixture contract. Missing bindings and wrong behavior are hard failures.
 """
-
 from __future__ import annotations
 
 import importlib
+import inspect
 import os
 import unittest
 
+from tests.control_plane.production_adapters import IntegrationBindingUnavailable, ProductionReplayAdapter
 from tests.control_plane.protocols import EXPECTED_PRODUCTION_MODULES
-
+from tests.control_plane.replay_harness import canonical, load_corpus
 
 INTEGRATION_ENABLED = os.getenv("UES_CONTROL_PLANE_INTEGRATION") == "1"
 
+class IntegrationHarnessShapeTests(unittest.TestCase):
+    def test_every_fixture_kind_has_a_production_adapter(self):
+        adapter = ProductionReplayAdapter()
+        missing = sorted({case.kind for case in load_corpus() if not callable(getattr(adapter, f"_eval_{case.kind}", None))})
+        self.assertEqual(missing, [])
+
+    def test_production_adapter_does_not_import_reference_oracle(self):
+        source = inspect.getsource(importlib.import_module("tests.control_plane.production_adapters"))
+        self.assertNotIn("ReferenceOracle", source)
+        self.assertNotIn("from tests.control_plane.replay_harness", source)
 
 @unittest.skipUnless(INTEGRATION_ENABLED, "set UES_CONTROL_PLANE_INTEGRATION=1 on composed A-D candidate")
-class ProductionIntegrationExpectationTests(unittest.TestCase):
-    def _require_module(self, module_name: str):
-        try:
-            return importlib.import_module(module_name)
-        except ModuleNotFoundError as exc:
-            self.fail(f"INTEGRATION_EXPECTATION_MISSING: {module_name}: {exc}")
+class ProductionBackedReplayTests(unittest.TestCase):
+    def test_required_modules_are_importable(self):
+        failures=[]
+        for name in EXPECTED_PRODUCTION_MODULES:
+            try:
+                importlib.import_module(name)
+            except Exception as exc:
+                failures.append(f"{name}: {type(exc).__name__}: {exc}")
+        self.assertEqual(failures, [], "INTEGRATION_MODULE_FAILURES:\n" + "\n".join(failures))
 
-    def test_domain_a_modules(self):
-        self._require_module("ues.lifecycle")
-        self._require_module("ues.reconciliation")
-
-    def test_domain_b_modules(self):
-        self._require_module("ues.providers.jules")
-        self._require_module("ues.providers.github")
-        self._require_module("ues.recovery")
-        self._require_module("ues.failures")
-
-    def test_domain_c_modules(self):
-        self._require_module("ues.routing")
-        self._require_module("ues.watchdog")
-        self._require_module("ues.task_budget")
-        self._require_module("ues.metrics")
-
-    def test_domain_d_modules(self):
-        self._require_module("ues.state_store")
-        self._require_module("ues.idempotency")
-        self._require_module("ues.operation_records")
-        self._require_module("ues.transaction")
-
-    def test_expected_module_inventory_is_stable(self):
-        self.assertEqual(
-            EXPECTED_PRODUCTION_MODULES,
-            (
-                "ues.lifecycle",
-                "ues.reconciliation",
-                "ues.providers.jules",
-                "ues.providers.github",
-                "ues.routing",
-                "ues.watchdog",
-                "ues.task_budget",
-                "ues.metrics",
-                "ues.state_store",
-                "ues.recovery",
-                "ues.failures",
-                "ues.idempotency",
-                "ues.operation_records",
-                "ues.transaction",
-            ),
-        )
-
+    def test_entire_replay_corpus_matches_actual_production_behavior(self):
+        adapter=ProductionReplayAdapter()
+        failures=[]
+        for case in load_corpus():
+            try:
+                actual=adapter.evaluate(case)
+            except IntegrationBindingUnavailable as exc:
+                failures.append(f"{case.scenario_id} BINDING_UNAVAILABLE {exc}")
+                continue
+            except Exception as exc:
+                failures.append(f"{case.scenario_id} EXECUTION_ERROR {type(exc).__name__}: {exc}")
+                continue
+            if canonical(actual) != canonical(case.expected):
+                failures.append(f"{case.scenario_id} MISMATCH actual={canonical(actual)} expected={canonical(case.expected)}")
+        self.assertEqual(failures, [], "PRODUCTION_REPLAY_FAILURES:\n" + "\n".join(failures))
 
 if __name__ == "__main__":
     unittest.main()

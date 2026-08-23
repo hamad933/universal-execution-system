@@ -6,8 +6,7 @@ import unittest
 
 from tests.control_plane.replay_harness import FIXTURE_DIR, ReferenceOracle, canonical, load_corpus
 
-
-EXPECTED_IDS = {f"CP-{n:03d}" for n in range(1, 21)}
+EXPECTED_IDS = {f"CP-{n:03d}" for n in range(1, 42)}
 SECRET_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9_]{16,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{16,}"),
@@ -16,17 +15,16 @@ SECRET_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----"),
 )
 
-
 class ReplayCorpusTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cases = load_corpus()
         cls.oracle = ReferenceOracle()
 
-    def test_exact_twenty_required_scenarios_present(self):
+    def test_exact_required_scenarios_present(self):
         ids = {case.scenario_id for case in self.cases}
         self.assertEqual(ids, EXPECTED_IDS)
-        self.assertEqual(len(self.cases), 20)
+        self.assertEqual(len(self.cases), 41)
 
     def test_ids_are_unique_and_ordered(self):
         ids = [case.scenario_id for case in self.cases]
@@ -36,6 +34,7 @@ class ReplayCorpusTests(unittest.TestCase):
     def test_every_scenario_is_synthetic_and_has_domain_owner(self):
         payload = json.loads((FIXTURE_DIR / "scenarios.json").read_text(encoding="utf-8"))
         self.assertTrue(payload["synthetic"])
+        self.assertEqual(payload["schema_version"], "ues-control-plane-replay-v2")
         for case in self.cases:
             self.assertTrue(case.domains)
             self.assertTrue(set(case.domains) <= {"A", "B", "C", "D", "INTEGRATION"})
@@ -65,6 +64,21 @@ class ReplayCorpusTests(unittest.TestCase):
         cp10 = next(case for case in self.cases if case.scenario_id == "CP-010")
         self.assertEqual(cp10.inputs["failures"], matrix["failures"])
 
+    def test_unique_heuristic_session_is_never_proven_by_reference_oracle(self):
+        cp23 = next(case for case in self.cases if case.scenario_id == "CP-023")
+        actual = self.oracle.evaluate(cp23)
+        self.assertEqual(actual["writer_binding"], "PROPOSED_UNVERIFIED")
+        self.assertEqual(actual["decision"], "FAIL_CLOSED")
+
+    def test_explicit_source_backed_session_can_be_proven(self):
+        cp24 = next(case for case in self.cases if case.scenario_id == "CP-024")
+        actual = self.oracle.evaluate(cp24)
+        self.assertEqual(actual["writer_binding"], "PROVEN")
+        self.assertEqual(actual["decision"], "CONTINUE")
+
+    def test_control_cycle_parent_owner_only_blockers_do_not_false_fail(self):
+        cp41 = next(case for case in self.cases if case.scenario_id == "CP-041")
+        self.assertEqual(self.oracle.evaluate(cp41)["cycle"], "CONTROL_CYCLE_OK")
 
 if __name__ == "__main__":
     unittest.main()
