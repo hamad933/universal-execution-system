@@ -123,6 +123,45 @@ class JulesProviderTests(unittest.TestCase):
         with self.assertRaises(WriteOutcomeUnknown) as ctx: client.send_message("123","continue",expected_repository="o/r")
         self.assertFalse(ctx.exception.recovery["safe_to_blind_retry"]); self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
 
+    def test_http_success_post_read_protocol_failure_is_unknown(self):
+        steps=[
+            response(payload=SESSION),
+            response(payload=SOURCE),
+            response(payload={"activities":[PRE_ACTIVITY]}),
+            response(status=200),
+            ProtocolError("post-read invalid",operation="jules.sessions.get"),
+        ]
+        client,transport,_=self.client(steps)
+        with self.assertRaises(WriteOutcomeUnknown) as ctx:
+            client.send_message("123","continue",expected_repository="o/r")
+        recovery=ctx.exception.recovery
+        self.assertEqual(recovery["initial_write_result"],"HTTP_SUCCESS")
+        self.assertEqual(recovery["verdict"],"AUTHORITATIVE_READ_UNAVAILABLE")
+        self.assertFalse(recovery["safe_to_blind_retry"])
+        self.assertEqual(recovery["evidence"]["read_error_category"],"PROTOCOL_ERROR")
+        self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
+
+    def test_http_success_post_read_network_failure_is_unknown_without_resend(self):
+        steps=[
+            response(payload=SESSION),
+            response(payload=SOURCE),
+            response(payload={"activities":[PRE_ACTIVITY]}),
+            response(status=200),
+            NetworkError("post-read timeout-1"),
+            NetworkError("post-read timeout-2"),
+            NetworkError("post-read timeout-3"),
+        ]
+        client,transport,sleeps=self.client(steps)
+        with self.assertRaises(WriteOutcomeUnknown) as ctx:
+            client.send_message("123","continue",expected_repository="o/r")
+        recovery=ctx.exception.recovery
+        self.assertEqual(recovery["initial_write_result"],"HTTP_SUCCESS")
+        self.assertEqual(recovery["verdict"],"AUTHORITATIVE_READ_UNAVAILABLE")
+        self.assertEqual(recovery["evidence"]["read_error_category"],"NETWORK_ERROR")
+        self.assertFalse(recovery["safe_to_blind_retry"])
+        self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
+        self.assertEqual(sleeps,[.01,.02])
+
     def test_definitive_http_errors(self):
         for status,error in [(401,AuthenticationError),(403,AuthorizationError),(404,NotFoundError)]:
             with self.subTest(status=status):
@@ -131,9 +170,20 @@ class JulesProviderTests(unittest.TestCase):
                 self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
 
     def test_write_429_reconciles_without_retry(self):
-        client,transport,sleeps=self.client([response(payload=SESSION),response(payload=SOURCE),response(payload={"activities":[]}),response(status=429,headers={"Retry-After":"7"}),response(payload=SESSION),response(payload={"activities":[]})])
-        with self.assertRaises(WriteOutcomeUnknown) as ctx: client.send_message("123","continue",expected_repository="o/r")
-        self.assertEqual(ctx.exception.retry_after,7.0); self.assertEqual(sleeps,[]); self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
+        steps=[
+            response(payload=SESSION),
+            response(payload=SOURCE),
+            response(payload={"activities":[]}),
+            response(status=429,headers={"Retry-After":"7"}),
+            response(payload=SESSION),
+            response(payload={"activities":[]}),
+        ]
+        client,transport,sleeps=self.client(steps)
+        with self.assertRaises(WriteOutcomeUnknown) as ctx:
+            client.send_message("123","continue",expected_repository="o/r")
+        self.assertEqual(ctx.exception.retry_after,7.0)
+        self.assertEqual(sleeps,[])
+        self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
 
     def test_read_429_retries_with_retry_after(self):
         client,transport,sleeps=self.client([response(status=429,headers={"Retry-After":"3"}),response(payload=SESSION)])
