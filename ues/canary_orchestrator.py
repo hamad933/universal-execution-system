@@ -8,11 +8,11 @@ from .idempotency import (
     effect_operation_key,
     waiting_answer_effect_identity,
 )
+from .identity import canonical_lane_id
 from .operation_records import sanitize_receipt
 from .providers.base import ProviderError, WriteOutcomeUnknown
 from .state_store import (
     StateStore,
-    StateStoreError,
     claim_operation,
     record_authoritative_readback,
     record_unknown_write,
@@ -42,7 +42,12 @@ def _required(value: Any, name: str) -> str:
     return text
 
 
-def _deny(decision: str, *, reason: str | None = None, operation_key: str | None = None) -> dict[str, Any]:
+def _deny(
+    decision: str,
+    *,
+    reason: str | None = None,
+    operation_key: str | None = None,
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "decision": decision,
@@ -64,6 +69,7 @@ def _writer_binding_failure(
     *,
     session_id: str,
     expected_repository: str,
+    expected_source: str,
 ) -> str | None:
     writer = actor_bindings.get("WRITER")
     if not isinstance(writer, Mapping):
@@ -77,6 +83,9 @@ def _writer_binding_failure(
     source_repository = str(writer.get("source_repository") or "").strip()
     if not source_repository or source_repository.casefold() != expected_repository.casefold():
         return "WRITER_SOURCE_REPOSITORY_MISMATCH"
+    source_identity = str(writer.get("source_identity") or "").strip()
+    if not source_identity or source_identity != expected_source:
+        return "WRITER_SOURCE_IDENTITY_MISMATCH"
     return None
 
 
@@ -102,14 +111,14 @@ def execute_waiting_answer_canary(
 ) -> dict[str, Any]:
     """Execute at most one explicitly-authorized existing-session waiting answer.
 
-    This function is canary-ready plumbing, not canary authority. It has no task/session
-    creation path. Runtime CANARY mode alone is insufficient: the caller must supply an
-    explicit project action authorization, runtime must carry a matching one-shot
-    ``CanaryGrant``, the role-specific Writer binding must be explicitly proven, and the
-    provider client independently re-verifies live Jules source/repository ownership.
+    This is canary-ready plumbing, not canary authority. It has no task/session creation
+    path. Runtime CANARY mode alone is insufficient: project action authorization,
+    canonical lane identity, an exact one-shot CanaryGrant and a role-specific explicit
+    Writer/source binding are required. JulesClient then independently re-verifies the
+    live source/repository before its POST.
 
-    Durable claim/lease/IN_FLIGHT state is written before the provider call. Any provider
-    ambiguity is recorded as UNKNOWN and never retried blindly.
+    Durable claim/lease/IN_FLIGHT state is persisted before the provider call. Any
+    provider ambiguity is recorded as UNKNOWN and never retried blindly.
     """
 
     lane_id = _required(lane_id, "lane_id")
@@ -128,6 +137,8 @@ def execute_waiting_answer_canary(
     if ttl_seconds <= 0:
         raise ValueError("ttl_seconds must be positive")
 
+    if lane_id != canonical_lane_id(project, route, workstream_id):
+        return _deny("NONCANONICAL_LANE_ID")
     if not project_action_authorized:
         return _deny("PROJECT_ACTION_POLICY_DENIED")
 
@@ -150,6 +161,7 @@ def execute_waiting_answer_canary(
         record.actor_bindings,
         session_id=session_id,
         expected_repository=expected_repository,
+        expected_source=expected_source,
     )
     if binding_failure:
         return _deny(binding_failure)
@@ -179,7 +191,10 @@ def execute_waiting_answer_canary(
         now=now,
     )
     if claim.get("decision") != "CLAIMED" or not claim.get("mutation_allowed"):
-        result = _deny(str(claim.get("decision") or "CLAIM_DENIED"), operation_key=operation_key)
+        result = _deny(
+            str(claim.get("decision") or "CLAIM_DENIED"),
+            operation_key=operation_key,
+        )
         result["claim"] = sanitize_receipt(claim)
         return result
 
@@ -213,9 +228,6 @@ def execute_waiting_answer_canary(
             "provider_evidence": evidence,
         }
     except ProviderError as exc:
-        # The durable claim already exists. Even a provider error is not treated as
-        # proof of no effect by this orchestration layer; reconciliation must establish
-        # authoritative post-state before any retry.
         evidence = sanitize_receipt(exc.to_dict())
         saved = record_unknown_write(
             store,
@@ -298,11 +310,7 @@ def reconcile_waiting_answer_operation(
     evidence: Mapping[str, Any],
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Persist a later authoritative readback for an ambiguous canary operation.
-
-    This function performs no provider write and cannot retry the original effect.
-    ``observed=None`` intentionally keeps the operation UNKNOWN.
-    """
+    """Persist later authoritative readback without retrying the provider effect."""
 
     lane_id = _required(lane_id, "lane_id")
     operation_key = _required(operation_key, "operation_key")
