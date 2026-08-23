@@ -2,11 +2,9 @@ import unittest
 from datetime import datetime, timezone
 
 from ues.lifecycle import (
-    AuthorizationDecision,
-    Capability,
+    ActionCapability,
     CIOutcome,
     FailureClass,
-    ForgottenLaneError,
     LifecycleContext,
     LifecycleState,
     NextAction,
@@ -14,592 +12,367 @@ from ues.lifecycle import (
     SourceBindingStatus,
     StopGate,
     WaitingClass,
-    ensure_lifecycle_resolution,
     resolve_next_action,
 )
 from ues.reconciliation import (
-    AuthorizationBinding,
+    ActorBinding,
     CIBinding,
-    ProviderSourceBinding,
+    EvidenceRequirement,
+    RequiredEvidenceProfile,
     ReviewBinding,
     WorkstreamBinding,
     canonical_lane_key,
     reconcile_portfolio,
     reconcile_workstream,
+    resolve_actor_binding,
 )
 
 
-NOW = datetime(2026, 8, 23, 19, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 23, 20, 30, tzinfo=timezone.utc)
 BASE = "b" * 40
 OLD = "a" * 40
 NEW = "c" * 40
+REPO = "hamad933/universal-execution-system"
 
 
-def provider(
+def actor(
+    role="WRITER",
     *,
-    repo="hamad933/universal-execution-system",
-    session_id="session-1",
+    session_id=None,
+    repo=REPO,
     status=SourceBindingStatus.PROVEN_EXPLICIT,
-    provider_name="jules",
-    source_identity="sources/github/hamad933/universal-execution-system",
-    evidence_id="activity-explicit-binding-1",
 ):
-    return ProviderSourceBinding(
-        provider=provider_name,
-        source_repository=repo,
-        source_identity=source_identity,
+    role = role.upper()
+    session_id = session_id or f"{role.lower()}-session"
+    return ActorBinding(
+        role=role,
+        provider="jules",
         session_id=session_id,
-        task_id="task-1",
-        role="WRITER",
-        status=status,
-        evidence_id=evidence_id,
+        task_id=f"{role.lower()}-task",
+        lineage=f"{role.lower()}-lineage",
+        source_repository=repo,
+        source_identity=f"sources/{repo}",
+        proof_status=status,
+        evidence_id=f"binding-{role.lower()}-{session_id}",
     )
 
 
-def authorization(action, decision=AuthorizationDecision.AUTHORIZED):
-    return AuthorizationBinding(
-        decision=decision,
-        action=action,
-        source="project-policy",
-        decision_id=f"decision-{action.value}",
+def review(sha=NEW, outcome=ReviewOutcome.PASS):
+    return ReviewBinding(
+        review_id="review-1",
+        reviewed_sha=sha,
+        reviewer_lineage="reviewer-lineage",
+        source_repository=REPO,
+        evidence_classification="EXACT_SHA_REVIEW",
+        outcome=outcome,
     )
 
 
-def rich_ci(
-    *,
-    repo="hamad933/universal-execution-system",
-    sha=NEW,
-    outcome=CIOutcome.PASS,
-    run_attempt=2,
-):
+def ci(sha=NEW, outcome=CIOutcome.PASS):
     return CIBinding(
         source_provider="github",
-        source_repository=repo,
-        workflow_identity=".github/workflows/core.yml",
-        required_check_identity="tests / unit",
-        workflow_run_id="32285088809",
-        run_attempt=run_attempt,
-        job_id="95798373621",
-        producer_job="unit",
-        artifact_id="4444",
-        artifact_name="test-results",
-        artifact_digest="sha256:" + "d" * 64,
+        source_repository=REPO,
+        workflow_identity=".github/workflows/validate.yml",
+        required_check_identity="Validate Universal Core / core",
+        workflow_run_id="12345",
+        run_attempt=1,
+        job_id="98765",
+        producer_job="core",
         candidate_sha=sha,
         classification="REQUIRED_CI_PASS",
         outcome=outcome,
     )
 
 
+def profile(*requirements, profile_id="profile-r2"):
+    return RequiredEvidenceProfile(profile_id, tuple(requirements))
+
+
 def binding(**overrides):
     values = {
         "project": "UES",
-        "route": "PERSONAL:UES",
-        "workstream": "UES-AUTO-V2-A",
+        "route": "INTERNAL:UES",
+        "workstream": "W01",
         "role": "WRITER",
-        "repo": "hamad933/universal-execution-system",
+        "repo": REPO,
         "branch": "work/ues-auto-v2-a-lifecycle",
         "lifecycle_state": LifecycleState.WRITER_ACTIVE,
         "baseline_sha": BASE,
         "base_ref": "automation/portfolio-control-plane-v2",
         "task_budget_class": "NO_NEW_TASK_REQUIRED",
         "last_activity_at": NOW,
-        "writer_lineage": "writer/session-1",
-        "reviewer_lineage": "reviewer/session-2",
-        "provider_source": provider(),
+        "writer_lineage": "writer-lineage",
+        "reviewer_lineage": "reviewer-lineage",
+        "actor_bindings": (actor("WRITER"), actor("REVIEWER")),
+        "scope_identity": "domain-a:r2",
+        "head_sha": NEW,
+        "pr_number": 11,
     }
     values.update(overrides)
     return WorkstreamBinding(**values)
 
 
-def authorized_context(state, action, **overrides):
-    values = {
-        "state": state,
-        "authorization_decision": AuthorizationDecision.AUTHORIZED,
-        "authorized_action": action,
-        "source_binding_status": SourceBindingStatus.PROVEN_EXPLICIT,
-    }
-    values.update(overrides)
-    return LifecycleContext(**values)
+class LifecycleR2Tests(unittest.TestCase):
+    def test_external_effect_is_semantic_candidate_not_execution_authority(self):
+        result = resolve_next_action(LifecycleContext(LifecycleState.WRITER_ACTIVE))
+        self.assertEqual(result.action, NextAction.PUBLISH_CANDIDATE)
+        self.assertEqual(result.required_capability, ActionCapability.EXTERNAL_EFFECT)
+        self.assertTrue(result.semantic_candidate)
+        self.assertFalse(result.executable)
 
-
-class LifecycleTests(unittest.TestCase):
-    def test_normal_writer_ci_review_pass(self):
-        writer = resolve_next_action(
-            authorized_context(
-                LifecycleState.WRITER_ACTIVE,
-                NextAction.PUBLISH_CANDIDATE,
-            )
-        )
-        self.assertTrue(writer.executable)
-        self.assertEqual(writer.action, NextAction.PUBLISH_CANDIDATE)
-        self.assertEqual(writer.next_state, LifecycleState.CANDIDATE_PUBLISHED)
-
-        published = resolve_next_action(
-            authorized_context(
-                LifecycleState.CANDIDATE_PUBLISHED,
-                NextAction.RUN_EXACT_HEAD_CI,
-            )
-        )
-        self.assertTrue(published.executable)
-        self.assertEqual(published.action, NextAction.RUN_EXACT_HEAD_CI)
-
-        running = resolve_next_action(LifecycleContext(LifecycleState.CI_RUNNING))
-        self.assertTrue(running.executable)
-        self.assertEqual(running.required_capability, Capability.READ_ONLY)
-        self.assertEqual(running.action, NextAction.CLASSIFY_CI)
-
-        classified = resolve_next_action(
-            authorized_context(
-                LifecycleState.CI_CLASSIFIED,
-                NextAction.START_EXACT_SHA_REVIEW,
-                ci_outcome=CIOutcome.PASS,
-            )
-        )
-        self.assertTrue(classified.executable)
-        self.assertEqual(classified.next_state, LifecycleState.REVIEWER_ACTIVE)
-        self.assertEqual(classified.action, NextAction.START_EXACT_SHA_REVIEW)
-
-        reviewing = resolve_next_action(
-            LifecycleContext(LifecycleState.REVIEWER_ACTIVE)
-        )
-        self.assertTrue(reviewing.executable)
-        self.assertEqual(reviewing.next_state, LifecycleState.REVIEW_RESULT)
-
-        reviewed = resolve_next_action(
-            authorized_context(
+    def test_parent_review_is_control_signal_without_provider_authority(self):
+        result = resolve_next_action(
+            LifecycleContext(
                 LifecycleState.REVIEW_RESULT,
-                NextAction.REQUEST_PARENT_REVIEW,
                 review_outcome=ReviewOutcome.PASS,
             )
         )
-        self.assertTrue(reviewed.executable)
-        self.assertEqual(reviewed.next_state, LifecycleState.PARENT_REVIEW_PENDING)
+        self.assertEqual(result.action, NextAction.REQUEST_PARENT_REVIEW)
+        self.assertEqual(result.required_capability, ActionCapability.CONTROL_SIGNAL)
+        self.assertTrue(result.executable)
 
-        parent = resolve_next_action(
-            LifecycleContext(LifecycleState.PARENT_REVIEW_PENDING)
-        )
-        self.assertEqual(parent.stop_gate, StopGate.PARENT_AUTHORITY_REQUIRED)
-
-    def test_findings_same_writer_new_sha_stale_review_and_rereview(self):
-        findings = resolve_next_action(
-            authorized_context(
-                LifecycleState.REVIEW_RESULT,
-                NextAction.ROUTE_FINDINGS_TO_SAME_WRITER,
-                review_outcome=ReviewOutcome.FINDINGS,
-            )
-        )
-        self.assertTrue(findings.executable)
-        self.assertEqual(findings.next_state, LifecycleState.CORRECTION_REQUIRED)
-
-        correction = resolve_next_action(
-            authorized_context(
-                LifecycleState.CORRECTION_REQUIRED,
-                NextAction.CONTINUE_SAME_WRITER,
-            )
-        )
-        self.assertTrue(correction.executable)
-        self.assertEqual(
-            correction.next_state,
-            LifecycleState.SAME_WRITER_CONTINUATION,
-        )
-
-        continuation = resolve_next_action(
-            LifecycleContext(LifecycleState.SAME_WRITER_CONTINUATION)
-        )
-        self.assertTrue(continuation.executable)
-        self.assertEqual(continuation.next_state, LifecycleState.NEW_SHA)
-
-        new_sha = resolve_next_action(LifecycleContext(LifecycleState.NEW_SHA))
-        self.assertTrue(new_sha.executable)
-        self.assertEqual(new_sha.action, NextAction.INVALIDATE_PRIOR_REVIEW)
-
-        stale = resolve_next_action(
-            authorized_context(
-                LifecycleState.PRIOR_REVIEW_STALE,
-                NextAction.RUN_EXACT_HEAD_CI,
-            )
-        )
-        self.assertTrue(stale.executable)
-        self.assertEqual(stale.next_state, LifecycleState.CI_RUNNING)
-
-        fresh_ci = resolve_next_action(
-            authorized_context(
-                LifecycleState.CI_CLASSIFIED,
-                NextAction.START_RE_REVIEW,
-                ci_outcome=CIOutcome.PASS,
-                review_stale=True,
-            )
-        )
-        self.assertTrue(fresh_ci.executable)
-        self.assertEqual(fresh_ci.next_state, LifecycleState.RE_REVIEW)
-
-    def test_failed_session_requires_classification(self):
-        unknown = resolve_next_action(LifecycleContext(LifecycleState.FAILED))
-        self.assertEqual(unknown.stop_gate, StopGate.UNCLASSIFIED_FAILURE)
-
-        terminal = resolve_next_action(
-            LifecycleContext(
-                LifecycleState.FAILED,
-                failure_class=FailureClass.SESSION_CONTINUATION_UNAVAILABLE,
-            )
-        )
-        self.assertEqual(terminal.stop_gate, StopGate.PARENT_REQUIRED_NEW_TASK)
-
-    def test_waiting_input_is_transition_but_requires_authorization(self):
-        waiting = resolve_next_action(
+    def test_ci_and_review_dependent_waiting_are_read_only(self):
+        ci_wait = resolve_next_action(
             LifecycleContext(
                 LifecycleState.AWAITING_USER_FEEDBACK,
-                waiting_class=WaitingClass.POLICY_RESOLVABLE,
-                resume_state=LifecycleState.WRITER_ACTIVE,
-                source_binding_status=SourceBindingStatus.PROVEN_EXPLICIT,
+                waiting_class=WaitingClass.CI_DEPENDENT,
             )
         )
-        self.assertEqual(waiting.action, NextAction.CONTINUE_SAME_SESSION)
-        self.assertEqual(waiting.next_state, LifecycleState.WRITER_ACTIVE)
-        self.assertFalse(waiting.executable)
-        self.assertEqual(
-            waiting.stop_gate,
-            StopGate.EXTERNAL_AUTHORIZATION_REQUIRED,
-        )
-
-    def test_environment_mismatch_without_project_authorization_not_executable(self):
-        waiting = resolve_next_action(
+        review_wait = resolve_next_action(
             LifecycleContext(
                 LifecycleState.AWAITING_USER_FEEDBACK,
-                waiting_class=WaitingClass.ENVIRONMENT_MISMATCH,
-                resume_state=LifecycleState.WRITER_ACTIVE,
-                source_binding_status=SourceBindingStatus.PROVEN_EXPLICIT,
+                waiting_class=WaitingClass.REVIEW_DEPENDENT,
             )
         )
-        self.assertEqual(waiting.action, NextAction.CONTINUE_SAME_SESSION)
-        self.assertEqual(waiting.required_capability, Capability.MUTATION)
-        self.assertFalse(waiting.executable)
-        self.assertEqual(
-            waiting.stop_gate,
-            StopGate.EXTERNAL_AUTHORIZATION_REQUIRED,
-        )
+        self.assertEqual(ci_wait.required_capability, ActionCapability.READ_ONLY)
+        self.assertEqual(review_wait.required_capability, ActionCapability.READ_ONLY)
+        self.assertTrue(ci_wait.executable)
+        self.assertTrue(review_wait.executable)
 
-    def test_semantic_transition_without_external_authorization_cannot_mutate(self):
-        resolution = resolve_next_action(
-            LifecycleContext(
-                LifecycleState.WRITER_ACTIVE,
-                source_binding_status=SourceBindingStatus.PROVEN_EXPLICIT,
-            )
-        )
-        self.assertEqual(resolution.action, NextAction.PUBLISH_CANDIDATE)
-        self.assertEqual(resolution.next_state, LifecycleState.CANDIDATE_PUBLISHED)
-        self.assertEqual(resolution.required_capability, Capability.MUTATION)
-        self.assertIn("external_authorization", resolution.required_evidence)
-        self.assertFalse(resolution.executable)
-        self.assertEqual(
-            resolution.stop_gate,
-            StopGate.EXTERNAL_AUTHORIZATION_REQUIRED,
-        )
-
-    def test_recoverable_and_paused_transitions_do_not_self_authorize(self):
-        failed = resolve_next_action(
+    def test_recoverable_failure_does_not_self_authorize(self):
+        result = resolve_next_action(
             LifecycleContext(
                 LifecycleState.FAILED,
                 failure_class=FailureClass.RECOVERABLE,
                 resume_state=LifecycleState.WRITER_ACTIVE,
-                source_binding_status=SourceBindingStatus.PROVEN_EXPLICIT,
             )
         )
-        paused = resolve_next_action(
-            LifecycleContext(
-                LifecycleState.PAUSED,
-                resume_state=LifecycleState.WRITER_ACTIVE,
-                source_binding_status=SourceBindingStatus.PROVEN_EXPLICIT,
+        self.assertEqual(result.action, NextAction.RECOVER_SAME_LINEAGE)
+        self.assertEqual(result.required_capability, ActionCapability.EXTERNAL_EFFECT)
+        self.assertFalse(result.executable)
+
+
+class ReconciliationR2Tests(unittest.TestCase):
+    def test_one_lane_has_proven_writer_and_reviewer_bindings(self):
+        item = binding()
+        writer = resolve_actor_binding(item, "WRITER")
+        reviewer = resolve_actor_binding(item, "REVIEWER")
+        self.assertTrue(writer.proven)
+        self.assertTrue(reviewer.proven)
+        self.assertNotEqual(writer.binding.session_id, reviewer.binding.session_id)
+
+    def test_unique_heuristic_actor_is_not_promoted(self):
+        item = binding(
+            actor_bindings=(
+                actor(
+                    "WRITER",
+                    status=SourceBindingStatus.PROPOSED_UNVERIFIED,
+                ),
             )
         )
-        self.assertFalse(failed.executable)
-        self.assertFalse(paused.executable)
+        resolved = resolve_actor_binding(item, "WRITER")
+        self.assertFalse(resolved.proven)
         self.assertEqual(
-            failed.stop_gate,
-            StopGate.EXTERNAL_AUTHORIZATION_REQUIRED,
-        )
-        self.assertEqual(
-            paused.stop_gate,
-            StopGate.EXTERNAL_AUTHORIZATION_REQUIRED,
+            resolved.state,
+            SourceBindingStatus.PROPOSED_UNVERIFIED.value,
         )
 
-    def test_missing_next_action_is_forgotten_invalid_state(self):
-        with self.assertRaisesRegex(ForgottenLaneError, "FORGOTTEN_LANE"):
-            ensure_lifecycle_resolution(LifecycleState.WRITER_ACTIVE)
+    def test_missing_writer_blocks_writer_effect_but_not_parent_signal(self):
+        only_reviewer = (actor("REVIEWER"),)
+        findings = binding(
+            role="REVIEWER",
+            actor_bindings=only_reviewer,
+            lifecycle_state=LifecycleState.REVIEW_RESULT,
+            review=review(outcome=ReviewOutcome.FINDINGS),
+        )
+        blocked = reconcile_workstream(findings)
+        self.assertEqual(blocked.resolution.stop_gate, StopGate.ACTOR_BINDING_REQUIRED)
+        self.assertIn("unproven:actor_binding:WRITER", blocked.issues)
 
+        passed = binding(
+            role="REVIEWER",
+            actor_bindings=(),
+            lifecycle_state=LifecycleState.REVIEW_RESULT,
+            review=review(outcome=ReviewOutcome.PASS),
+        )
+        parent = reconcile_workstream(passed)
+        self.assertEqual(parent.resolution.action, NextAction.REQUEST_PARENT_REVIEW)
+        self.assertEqual(
+            parent.resolution.required_capability,
+            ActionCapability.CONTROL_SIGNAL,
+        )
+        self.assertEqual(parent.issues, ())
+        self.assertTrue(parent.executable)
 
-class ReconciliationTests(unittest.TestCase):
-    def test_canonical_lane_identity_allows_gs_w01_and_cep_w01(self):
-        gs = binding(
+    def test_missing_reviewer_blocks_review_dispatch(self):
+        item = binding(
+            actor_bindings=(actor("WRITER"),),
+            lifecycle_state=LifecycleState.CI_CLASSIFIED,
+            ci=ci(),
+        )
+        result = reconcile_workstream(item)
+        self.assertEqual(result.resolution.stop_gate, StopGate.ACTOR_BINDING_REQUIRED)
+        self.assertIn("unproven:actor_binding:REVIEWER", result.issues)
+
+    def test_same_session_across_writer_and_reviewer_role_fails_closed(self):
+        shared = "shared-session"
+        item = binding(
+            actor_bindings=(
+                actor("WRITER", session_id=shared),
+                actor("REVIEWER", session_id=shared),
+            )
+        )
+        result = reconcile_portfolio([item])[0]
+        self.assertEqual(
+            result.resolution.stop_gate,
+            StopGate.AMBIGUOUS_PROVIDER_SESSION,
+        )
+
+    def test_same_session_conflict_does_not_block_unrelated_lane(self):
+        shared = "shared-session"
+        first = binding(
             project="GS",
             route="PERSONAL:GS",
             workstream="W01",
-            repo="hamad933/goal-system",
-            provider_source=provider(
-                repo="hamad933/goal-system",
-                session_id="gs-session",
-                source_identity="sources/github/hamad933/goal-system",
-            ),
-            lifecycle_state=LifecycleState.SAME_WRITER_CONTINUATION,
-            head_sha=NEW,
+            actor_bindings=(actor("WRITER", session_id=shared),),
         )
+        second = binding(
+            project="CEP",
+            route="PERSONAL:CEP",
+            workstream="W02",
+            actor_bindings=(actor("WRITER", session_id=shared),),
+        )
+        third = binding(
+            project="FCP",
+            route="INTERNAL:FCP",
+            workstream="W03",
+            actor_bindings=(actor("WRITER", session_id="independent"),),
+        )
+        results = reconcile_portfolio([first, second, third])
+        self.assertEqual(
+            results[0].resolution.stop_gate,
+            StopGate.AMBIGUOUS_PROVIDER_SESSION,
+        )
+        self.assertEqual(
+            results[1].resolution.stop_gate,
+            StopGate.AMBIGUOUS_PROVIDER_SESSION,
+        )
+        self.assertNotEqual(
+            results[2].resolution.stop_gate,
+            StopGate.AMBIGUOUS_PROVIDER_SESSION,
+        )
+
+    def test_gs_and_cep_w01_are_distinct_canonical_lanes(self):
+        gs = binding(project="GS", route="PERSONAL:GS", workstream="W01")
         cep = binding(
             project="CEP",
             route="PERSONAL:CEP",
             workstream="W01",
-            repo="hamad933/Cybersecurity-Education-Platform",
-            provider_source=provider(
-                repo="hamad933/Cybersecurity-Education-Platform",
-                session_id="cep-session",
-                source_identity=(
-                    "sources/github/hamad933/"
-                    "Cybersecurity-Education-Platform"
-                ),
+            actor_bindings=(
+                actor("WRITER", session_id="cep-writer"),
+                actor("REVIEWER", session_id="cep-reviewer"),
             ),
-            lifecycle_state=LifecycleState.SAME_WRITER_CONTINUATION,
-            head_sha=NEW,
         )
-        results = reconcile_portfolio([gs, cep])
-        self.assertEqual(
-            canonical_lane_key(gs),
-            ("GS", "PERSONAL:GS", "W01"),
-        )
-        self.assertEqual(
-            canonical_lane_key(cep),
-            ("CEP", "PERSONAL:CEP", "W01"),
-        )
-        self.assertTrue(all(result.executable for result in results))
+        self.assertEqual(canonical_lane_key(gs), ("GS", "PERSONAL:GS", "W01"))
+        self.assertEqual(canonical_lane_key(cep), ("CEP", "PERSONAL:CEP", "W01"))
+        self.assertNotEqual(canonical_lane_key(gs), canonical_lane_key(cep))
 
-    def test_duplicate_same_canonical_lane_fails_closed(self):
-        first = binding(
-            project="GS",
-            route="PERSONAL:GS",
-            workstream="W01",
-            lifecycle_state=LifecycleState.SAME_WRITER_CONTINUATION,
-            head_sha=NEW,
-        )
-        second = binding(
-            project="GS",
-            route="PERSONAL:GS",
-            workstream="W01",
-            provider_source=provider(session_id="session-2"),
-            lifecycle_state=LifecycleState.SAME_WRITER_CONTINUATION,
-            head_sha=NEW,
-        )
-        results = reconcile_portfolio([first, second])
-        self.assertEqual(
-            [r.resolution.stop_gate for r in results],
-            [
-                StopGate.AMBIGUOUS_LANE_BINDING,
-                StopGate.AMBIGUOUS_LANE_BINDING,
-            ],
-        )
-        self.assertFalse(any(r.executable for r in results))
-
-    def test_same_provider_session_bound_to_two_lanes_fails_closed(self):
-        first = binding(
-            project="UES",
-            route="PERSONAL:UES",
-            workstream="A",
-            provider_source=provider(session_id="shared-session"),
-            lifecycle_state=LifecycleState.SAME_WRITER_CONTINUATION,
-            head_sha=NEW,
-        )
-        second = binding(
-            project="UES",
-            route="PERSONAL:UES",
-            workstream="B",
-            provider_source=provider(session_id="shared-session"),
-            lifecycle_state=LifecycleState.SAME_WRITER_CONTINUATION,
-            head_sha=NEW,
-        )
-        results = reconcile_portfolio([first, second])
-        self.assertEqual(
-            [r.resolution.stop_gate for r in results],
-            [
-                StopGate.AMBIGUOUS_PROVIDER_SESSION,
-                StopGate.AMBIGUOUS_PROVIDER_SESSION,
-            ],
-        )
-
-    def test_heuristic_unique_session_remains_unverified(self):
-        current = binding(
-            provider_source=provider(
-                status=SourceBindingStatus.PROPOSED_UNVERIFIED,
-                source_identity=None,
-                evidence_id=None,
-            ),
-            authorization=authorization(NextAction.PUBLISH_CANDIDATE),
-        )
-        result = reconcile_workstream(current)
-        self.assertEqual(result.binding.next_action, NextAction.PUBLISH_CANDIDATE.value)
-        self.assertFalse(result.executable)
-        self.assertEqual(
-            result.resolution.stop_gate,
-            StopGate.PROVIDER_SOURCE_BINDING_REQUIRED,
-        )
-
-    def test_explicit_provider_source_binding_is_accepted(self):
-        current = binding(
-            authorization=authorization(NextAction.PUBLISH_CANDIDATE)
-        )
-        result = reconcile_workstream(current)
-        self.assertTrue(result.executable)
-        self.assertEqual(result.resolution.action, NextAction.PUBLISH_CANDIDATE)
-        self.assertIsNone(result.resolution.stop_gate)
-
-    def test_rich_ci_binding_preserves_run_attempt_and_artifact_identity(self):
-        ci = rich_ci(run_attempt=3)
-        self.assertEqual(ci.source_repository, "hamad933/universal-execution-system")
-        self.assertEqual(ci.workflow_identity, ".github/workflows/core.yml")
-        self.assertEqual(ci.required_check_identity, "tests / unit")
-        self.assertEqual(ci.workflow_run_id, "32285088809")
-        self.assertEqual(ci.run_attempt, 3)
-        self.assertEqual(ci.job_id, "95798373621")
-        self.assertEqual(ci.producer_job, "unit")
-        self.assertEqual(ci.artifact_id, "4444")
-        self.assertEqual(ci.artifact_name, "test-results")
-        self.assertTrue(ci.artifact_digest.startswith("sha256:"))
-        self.assertEqual(ci.candidate_sha, NEW)
-        self.assertEqual(ci.classification, "REQUIRED_CI_PASS")
-
-    def test_sha_movement_invalidates_prior_exact_sha_review_and_ci(self):
+    def test_base_scope_and_profile_drift_fail_closed(self):
         previous = binding(
-            lifecycle_state=LifecycleState.REVIEW_RESULT,
-            pr_number=10,
-            head_sha=OLD,
-            ci=rich_ci(sha=OLD),
-            review=ReviewBinding(
-                review_id="review-1",
-                reviewed_sha=OLD,
-                reviewer_lineage="reviewer/session-2",
-                source_repository="hamad933/universal-execution-system",
-                evidence_classification="EXACT_SHA_REVIEW_PASS",
-                outcome=ReviewOutcome.PASS,
+            evidence_profile=profile(
+                EvidenceRequirement("ci", True),
+                profile_id="profile-1",
+            )
+        )
+        cases = (
+            binding(base_ref="different-base", evidence_profile=previous.evidence_profile),
+            binding(scope_identity="different-scope", evidence_profile=previous.evidence_profile),
+            binding(
+                evidence_profile=profile(
+                    EvidenceRequirement("ci", True),
+                    profile_id="profile-2",
+                )
             ),
         )
+        for current in cases:
+            with self.subTest(current=current):
+                result = reconcile_workstream(current, previous)
+                self.assertEqual(
+                    result.resolution.stop_gate,
+                    StopGate.BINDING_DRIFT_RECONCILIATION_REQUIRED,
+                )
+                self.assertTrue(any(item.startswith("drift:") for item in result.issues))
+
+    def test_sha_movement_invalidates_prior_exact_sha_evidence(self):
+        previous = binding(
+            head_sha=OLD,
+            lifecycle_state=LifecycleState.REVIEW_RESULT,
+            review=review(OLD),
+            ci=ci(OLD),
+        )
         current = binding(
-            lifecycle_state=LifecycleState.SAME_WRITER_CONTINUATION,
-            pr_number=10,
             head_sha=NEW,
+            lifecycle_state=LifecycleState.REVIEW_RESULT,
+            review=review(OLD),
+            ci=ci(OLD),
         )
         result = reconcile_workstream(current, previous)
         self.assertTrue(result.candidate_sha_moved)
         self.assertTrue(result.prior_review_invalidated)
         self.assertTrue(result.prior_ci_invalidated)
+        self.assertEqual(result.binding.lifecycle_state, LifecycleState.NEW_SHA)
         self.assertTrue(result.binding.review.stale)
         self.assertTrue(result.binding.ci.stale)
-        self.assertEqual(result.binding.review.reviewed_sha, OLD)
-        self.assertEqual(result.binding.ci.candidate_sha, OLD)
-        self.assertEqual(result.binding.lifecycle_state, LifecycleState.NEW_SHA)
-        self.assertEqual(
-            result.resolution.action,
-            NextAction.INVALIDATE_PRIOR_REVIEW,
-        )
 
-    def test_stale_review_cannot_advance_to_parent(self):
-        current = binding(
+    def test_generic_missing_browser_profile_evidence_blocks_transition(self):
+        item = binding(
+            actor_bindings=(),
             lifecycle_state=LifecycleState.REVIEW_RESULT,
-            pr_number=10,
-            head_sha=NEW,
-            review=ReviewBinding(
-                review_id="review-1",
-                reviewed_sha=OLD,
-                reviewer_lineage="reviewer/session-2",
-                source_repository="hamad933/universal-execution-system",
-                outcome=ReviewOutcome.PASS,
+            review=review(outcome=ReviewOutcome.PASS),
+            evidence_profile=profile(
+                EvidenceRequirement(
+                    "browser-route-profile",
+                    proven=False,
+                    actions=(NextAction.REQUEST_PARENT_REVIEW.value,),
+                )
             ),
         )
-        result = reconcile_workstream(current)
-        self.assertTrue(result.prior_review_invalidated)
-        self.assertEqual(
-            result.binding.lifecycle_state,
-            LifecycleState.PRIOR_REVIEW_STALE,
-        )
-        self.assertEqual(result.resolution.action, NextAction.RUN_EXACT_HEAD_CI)
-        self.assertNotEqual(
-            result.binding.next_action,
-            NextAction.REQUEST_PARENT_REVIEW.value,
+        result = reconcile_workstream(item)
+        self.assertEqual(result.resolution.stop_gate, StopGate.EVIDENCE_INCOMPLETE)
+        self.assertIn(
+            "missing_required_evidence:browser-route-profile",
+            result.issues,
         )
 
-    def test_unknown_or_incomplete_binding_fails_closed(self):
-        current = binding(
-            lifecycle_state=LifecycleState.CANDIDATE_PUBLISHED,
-            pr_number=10,
-            head_sha=None,
-            authorization=authorization(NextAction.RUN_EXACT_HEAD_CI),
-        )
-        result = reconcile_workstream(current)
-        self.assertFalse(result.executable)
-        self.assertEqual(result.resolution.stop_gate, StopGate.INCOMPLETE_BINDING)
-        self.assertIn("missing_exact:head_sha", result.issues)
-
-    def test_ci_binding_is_exact_candidate_specific_and_stale_on_mismatch(self):
-        current = binding(
-            lifecycle_state=LifecycleState.CI_RUNNING,
-            pr_number=10,
-            head_sha=NEW,
-            ci=rich_ci(sha=OLD),
-        )
-        result = reconcile_workstream(current)
-        self.assertFalse(result.executable)
-        self.assertTrue(result.prior_ci_invalidated)
-        self.assertTrue(result.binding.ci.stale)
-        self.assertIn("mismatch:ci.candidate_sha", result.issues)
-        self.assertIn("stale:ci", result.issues)
-
-    def test_action_in_flight_reconciles_before_duplicate_action(self):
-        current = binding(
-            lifecycle_state=LifecycleState.WRITER_ACTIVE,
-            action_in_flight="publish-candidate",
-            lease_id="lease-1",
-            operation_key="op-1",
-        )
-        result = reconcile_workstream(current)
-        self.assertFalse(result.executable)
-        self.assertEqual(
-            result.resolution.action,
-            NextAction.VERIFY_ACTION_IN_FLIGHT,
-        )
-
-    def test_exact_sha_binding_rejects_abbreviated_sha(self):
-        current = binding(
-            head_sha="abc123",
-            lifecycle_state=LifecycleState.CANDIDATE_PUBLISHED,
-        )
-        result = reconcile_workstream(current)
-        self.assertFalse(result.executable)
-        self.assertIn("invalid:head_sha", result.issues)
-
-    def test_blocked_lane_does_not_freeze_unrelated_lane(self):
-        blocked = binding(
-            project="UES",
-            route="PERSONAL:UES",
-            workstream="BLOCKED",
-            provider_source=provider(
-                session_id="blocked-session",
-                status=SourceBindingStatus.PROPOSED_UNVERIFIED,
-                source_identity=None,
-                evidence_id=None,
+    def test_proven_generic_profile_allows_parent_control_signal(self):
+        item = binding(
+            actor_bindings=(),
+            lifecycle_state=LifecycleState.REVIEW_RESULT,
+            review=review(outcome=ReviewOutcome.PASS),
+            evidence_profile=profile(
+                EvidenceRequirement(
+                    "browser-route-profile",
+                    proven=True,
+                    current=True,
+                    evidence_id="browser-evidence-1",
+                    actions=(NextAction.REQUEST_PARENT_REVIEW.value,),
+                )
             ),
-            authorization=authorization(NextAction.PUBLISH_CANDIDATE),
         )
-        executable = binding(
-            project="UES",
-            route="PERSONAL:UES",
-            workstream="EXECUTABLE",
-            provider_source=provider(session_id="exec-session"),
-            lifecycle_state=LifecycleState.SAME_WRITER_CONTINUATION,
-            head_sha=NEW,
-        )
-        results = reconcile_portfolio([blocked, executable])
-        by_key = {result.binding.lane_key: result for result in results}
-        self.assertFalse(
-            by_key[("UES", "PERSONAL:UES", "BLOCKED")].executable
-        )
-        self.assertTrue(
-            by_key[("UES", "PERSONAL:UES", "EXECUTABLE")].executable
-        )
+        result = reconcile_workstream(item)
+        self.assertEqual(result.issues, ())
+        self.assertEqual(result.resolution.action, NextAction.REQUEST_PARENT_REVIEW)
+        self.assertTrue(result.executable)
 
 
 if __name__ == "__main__":
