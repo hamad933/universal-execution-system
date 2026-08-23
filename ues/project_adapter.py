@@ -57,8 +57,6 @@ class ProjectAdapter:
 
     @property
     def config_grants_mutation_authority(self) -> bool:
-        # Project configuration can narrow policy but can never be an activation
-        # authority event by itself. The current shared loop remains SHADOW-only.
         return False
 
     def evidence_profile_spec(self, name: str) -> EvidenceProfileSpec:
@@ -82,9 +80,7 @@ def _parse_evidence_profiles(value: Any) -> dict[str, EvidenceProfileSpec]:
         requirements: list[EvidenceRequirementSpec] = []
         for index, raw_requirement in enumerate(raw_requirements):
             if not isinstance(raw_requirement, Mapping):
-                raise ProjectAdapterError(
-                    f"{profile_name}.requirements[{index}] must be an object"
-                )
+                raise ProjectAdapterError(f"{profile_name}.requirements[{index}] must be an object")
             provider = _required_text(
                 raw_requirement.get("provider"),
                 f"{profile_name}.requirements[{index}].provider",
@@ -95,9 +91,7 @@ def _parse_evidence_profiles(value: Any) -> dict[str, EvidenceProfileSpec]:
             )
             job_value = raw_requirement.get("job")
             job = str(job_value).strip() if job_value is not None else None
-            requirement_id = ":".join(
-                part for part in (provider, workflow, job) if part
-            )
+            requirement_id = ":".join(part for part in (provider, workflow, job) if part)
             requirements.append(
                 EvidenceRequirementSpec(
                     requirement_id=requirement_id,
@@ -114,10 +108,7 @@ def _parse_evidence_profiles(value: Any) -> dict[str, EvidenceProfileSpec]:
             )
         if len({item.requirement_id for item in requirements}) != len(requirements):
             raise ProjectAdapterError(f"duplicate evidence requirement in {profile_name}")
-        profiles[str(profile_name)] = EvidenceProfileSpec(
-            profile_id=profile_id,
-            requirements=tuple(requirements),
-        )
+        profiles[str(profile_name)] = EvidenceProfileSpec(profile_id, tuple(requirements))
     return profiles
 
 
@@ -139,8 +130,10 @@ def parse_project_adapter(value: Mapping[str, Any]) -> ProjectAdapter:
     if not isinstance(activation, Mapping):
         raise ProjectAdapterError("activation is required")
     default_mode = _required_text(activation.get("default_mode"), "activation.default_mode").upper()
-    if default_mode not in {"SHADOW", "CANARY", "ACTIVE_AUTO_SAFE"}:
-        raise ProjectAdapterError("unknown activation mode")
+    if default_mode != "SHADOW":
+        raise ProjectAdapterError("project adapters remain SHADOW-only until a separate activation gate")
+    if bool(activation.get("mutation_allowed")):
+        raise ProjectAdapterError("project adapter configuration cannot enable mutation")
     if bool(activation.get("runtime_mode_is_authority")):
         raise ProjectAdapterError("runtime activation mode must never be authority")
 
@@ -157,8 +150,7 @@ def parse_project_adapter(value: Mapping[str, Any]) -> ProjectAdapter:
     actor = value.get("actor_binding")
     if not isinstance(actor, Mapping):
         raise ProjectAdapterError("actor_binding is required")
-    roles = actor.get("roles")
-    if roles != ["WRITER", "REVIEWER"]:
+    if actor.get("roles") != ["WRITER", "REVIEWER"]:
         raise ProjectAdapterError("adapter must preserve WRITER and REVIEWER roles")
     if actor.get("external_effect_proof_required") != "PROVEN_EXPLICIT":
         raise ProjectAdapterError("external effects require PROVEN_EXPLICIT actor proof")
@@ -170,7 +162,9 @@ def parse_project_adapter(value: Mapping[str, Any]) -> ProjectAdapter:
     raw_actions = value.get("project_auto_safe_actions")
     if not isinstance(raw_actions, list):
         raise ProjectAdapterError("project_auto_safe_actions must be a list")
-    actions = tuple(dict.fromkeys(str(item).strip().upper() for item in raw_actions if str(item).strip()))
+    actions = tuple(
+        dict.fromkeys(str(item).strip().upper() for item in raw_actions if str(item).strip())
+    )
 
     task_budget = value.get("task_budget")
     if not isinstance(task_budget, Mapping):
@@ -181,8 +175,7 @@ def parse_project_adapter(value: Mapping[str, Any]) -> ProjectAdapter:
     if new_task_authority != "PARENT_ONLY":
         raise ProjectAdapterError("new task authority must remain PARENT_ONLY")
     unknown_capacity = _required_text(
-        task_budget.get("unknown_lifetime_capacity"),
-        "task_budget.unknown_lifetime_capacity",
+        task_budget.get("unknown_lifetime_capacity"), "task_budget.unknown_lifetime_capacity"
     ).upper()
     if unknown_capacity != "DENY":
         raise ProjectAdapterError("unknown lifetime task capacity must fail closed")
@@ -206,8 +199,8 @@ def parse_project_adapter(value: Mapping[str, Any]) -> ProjectAdapter:
         project=_required_text(value.get("project"), "project"),
         route=_required_text(value.get("route"), "route"),
         repository=_required_text(value.get("repository"), "repository"),
-        default_mode=default_mode,
-        mutation_allowed=bool(activation.get("mutation_allowed")),
+        default_mode="SHADOW",
+        mutation_allowed=False,
         runtime_mode_is_authority=False,
         project_auto_safe_actions=actions,
         new_task_authority=new_task_authority,
