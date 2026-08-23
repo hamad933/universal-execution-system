@@ -13,23 +13,24 @@ The implementation entry point is `execute_waiting_answer_canary()`.
 Before a provider call the orchestration requires all of the following:
 
 1. canonical lane ID exactly equal to `canonical_lane_id(project, route, workstream)`;
-2. an explicit project action-policy authorization supplied by the trusted caller;
-3. durable runtime state for the exact lane;
-4. exact project/route/workstream identity match;
-5. role-specific `WRITER` binding;
-6. provider = Jules;
-7. exact existing Writer session match;
-8. explicit proof status;
-9. exact source repository match;
-10. exact source identity match;
-11. runtime activation mode accepted by Domain D state safety;
-12. matching unexpired one-shot `CanaryGrant` bound to the exact effect and authority event;
-13. exact structured observed-start state when the grant requires it;
-14. successful idempotency check;
-15. lane-local lease;
-16. durable operation `IN_FLIGHT` record before provider mutation.
+2. an explicit project action allowlist containing exactly the needed `waiting-answer` capability;
+3. a non-empty `project_policy_evidence_id` identifying the governed policy source used for that decision;
+4. durable runtime state for the exact lane;
+5. exact project/route/workstream identity match;
+6. role-specific `WRITER` binding;
+7. provider = Jules;
+8. exact existing Writer session match;
+9. explicit proof status;
+10. exact source repository match;
+11. exact source identity match;
+12. runtime activation mode accepted by Domain D state safety;
+13. matching unexpired one-shot `CanaryGrant` bound to the exact effect and authority event;
+14. exact structured observed-start state when the grant requires it;
+15. successful idempotency check;
+16. lane-local lease;
+17. durable operation `IN_FLIGHT` record before provider mutation.
 
-Runtime `CANARY` mode by itself grants nothing. The canary grant is consumed while the caller owns the durable lane lease and before the provider call.
+The project-policy evidence ID and canary authority-event ID are sanitized into the durable operation receipt before the provider call. Runtime `CANARY` mode by itself grants nothing. A boolean "authorized" flag is not accepted as policy provenance. The canary grant is consumed while the caller owns the durable lane lease and before the provider call.
 
 ## External-effect identity
 
@@ -74,8 +75,10 @@ An identical replay is idempotently suppressed. A changed prompt for the same se
 
 Repository tests use deterministic local StateStore and fake Jules clients only. They perform no network request, create no live state ref, use no API key, and send no real provider message.
 
+The tests cover policy denial, missing policy provenance, noncanonical lane identity, missing/expired authority, unproven Writer binding, wrong session/source, successful one-shot confirmation, duplicate suppression, payload collision, ambiguous writes, provider errors, malformed receipts and later readback reconciliation.
+
 ## Authority
 
-This implementation makes the system **canary-ready in code only**. It does not authorize a live canary. A live canary still requires separately accepted production cross-run state storage, explicit relevant project Parent authority, an exact one-shot canary grant, exact project action policy, exact existing actor/source binding, and all other current project gates.
+This implementation makes the system **canary-ready in code only**. It does not authorize a live canary. A live canary still requires separately accepted production cross-run state storage, explicit relevant project Parent authority, an exact one-shot canary grant, exact project action policy and policy evidence, exact existing actor/source binding, and all other current project gates.
 
 No merge, main/integration mutation, live StateStore ref, Jules message, GS/CEP product mutation, new Jules task, canary execution, activation, release or deploy is authorized by this candidate.
