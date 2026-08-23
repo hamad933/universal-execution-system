@@ -34,6 +34,8 @@ Public storage does **not** provide metadata confidentiality. Non-secret lane, s
 - `GITHUB_TOKEN`: GitHub Actions built-in runtime credential used only for the same UES repository StateStore refs. No separate user-provided StateStore credential is required for this workflow.
 - `JULES_API_KEY`: repository secret consumed only by the Jules read-only authentication probe in this candidate. It is never printed, persisted in StateStore, committed, or passed to project repositories.
 
+Credential availability is runtime configuration, not a repository-code fact. Any creation, rotation, rename, deletion, or permission change affecting `JULES_API_KEY` requires a fresh bounded read-only probe and durable sanitized readback before Jules connectivity is treated as proven again.
+
 ## Live StateStore proof
 
 `python -m ues.live_runtime state-smoke` operates only on the canonical UES lane:
