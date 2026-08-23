@@ -31,6 +31,7 @@ class ProductionIntegrationExpectationTests(unittest.TestCase):
 
     def test_domain_b_modules(self):
         self._require_module("ues.providers.jules")
+        self._require_module("ues.providers.github")
         self._require_module("ues.recovery")
         self._require_module("ues.failures")
 
@@ -38,6 +39,7 @@ class ProductionIntegrationExpectationTests(unittest.TestCase):
         self._require_module("ues.routing")
         self._require_module("ues.watchdog")
         self._require_module("ues.task_budget")
+        self._require_module("ues.metrics")
 
     def test_domain_d_modules(self):
         self._require_module("ues.state_store")
@@ -52,9 +54,11 @@ class ProductionIntegrationExpectationTests(unittest.TestCase):
                 "ues.lifecycle",
                 "ues.reconciliation",
                 "ues.providers.jules",
+                "ues.providers.github",
                 "ues.routing",
                 "ues.watchdog",
                 "ues.task_budget",
+                "ues.metrics",
                 "ues.state_store",
                 "ues.recovery",
                 "ues.failures",

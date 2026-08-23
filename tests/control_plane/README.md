@@ -35,6 +35,8 @@ once production interfaces freeze:
 - Watchdog: `evaluate(snapshot) -> incidents`.
 - Task budget: `classify(snapshot) -> decision`.
 - Jules provider: `normalize_state(raw_state) -> normalized_state`.
+- GitHub provider: `read_evidence_binding(snapshot) -> decision`.
+- Metrics: `emit_sanitized_receipt(snapshot) -> decision`.
 - Recovery: `recover_unknown_write(snapshot) -> decision`.
 - Operation safety: `reserve_operation(operation_key, snapshot) -> decision`.
 

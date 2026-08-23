@@ -38,6 +38,14 @@ class JulesProviderProtocol(Protocol):
     def normalize_state(self, raw_state: str) -> str: ...
 
 
+class GitHubProviderProtocol(Protocol):
+    def read_evidence_binding(self, snapshot: Snapshot) -> Decision: ...
+
+
+class MetricsProtocol(Protocol):
+    def emit_sanitized_receipt(self, snapshot: Snapshot) -> Decision: ...
+
+
 class RecoveryProtocol(Protocol):
     def recover_unknown_write(self, snapshot: Snapshot) -> Decision: ...
 
@@ -50,9 +58,11 @@ EXPECTED_PRODUCTION_MODULES = (
     "ues.lifecycle",
     "ues.reconciliation",
     "ues.providers.jules",
+    "ues.providers.github",
     "ues.routing",
     "ues.watchdog",
     "ues.task_budget",
+    "ues.metrics",
     "ues.state_store",
     "ues.recovery",
     "ues.failures",
