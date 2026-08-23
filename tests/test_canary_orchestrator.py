@@ -15,7 +15,9 @@ from ues.idempotency import (
     waiting_answer_effect_identity,
 )
 from ues.identity import canonical_lane_id
+from ues.project_adapter import load_project_adapter
 from ues.providers.base import AuthenticationError, WriteOutcomeUnknown
+from ues.routing import WAITING_SAME_SESSION_CONTINUATION
 from ues.state_store import (
     CanaryGrant,
     DeterministicFileStateStore,
@@ -73,6 +75,8 @@ class FakeJules:
             )
         if self.outcome == "auth":
             raise AuthenticationError("denied", operation="jules.sendMessage")
+        if self.outcome == "unexpected":
+            raise RuntimeError("unexpected provider boundary failure")
         if self.outcome == "malformed":
             return {
                 "outcome": "DELIVERED",
@@ -135,7 +139,7 @@ class CanaryOrchestratorTests(unittest.TestCase):
             },
         }
 
-    def _grant(self):
+    def _grant(self, *, expected_start=None):
         return CanaryGrant(
             authority_event_id=AUTHORITY,
             lane_id=LANE,
@@ -147,7 +151,7 @@ class CanaryOrchestratorTests(unittest.TestCase):
             issued_at=(T0 - timedelta(minutes=1)).isoformat(),
             expires_at=(T0 + timedelta(minutes=10)).isoformat(),
             maximum_effect_count=1,
-            expected_start=dict(OBSERVED_START),
+            expected_start=dict(OBSERVED_START if expected_start is None else expected_start),
         )
 
     def _put_lane(
@@ -158,6 +162,7 @@ class CanaryOrchestratorTests(unittest.TestCase):
         proven: bool = True,
         session: str = SESSION,
         source_identity: str = SOURCE,
+        grant_expected_start=None,
     ) -> None:
         read = self.store.read_workstream(LANE)
         expected = read.version if read.status == "OK" else 0
@@ -172,7 +177,9 @@ class CanaryOrchestratorTests(unittest.TestCase):
                 session=session,
                 source_identity=source_identity,
             ),
-            canary_grants=[self._grant()] if with_grant else [],
+            canary_grants=(
+                [self._grant(expected_start=grant_expected_start)] if with_grant else []
+            ),
         )
         self.store.compare_and_swap_workstream(LANE, expected, record)
 
@@ -187,7 +194,7 @@ class CanaryOrchestratorTests(unittest.TestCase):
             "expected_repository": REPOSITORY,
             "expected_source": SOURCE,
             "prompt": PROMPT,
-            "project_auto_safe_actions": {"waiting-answer"},
+            "project_auto_safe_actions": {WAITING_SAME_SESSION_CONTINUATION},
             "project_policy_evidence_id": POLICY_EVIDENCE,
             "canary_authority_event_id": AUTHORITY,
             "observed_start": OBSERVED_START,
@@ -211,6 +218,25 @@ class CanaryOrchestratorTests(unittest.TestCase):
         self.assertEqual(jules.calls, [])
         self.assertEqual(result["external_effects_dispatched"], 0)
 
+    def test_raw_effect_label_is_not_project_action_authority(self):
+        jules = FakeJules()
+        result = self._execute(jules, project_auto_safe_actions={"waiting-answer"})
+        self.assertEqual(result["decision"], "PROJECT_ACTION_POLICY_DENIED")
+        self.assertEqual(jules.calls, [])
+
+    def test_current_gs_and_cep_adapters_keep_live_canary_unreachable(self):
+        for path in ("adapters/gs.json", "adapters/cep.json"):
+            with self.subTest(path=path):
+                adapter = load_project_adapter(Path(path))
+                self.assertEqual(adapter.project_auto_safe_actions, ())
+                jules = FakeJules()
+                result = self._execute(
+                    jules,
+                    project_auto_safe_actions=adapter.project_auto_safe_actions,
+                )
+                self.assertEqual(result["decision"], "PROJECT_ACTION_POLICY_DENIED")
+                self.assertEqual(jules.calls, [])
+
     def test_policy_evidence_identity_is_mandatory(self):
         jules = FakeJules()
         with self.assertRaises(ValueError):
@@ -229,6 +255,41 @@ class CanaryOrchestratorTests(unittest.TestCase):
         jules = FakeJules()
         result = self._execute(jules)
         self.assertEqual(result["decision"], "CANARY_GRANT_NOT_FOUND")
+        self.assertEqual(jules.calls, [])
+
+    def test_grant_must_bind_waiting_provider_state_and_activity(self):
+        self._put_lane(
+            mode="CANARY",
+            with_grant=True,
+            grant_expected_start={"provider_state": "AWAITING_USER_FEEDBACK"},
+        )
+        jules = FakeJules()
+        result = self._execute(jules)
+        self.assertEqual(result["decision"], "CANARY_GRANT_WAITING_ACTIVITY_BINDING_REQUIRED")
+        self.assertEqual(jules.calls, [])
+
+    def test_observed_start_must_still_be_same_waiting_activity(self):
+        jules = FakeJules()
+        result = self._execute(
+            jules,
+            observed_start={
+                "provider_state": "AWAITING_USER_FEEDBACK",
+                "waiting_activity_id": "different-activity",
+            },
+        )
+        self.assertEqual(result["decision"], "OBSERVED_WAITING_ACTIVITY_MISMATCH")
+        self.assertEqual(jules.calls, [])
+
+    def test_observed_provider_state_must_be_awaiting_feedback(self):
+        jules = FakeJules()
+        result = self._execute(
+            jules,
+            observed_start={
+                "provider_state": "IN_PROGRESS",
+                "waiting_activity_id": ACTIVITY,
+            },
+        )
+        self.assertEqual(result["decision"], "OBSERVED_PROVIDER_STATE_NOT_AWAITING_USER_FEEDBACK")
         self.assertEqual(jules.calls, [])
 
     def test_unproven_writer_binding_never_calls_provider(self):
@@ -262,6 +323,7 @@ class CanaryOrchestratorTests(unittest.TestCase):
         self.assertEqual(jules.calls[0]["expected_source"], SOURCE)
         self.assertEqual(result["tasks_or_sessions_created"], 0)
         self.assertFalse(result["safe_to_blind_retry"])
+        self.assertFalse(result["live_authority_granted_by_code"])
 
         op = self.store.read_operation(result["operation_key"])
         self.assertEqual(op.record.state, "CONFIRMED")
@@ -307,6 +369,17 @@ class CanaryOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["decision"], "PROVIDER_ERROR_RECONCILIATION_REQUIRED")
         self.assertEqual(result["operation_state"], "UNKNOWN")
         self.assertEqual(len(jules.calls), 1)
+
+    def test_unexpected_provider_exception_is_conservatively_unknown(self):
+        jules = FakeJules(outcome="unexpected")
+        result = self._execute(jules)
+        self.assertEqual(
+            result["decision"],
+            "UNEXPECTED_PROVIDER_OUTCOME_RECONCILIATION_REQUIRED",
+        )
+        self.assertEqual(result["operation_state"], "UNKNOWN")
+        self.assertEqual(len(jules.calls), 1)
+        self.assertNotIn("unexpected provider boundary failure", str(result))
 
     def test_malformed_success_receipt_does_not_become_confirmed(self):
         jules = FakeJules(outcome="malformed")
