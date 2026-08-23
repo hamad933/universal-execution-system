@@ -20,7 +20,7 @@ class GitHubProviderTests(unittest.TestCase):
     def test_unscoped_ci_observation_never_authorizes_pass(self):
         client,_=self.client([response([{"id":1,"sha":SHA,"state":"success","context":"unrelated"}]),response({"check_runs":[{"id":2,"name":"other","head_sha":SHA,"status":"completed","conclusion":"success"}]})])
         result=client.get_ci_evidence("o","r",SHA)
-        self.assertEqual(result["aggregate"],"PASS"); self.assertEqual(result["verdict"],"NOT_A_PASS"); self.assertFalse(result["pass_authorized"]); self.assertFalse(result["required_ci_evaluated"])
+        self.assertEqual(result["aggregate"],"UNKNOWN"); self.assertEqual(result["observed_aggregate"],"PASS"); self.assertEqual(result["verdict"],"NOT_A_PASS"); self.assertFalse(result["pass_authorized"]); self.assertFalse(result["required_ci_evaluated"])
 
     def test_unrelated_green_check_cannot_satisfy_required_ci(self):
         client,_=self.client([response([]),response({"check_runs":[{"id":2,"name":"unrelated","head_sha":SHA,"status":"completed","conclusion":"success"}]})])
