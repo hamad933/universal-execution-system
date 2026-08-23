@@ -32,6 +32,13 @@ class CEPControlAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter["task_budget"]["unknown_lifetime_capacity"], "DENY")
         self.assertFalse(self.adapter["task_budget"]["automatic_new_task_creation"])
 
+    def test_task_budget_matches_governed_cep_boundary(self):
+        budget = self.adapter["task_budget"]
+        self.assertEqual(budget["ceiling"], 70)
+        self.assertEqual(budget["reserve_target"], 15)
+        self.assertEqual(budget["new_task_authority"], "PARENT_ONLY")
+        self.assertEqual(budget["unknown_lifetime_capacity"], "DENY")
+
     def test_provider_effects_require_explicit_source_proof(self):
         binding = self.adapter["actor_binding"]
         self.assertEqual(binding["roles"], ["WRITER", "REVIEWER"])
@@ -52,11 +59,25 @@ class CEPControlAdapterTests(unittest.TestCase):
         self.assertNotIn("session_id", raw)
         self.assertNotIn("api_key", raw.lower())
 
-    def test_waiting_unknown_fails_closed(self):
+    def test_waiting_rule_is_structured_not_keyword_based(self):
         classifier = self.adapter["waiting_classifier"]
-        self.assertEqual(classifier["rules"], [])
-        self.assertEqual(classifier["unmatched"], "UNCLASSIFIED")
         self.assertFalse(classifier["keyword_shortcuts_allowed"])
+        self.assertEqual(classifier["unmatched"], "UNCLASSIFIED")
+        self.assertEqual(len(classifier["rules"]), 1)
+        rule = classifier["rules"][0]
+        self.assertEqual(rule["waiting_class"], "POLICY_RESOLVABLE")
+        self.assertEqual(
+            rule["match"],
+            {
+                "provider_state": "AWAITING_USER_FEEDBACK",
+                "question_scope": "CONTROLLER_RESOLVABLE",
+                "continuation_scope": "SAME_SESSION",
+                "scope_expansion": False,
+            },
+        )
+        self.assertNotIn("keyword", rule)
+        self.assertNotIn("prompt", rule)
+        self.assertNotIn("session", rule)
 
 
 if __name__ == "__main__":
