@@ -9,7 +9,7 @@ on:
     - cron: "*/15 * * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ues-live-runtime-${{ github.ref }}
@@ -18,6 +18,8 @@ concurrency:
 jobs:
   candidate-proof:
     if: github.event_name != 'schedule'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -56,6 +58,8 @@ jobs:
 
   scheduled-watchdog:
     if: github.event_name == 'schedule'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
