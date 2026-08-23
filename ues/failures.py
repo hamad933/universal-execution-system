@@ -18,6 +18,14 @@ FAILURE_CATEGORIES = {
     "STALE_OR_WRONG_CANDIDATE",
     "NOT_APPLICABLE",
     "UNKNOWN_REQUIRES_TRIAGE",
+    "PROVIDER_AUTHENTICATION",
+    "PROVIDER_AUTHORIZATION",
+    "PROVIDER_NOT_FOUND",
+    "PROVIDER_RATE_LIMIT",
+    "PROVIDER_SERVER_ERROR",
+    "PROVIDER_NETWORK_ERROR",
+    "PROVIDER_PROTOCOL_ERROR",
+    "WRITE_OUTCOME_UNKNOWN",
 }
 
 CANDIDATE_STAGE_CATEGORY = {
@@ -105,6 +113,53 @@ def classify_failure(failure: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def classify_provider_failure(failure: dict[str, Any]) -> dict[str, Any]:
+    """Classify provider failures without treating ambiguous mutations as retryable."""
+
+    status = failure.get("status_code")
+    network = bool(failure.get("network_error"))
+    protocol = bool(failure.get("protocol_error"))
+    ambiguous_write = bool(failure.get("write_outcome_unknown"))
+    retry_after = failure.get("retry_after")
+
+    if ambiguous_write:
+        category = "WRITE_OUTCOME_UNKNOWN"
+        retry_class = "AUTHORITATIVE_POST_READ_REQUIRED"
+    elif status == 401:
+        category = "PROVIDER_AUTHENTICATION"
+        retry_class = "NO_RETRY_WITHOUT_CREDENTIAL_CHANGE"
+    elif status == 403:
+        category = "PROVIDER_AUTHORIZATION"
+        retry_class = "NO_RETRY_WITHOUT_AUTHORITY_CHANGE"
+    elif status == 404:
+        category = "PROVIDER_NOT_FOUND"
+        retry_class = "NO_RETRY_WITHOUT_BINDING_RECONCILIATION"
+    elif status == 429:
+        category = "PROVIDER_RATE_LIMIT"
+        retry_class = "BOUNDED_READ_RETRY_ONLY"
+    elif isinstance(status, int) and 500 <= status <= 599:
+        category = "PROVIDER_SERVER_ERROR"
+        retry_class = "BOUNDED_READ_RETRY_ONLY"
+    elif network:
+        category = "PROVIDER_NETWORK_ERROR"
+        retry_class = "BOUNDED_READ_RETRY_ONLY"
+    elif protocol:
+        category = "PROVIDER_PROTOCOL_ERROR"
+        retry_class = "FAIL_CLOSED"
+    else:
+        category = "UNKNOWN_REQUIRES_TRIAGE"
+        retry_class = "FAIL_CLOSED"
+
+    return {
+        "schema_version": "0.4",
+        "category": category,
+        "confidence": "HIGH" if category != "UNKNOWN_REQUIRES_TRIAGE" else "LOW",
+        "retry_class": retry_class,
+        "retry_after": retry_after if category == "PROVIDER_RATE_LIMIT" else None,
+        "safe_to_blind_retry": False,
+    }
+
+
 def scope_blocker(classification: dict[str, Any], workstream_id: str) -> dict[str, Any]:
     category = classification["category"]
 
@@ -121,10 +176,19 @@ def scope_blocker(classification: dict[str, Any], workstream_id: str) -> dict[st
         "INFRASTRUCTURE_PERSISTENT",
         "AUTHORIZATION_OR_BILLING_BLOCKER",
         "UPSTREAM_SERVICE_FAILURE",
+        "PROVIDER_AUTHENTICATION",
+        "PROVIDER_AUTHORIZATION",
+        "PROVIDER_RATE_LIMIT",
+        "PROVIDER_SERVER_ERROR",
+        "PROVIDER_NETWORK_ERROR",
     }:
         scope = "EXTERNAL"
         blocks = []
         remediation_owner = "PLATFORM_OR_EXTERNAL_OWNER"
+    elif category in {"PROVIDER_NOT_FOUND", "PROVIDER_PROTOCOL_ERROR", "WRITE_OUTCOME_UNKNOWN"}:
+        scope = "EVIDENCE"
+        blocks = [workstream_id]
+        remediation_owner = "CONTROL_PLANE"
     elif category == "STALE_OR_WRONG_CANDIDATE":
         scope = "EVIDENCE"
         blocks = [workstream_id]
