@@ -213,11 +213,13 @@ def _resource_name(value: str, kind: str) -> str:
     text = str(value or "").strip().strip("/"); prefix = f"{kind}/"; ident = text[len(prefix):] if text.startswith(prefix) else text
     if not ident or "/" in ident: raise ValueError(f"resource must be an id or {kind}/{{id}}")
     return f"{kind}/{quote(ident, safe='')}"
+
 def _repo(value: str | tuple[str, str]) -> str:
     if isinstance(value, tuple): value = f"{value[0]}/{value[1]}"
     text = str(value or "").strip().strip("/")
     if text.count("/") != 1 or any(not p for p in text.split("/")): raise ValueError("repository must be owner/repo")
     return text
+
 def _activity_id(activity: Mapping[str, Any]) -> str: return str(activity.get("name") or activity.get("id") or "")
 def _receipt(name: str, recovery: Mapping[str, Any], binding: Mapping[str, Any] | None, ambiguous: bool) -> dict[str, Any]:
     result = {"schema_version": "0.5", "provider": "JULES", "operation": "sendMessage", "session": name,
