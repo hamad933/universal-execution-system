@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import unittest
+
+
+class GSControlAdapterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.adapter = json.loads(Path("adapters/gs.json").read_text(encoding="utf-8"))
+
+    def test_identity_and_truth_owners_are_exact(self):
+        self.assertEqual(self.adapter["project"], "GS")
+        self.assertEqual(self.adapter["route"], "GS")
+        self.assertEqual(self.adapter["repository"], "hamad933/GS-2")
+        self.assertEqual(
+            self.adapter["canonical_lane"]["components"],
+            ["project", "route", "workstream"],
+        )
+        self.assertFalse(self.adapter["canonical_lane"]["allow_bare_workstream_key"])
+        self.assertEqual(self.adapter["truth_owners"]["governed_state"], "DRIVE")
+        self.assertEqual(self.adapter["truth_owners"]["technical_state"], "GITHUB")
+
+    def test_adapter_is_shadow_only_and_cannot_auto_mutate(self):
+        activation = self.adapter["activation"]
+        self.assertEqual(activation["default_mode"], "SHADOW")
+        self.assertFalse(activation["mutation_allowed"])
+        self.assertFalse(activation["runtime_mode_is_authority"])
+        self.assertEqual(self.adapter["project_auto_safe_actions"], [])
+        self.assertFalse(self.adapter["task_budget"]["automatic_new_task_creation"])
+        self.assertEqual(self.adapter["task_budget"]["unknown_lifetime_capacity"], "DENY")
+
+    def test_provider_effects_require_explicit_source_proof(self):
+        binding = self.adapter["actor_binding"]
+        self.assertEqual(binding["roles"], ["WRITER", "REVIEWER"])
+        self.assertEqual(binding["external_effect_proof_required"], "PROVEN_EXPLICIT")
+        self.assertEqual(binding["heuristic_match_status"], "PROPOSED_UNVERIFIED")
+        self.assertTrue(binding["source_repository_must_match"])
+
+    def test_current_gs_evidence_identities_are_named_not_sha_pinned(self):
+        core = self.adapter["evidence_profiles"]["core_ci"]["requirements"][0]
+        visual = self.adapter["evidence_profiles"]["visual_assurance"]["requirements"][0]
+        self.assertEqual((core["workflow"], core["job"]), ("CI", "validate"))
+        self.assertEqual(visual["workflow"], "Visual Evidence")
+        self.assertTrue(core["exact_candidate_sha"])
+        self.assertTrue(visual["exact_candidate_sha"])
+        raw = Path("adapters/gs.json").read_text(encoding="utf-8")
+        self.assertNotRegex(raw, r"\b[0-9a-f]{40}\b")
+        self.assertNotIn("session_id", raw)
+        self.assertNotIn("api_key", raw.lower())
+
+    def test_waiting_unknown_fails_closed(self):
+        classifier = self.adapter["waiting_classifier"]
+        self.assertEqual(classifier["rules"], [])
+        self.assertEqual(classifier["unmatched"], "UNCLASSIFIED")
+        self.assertFalse(classifier["keyword_shortcuts_allowed"])
+
+
+if __name__ == "__main__":
+    unittest.main()
