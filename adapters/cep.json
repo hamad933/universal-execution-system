@@ -27,6 +27,8 @@
   },
   "project_auto_safe_actions": [],
   "task_budget": {
+    "ceiling": 70,
+    "reserve_target": 15,
     "new_task_authority": "PARENT_ONLY",
     "unknown_lifetime_capacity": "DENY",
     "automatic_new_task_creation": false
@@ -58,7 +60,18 @@
     }
   },
   "waiting_classifier": {
-    "rules": [],
+    "rules": [
+      {
+        "waiting_class": "POLICY_RESOLVABLE",
+        "match": {
+          "provider_state": "AWAITING_USER_FEEDBACK",
+          "question_scope": "CONTROLLER_RESOLVABLE",
+          "continuation_scope": "SAME_SESSION",
+          "scope_expansion": false
+        },
+        "evidence": "cep-structured-same-session-controller-input-v1"
+      }
+    ],
     "unmatched": "UNCLASSIFIED",
     "keyword_shortcuts_allowed": false
   },
