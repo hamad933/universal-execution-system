@@ -33,6 +33,7 @@ ACTIVITY = "waiting-activity-1"
 REPOSITORY = "hamad933/Cybersecurity-Education-Platform"
 SOURCE = "sources/cep-source"
 AUTHORITY = "canary-authority-1"
+POLICY_EVIDENCE = "cep-policy-event-1"
 PROMPT = "Use the governed handoff receipt boundary."
 OBSERVED_START = {
     "provider_state": "AWAITING_USER_FEEDBACK",
@@ -186,7 +187,8 @@ class CanaryOrchestratorTests(unittest.TestCase):
             "expected_repository": REPOSITORY,
             "expected_source": SOURCE,
             "prompt": PROMPT,
-            "project_action_authorized": True,
+            "project_auto_safe_actions": {"waiting-answer"},
+            "project_policy_evidence_id": POLICY_EVIDENCE,
             "canary_authority_event_id": AUTHORITY,
             "observed_start": OBSERVED_START,
             "owner": "canary-runner",
@@ -204,10 +206,16 @@ class CanaryOrchestratorTests(unittest.TestCase):
 
     def test_policy_denial_happens_before_state_claim_or_provider_call(self):
         jules = FakeJules()
-        result = self._execute(jules, project_action_authorized=False)
+        result = self._execute(jules, project_auto_safe_actions=set())
         self.assertEqual(result["decision"], "PROJECT_ACTION_POLICY_DENIED")
         self.assertEqual(jules.calls, [])
         self.assertEqual(result["external_effects_dispatched"], 0)
+
+    def test_policy_evidence_identity_is_mandatory(self):
+        jules = FakeJules()
+        with self.assertRaises(ValueError):
+            self._execute(jules, project_policy_evidence_id="")
+        self.assertEqual(jules.calls, [])
 
     def test_shadow_runtime_never_calls_provider(self):
         self._put_lane(mode="SHADOW", with_grant=True)
@@ -257,6 +265,8 @@ class CanaryOrchestratorTests(unittest.TestCase):
 
         op = self.store.read_operation(result["operation_key"])
         self.assertEqual(op.record.state, "CONFIRMED")
+        self.assertEqual(op.record.receipt["project_policy_evidence_id"], POLICY_EVIDENCE)
+        self.assertEqual(op.record.receipt["canary_authority_event_id"], AUTHORITY)
         lane = self.store.read_workstream(LANE).record
         self.assertIsNone(lane.lease)
         self.assertTrue(lane.canary_grants[0].consumed)
