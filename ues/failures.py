@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from collections import defaultdict
+from typing import Any, Mapping
 
 FAILURE_CATEGORIES = {
     "CANDIDATE_CODE_DEFECT",
@@ -36,6 +37,12 @@ CANDIDATE_STAGE_CATEGORY = {
     "format": "CANDIDATE_FORMAT_DEFECT",
     "build": "CANDIDATE_BUILD_DEFECT",
 }
+
+_EXPLICIT_ROOT_FIELDS = (
+    "root_evidence_id",
+    "shared_root_id",
+    "incident_id",
+)
 
 
 def classify_failure(failure: dict[str, Any]) -> dict[str, Any]:
@@ -210,4 +217,93 @@ def scope_blocker(classification: dict[str, Any], workstream_id: str) -> dict[st
         "does_not_implicitly_block_unrelated_workstreams": True,
         "remediation_owner": remediation_owner,
         "automatic_write_authorized": False,
+    }
+
+
+def _root_identity(failure: Mapping[str, Any]) -> str | None:
+    """Return only an explicit structured root/evidence identity.
+
+    Similar text, exception messages, stages, jobs, or categories are deliberately
+    insufficient to collapse failures. The producer must provide one of the frozen
+    explicit identity fields.
+    """
+
+    for field in _EXPLICIT_ROOT_FIELDS:
+        value = failure.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _lane_identity(failure: Mapping[str, Any]) -> str | None:
+    lane_id = failure.get("lane_id")
+    if isinstance(lane_id, str) and lane_id.strip():
+        return lane_id.strip()
+
+    project = failure.get("project")
+    route = failure.get("route")
+    workstream = failure.get("workstream") or failure.get("workstream_id")
+    if all(isinstance(value, str) and value.strip() for value in (project, route, workstream)):
+        return f"{project.strip()}|{route.strip()}|{workstream.strip()}"
+    if isinstance(workstream, str) and workstream.strip():
+        return workstream.strip()
+    return None
+
+
+def collapse_failure_cascade(failures: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Read-only collapse of directly proven shared-root failure cascades.
+
+    A root is shared only when at least two failures carry the same explicit
+    structured root/evidence identity. The function never creates remediation
+    work, never consumes budget, and never infers a root from textual similarity.
+    """
+
+    indexed = [dict(failure) for failure in failures]
+    by_root: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
+    for index, failure in enumerate(indexed):
+        root = _root_identity(failure)
+        if root is not None:
+            by_root[root].append((index, failure))
+
+    shared_ids = {root for root, items in by_root.items() if len(items) >= 2}
+    shared_indexes = {
+        index
+        for root in shared_ids
+        for index, _failure in by_root[root]
+    }
+
+    shared_blockers: list[dict[str, Any]] = []
+    affected_lanes: dict[str, list[str]] = {}
+    for root in sorted(shared_ids):
+        entries = by_root[root]
+        lanes = sorted(
+            {
+                lane
+                for _index, failure in entries
+                if (lane := _lane_identity(failure)) is not None
+            }
+        )
+        affected_lanes[root] = lanes
+        shared_blockers.append(
+            {
+                "incident_id": root,
+                "failure_count": len(entries),
+                "affected_lanes": lanes,
+                "proof": "EXPLICIT_STRUCTURED_COMMON_ROOT_IDENTITY",
+            }
+        )
+
+    unshared_failures = [
+        failure
+        for index, failure in enumerate(indexed)
+        if index not in shared_indexes
+    ]
+
+    return {
+        "schema_version": "2.1",
+        "shared_blockers": shared_blockers,
+        "affected_lanes": affected_lanes,
+        "unshared_failures": unshared_failures,
+        "correction_task_count": 0,
+        "duplicate_corrections": False,
     }
