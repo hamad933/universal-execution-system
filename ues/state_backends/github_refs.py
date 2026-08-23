@@ -110,7 +110,6 @@ class GitHubGitDataTransport:
         *,
         api_url: str = "https://api.github.com",
         timeout_seconds: float = 15.0,
-        require_private_repository: bool = True,
     ) -> None:
         self.repository = _required(repository, "repository")
         self._token = _required(token, "token")
@@ -118,7 +117,6 @@ class GitHubGitDataTransport:
         self.timeout_seconds = float(timeout_seconds)
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        self.require_private_repository = bool(require_private_repository)
         self._storage_policy_verified = False
 
     def __repr__(self) -> str:
@@ -191,7 +189,7 @@ class GitHubGitDataTransport:
             return
         value = self._request_json("GET", self._repo_path)
         assert value is not None
-        if self.require_private_repository and not bool(value.get("private")):
+        if not bool(value.get("private")):
             raise GitHubRefTransportError(
                 "runtime state repository must be private; public repository rejected"
             )
@@ -566,10 +564,10 @@ class GitHubRefStateStore(StateStore):
 
     def read_operation(self, operation_key: str) -> OperationRead:
         operation_key = _required(operation_key, "operation_key")
-        try:
-            loaded = self._load("operation", operation_key)
-        except StateUnavailable as exc:
-            return OperationRead("UNAVAILABLE", 0, None, str(exc))
+        # Operation read failure must never be confused with MISSING. The mutation
+        # claim path treats MISSING as eligible for a new operation, so transport
+        # unavailability propagates as StateUnavailable and fails closed before lease.
+        loaded = self._load("operation", operation_key)
         if loaded is None:
             return OperationRead("MISSING", 0, None)
         try:

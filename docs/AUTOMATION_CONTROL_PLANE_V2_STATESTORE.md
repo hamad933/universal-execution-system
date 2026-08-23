@@ -58,13 +58,17 @@ exception text.
 
 ## Storage authority and privacy
 
-The runtime-state repository must be private. `GitHubGitDataTransport` checks repository
-privacy when constructed and rejects a public repository by default.
+The runtime-state repository must be private. `GitHubRefStateStore` requires the
+transport to verify repository privacy before use, and the production
+`GitHubGitDataTransport` has no public-repository override.
 
-A real deployment still requires a separately governed private state repository and a
-narrow runtime credential that can access only that state repository. This implementation
-does not create that repository, create live runtime refs, authorize canary, or grant any
-project/provider mutation authority.
+A real deployment still requires a separately governed, initialized private state
+repository (with a seed/default ref) and a narrow runtime credential that can access only
+that state repository. This implementation does not create that repository, create live
+runtime refs, authorize canary, or grant any project/provider mutation authority.
+
+Operation-ref read failures propagate as `StateUnavailable`; they are never represented as
+`MISSING`, because `MISSING` is the only state that can legitimately begin a new operation.
 
 ## Activation boundary
 
@@ -93,6 +97,8 @@ Repository tests use a deterministic in-memory Git-ref transport. They cover:
 - secret redaction before persistence;
 - ambiguous write applied/not-applied/diverged outcomes;
 - initialization races;
-- no global ref contention across independent lanes.
+- no global ref contention across independent lanes;
+- operation-read outage fails closed instead of looking like missing state;
+- production transport repr never exposes the runtime token.
 
 No test creates or mutates a live GitHub runtime-state ref.

@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from ues.identity import canonical_lane_id
 from ues.state_backends.github_refs import (
+    GitHubGitDataTransport,
     GitHubRefConflict,
     GitHubRefStateStore,
     GitHubRefTransportError,
@@ -38,12 +39,15 @@ class MemoryGitRefTransport:
         self.counter = 0
         self.create_mode = "normal"
         self.update_mode = "normal"
+        self.read_mode = "normal"
 
     def assert_private_repository(self) -> None:
         if not self.private:
             raise GitHubRefTransportError("runtime state repository must be private")
 
     def get_ref(self, ref: str) -> str | None:
+        if self.read_mode == "unavailable":
+            raise GitHubRefTransportError("simulated read outage")
         return self.refs.get(ref)
 
     def read_snapshot(self, commit_sha: str) -> Mapping[str, Any]:
@@ -138,6 +142,18 @@ class GitHubRefStateStoreTests(unittest.TestCase):
     def test_public_state_repository_is_rejected_before_use(self):
         with self.assertRaises(GitHubRefTransportError):
             GitHubRefStateStore(MemoryGitRefTransport(private=False), clock=lambda: T0)
+
+    def test_production_transport_repr_never_exposes_token(self):
+        transport = GitHubGitDataTransport("owner/private-state", "super-secret-token")
+        rendered = repr(transport)
+        self.assertNotIn("super-secret-token", rendered)
+        self.assertIn("[REDACTED]", rendered)
+
+    def test_operation_read_outage_raises_instead_of_looking_missing(self):
+        key = "ues-v2:waiting-answer:" + "c" * 64
+        self.transport.read_mode = "unavailable"
+        with self.assertRaises(StateUnavailable):
+            self.store.read_operation(key)
 
     def test_same_workstream_in_two_projects_uses_distinct_lane_refs(self):
         gs = canonical_lane_id("GS", "INTERNAL:GS", "W01")
