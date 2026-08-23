@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - work/ues-auto-v2-k-live-runtime-foundation
+      - work/ues-auto-v2-live-provider-observer-r1
   workflow_dispatch:
   schedule:
     - cron: "*/15 * * * *"
@@ -69,6 +70,12 @@ jobs:
         env:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: python -m ues.live_runtime jules-probe
+
+      - name: Jules GS/CEP read-only provider observation preview
+        if: steps.jules_secret.outputs.present == 'true' && steps.jules_probe.outcome == 'success'
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: python -m ues.provider_observer preview
 
       - name: Persist sanitized Jules probe success proof
         if: steps.jules_secret.outputs.present == 'true' && steps.jules_probe.outcome == 'success'
@@ -149,6 +156,58 @@ jobs:
         run: |
           echo "Jules read-only authentication proof was not established; see sanitized durable status."
           exit 1
+
+  scheduled-provider-observer:
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout governed default-branch runtime
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Observe Jules GS/CEP sessions and Activities read-only
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: python -m ues.provider_observer observe
+
+  scheduled-provider-audit:
+    if: always() && github.event_name == 'schedule'
+    needs: scheduled-provider-observer
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout governed default-branch runtime
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Audit fresh provider observations and surface attention states
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: python -m ues.provider_observer audit
 
   scheduled-watchdog:
     if: github.event_name == 'schedule'
