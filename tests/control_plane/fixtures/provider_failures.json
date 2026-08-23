@@ -1,0 +1,12 @@
+{
+  "schema_version": "ues-control-plane-provider-failures-v1",
+  "synthetic": true,
+  "failures": [
+    {"kind": "401", "status": 401},
+    {"kind": "403", "status": 403},
+    {"kind": "429", "status": 429},
+    {"kind": "500", "status": 500},
+    {"kind": "503", "status": 503},
+    {"kind": "network", "exception": "SyntheticConnectionError"}
+  ]
+}
