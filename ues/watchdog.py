@@ -12,8 +12,6 @@ WATCHDOG_CATEGORIES = {
     "EXACT_HEAD_EVIDENCE_DRIFT_UNRESOLVED",
 }
 
-# Universal defaults are intentionally project-neutral. Adapters may replace
-# these values through the policy input; no GS/CEP-specific SLO is embedded.
 DEFAULT_THRESHOLDS = {
     "waiting_unresolved_seconds": 3600,
     "completed_review_unrouted_seconds": 1800,
@@ -45,7 +43,7 @@ def normalize_watchdog_policy(policy: dict[str, Any] | None = None) -> dict[str,
             raise ValueError(f"unknown watchdog categories: {sorted(unknown)}")
 
     return {
-        "schema_version": "2.1",
+        "schema_version": "2.2",
         "thresholds": thresholds,
         "enabled_categories": enabled_categories,
         "source": "ADAPTER_OR_CONTROLLER_POLICY" if policy else "UNIVERSAL_DEFAULT_POLICY",
@@ -74,17 +72,11 @@ def evaluate_lane_watchdog(
             incidents.append({"code": "WAITING_UNRESOLVED", "severity": "INCIDENT"})
 
     if "COMPLETED_REVIEW_NOT_ROUTED" in enabled and lane.get("review_completed") and not lane.get("review_routed"):
-        if _over_threshold(
-            lane.get("review_unrouted_age_seconds"),
-            limits["completed_review_unrouted_seconds"],
-        ):
+        if _over_threshold(lane.get("review_unrouted_age_seconds"), limits["completed_review_unrouted_seconds"]):
             incidents.append({"code": "COMPLETED_REVIEW_NOT_ROUTED", "severity": "INCIDENT"})
 
     if "FAILED_STATE_UNCLASSIFIED" in enabled and lane.get("failed_state") and not lane.get("failure_classified"):
-        if _over_threshold(
-            lane.get("failure_unclassified_age_seconds"),
-            limits["unclassified_failure_seconds"],
-        ):
+        if _over_threshold(lane.get("failure_unclassified_age_seconds"), limits["unclassified_failure_seconds"]):
             incidents.append({"code": "FAILED_STATE_UNCLASSIFIED", "severity": "INCIDENT"})
 
     role = str(lane.get("role") or "").upper()
@@ -94,30 +86,23 @@ def evaluate_lane_watchdog(
 
     loop_pending = bool(lane.get("correction_pending") or lane.get("rereview_pending"))
     if "CORRECTION_REREVIEW_LOOP_STALLED" in enabled and loop_pending:
-        if _over_threshold(
-            lane.get("correction_rereview_age_seconds"),
-            limits["correction_rereview_stalled_seconds"],
-        ):
+        if _over_threshold(lane.get("correction_rereview_age_seconds"), limits["correction_rereview_stalled_seconds"]):
             incidents.append({"code": "CORRECTION_REREVIEW_LOOP_STALLED", "severity": "INCIDENT"})
 
     if "EXACT_HEAD_EVIDENCE_DRIFT_UNRESOLVED" in enabled and lane.get("evidence_drift_unresolved"):
-        if _over_threshold(
-            lane.get("evidence_drift_age_seconds"),
-            limits["evidence_drift_unresolved_seconds"],
-        ):
+        if _over_threshold(lane.get("evidence_drift_age_seconds"), limits["evidence_drift_unresolved_seconds"]):
             incidents.append({"code": "EXACT_HEAD_EVIDENCE_DRIFT_UNRESOLVED", "severity": "INCIDENT"})
 
     if "FORGOTTEN_LANE" in enabled and not lane.get("next_action") and not lane.get("stop_gate"):
         incidents.append({"code": "FORGOTTEN_LANE", "severity": "INCIDENT"})
 
     proven_auto_safe_incident = bool(
-        lane.get("auto_safe_incident_proven")
-        or lane.get("auto_safe_incident")
+        lane.get("auto_safe_incident_proven") or lane.get("auto_safe_incident")
     )
     untreated_auto_safe = bool(proven_auto_safe_incident and not lane.get("auto_safe_treated"))
 
     return {
-        "schema_version": "2.1",
+        "schema_version": "2.2",
         "lane_id": lane_id,
         "incidents": incidents,
         "forgotten": any(item["code"] == "FORGOTTEN_LANE" for item in incidents),
@@ -138,18 +123,18 @@ def evaluate_control_cycle(
     forgotten = [item["lane_id"] for item in evaluations if item["forgotten"]]
     failed_sessions = [item["lane_id"] for item in evaluations if item["terminal_failed_session"]]
 
-    executable_lanes = []
-    blocked_lanes = []
+    executable_lanes: list[str] = []
+    blocked_lanes: list[str] = []
     for lane in lanes:
         lane_id = str(lane.get("lane_id") or lane.get("workstream_id") or "UNKNOWN")
-        if lane.get("blocked"):
+        if lane.get("blocked") or lane.get("stop_gate"):
             blocked_lanes.append(lane_id)
         elif lane.get("next_action"):
             executable_lanes.append(lane_id)
 
-    cycle_failed = bool(untreated)
+    cycle_failed = bool(untreated or forgotten)
     return {
-        "schema_version": "2.1",
+        "schema_version": "2.2",
         "cycle_status": "CONTROL_CYCLE_FAILED" if cycle_failed else "CONTROL_CYCLE_OK",
         "lane_evaluations": evaluations,
         "unresolved_auto_safe_lanes": untreated,
