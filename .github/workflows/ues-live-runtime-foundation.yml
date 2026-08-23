@@ -56,6 +56,13 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: python -m ues.live_runtime jules-probe
 
+      - name: Persist sanitized Jules probe proof
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: python -m ues.live_runtime record-jules-probe
+
   scheduled-watchdog:
     if: github.event_name == 'schedule'
     permissions:

@@ -114,7 +114,7 @@ def _fresh_record(lane_id: str) -> WorkstreamRuntimeRecord:
         },
         evidence_bindings={
             "probe": "LIVE_READ_WRITE_RECOVERY_CAS_LEASE",
-            "secrets_persisted": False,
+            "secret_material_persisted": False,
         },
     )
 
@@ -145,7 +145,6 @@ def run_state_smoke() -> dict[str, Any]:
     else:
         raise StateUnavailable(current.reason or f"unexpected live lane status: {current.status}")
 
-    # Reconstruct the backend to prove runner-replacement recovery from Git refs.
     store_b = build_live_state_store()
     recovered = store_b.read_workstream(lane_id)
     if recovered.status != "OK" or recovered.record is None:
@@ -153,7 +152,6 @@ def run_state_smoke() -> dict[str, Any]:
     if recovered.version != saved.version:
         raise StateUnavailable("recovered live StateStore version differs from committed version")
 
-    # Prove optimistic CAS conflict safety using two logical runner views.
     stale_version = recovered.version
     stale_record = WorkstreamRuntimeRecord.from_dict(recovered.record.to_dict())
     winner_record = WorkstreamRuntimeRecord.from_dict(recovered.record.to_dict())
@@ -175,7 +173,6 @@ def run_state_smoke() -> dict[str, Any]:
     if not conflict_proven:
         raise RuntimeError("live StateStore stale CAS write was not rejected")
 
-    # Prove a lane-local lease survives reconstruction and can be released by identity.
     operation_key = "ues-v2:state-smoke:" + sha256(
         f"{repository}|{lane_id}".encode("utf-8")
     ).hexdigest()
@@ -195,7 +192,6 @@ def run_state_smoke() -> dict[str, Any]:
     if released.record is None or released.record.lease is not None:
         raise StateUnavailable("live lane lease release did not persist")
 
-    # Keep a durable, confirmed smoke operation record so operation refs are proven too.
     operation_read = store_c.read_operation(operation_key)
     if operation_read.status == "MISSING":
         now = _iso(_utc_now())
@@ -212,7 +208,7 @@ def run_state_smoke() -> dict[str, Any]:
             receipt={
                 "result": "LIVE_STATESTORE_PROOF_PASS",
                 "provider_mutation": False,
-                "secrets_persisted": False,
+                "secret_material_persisted": False,
             },
         )
         operation_read = store_c.compare_and_swap_operation(operation_key, 0, operation)
@@ -246,7 +242,7 @@ def run_state_smoke() -> dict[str, Any]:
         "lane_lease_cross_run_proven": True,
         "identity_discovery_proven": True,
         "provider_mutation_performed": False,
-        "secrets_persisted": False,
+        "secret_material_persisted": False,
     }
 
 
@@ -339,17 +335,78 @@ def run_jules_read_only_probe() -> dict[str, Any]:
     return result
 
 
+def record_jules_probe_proof() -> dict[str, Any]:
+    """Persist sanitized proof only after the preceding read-only probe succeeded."""
+
+    repository = _env("GITHUB_REPOSITORY")
+    store = build_live_state_store()
+    lane_id = canonical_lane_id(PROBE_PROJECT, PROBE_ROUTE, PROBE_WORKSTREAM)
+    lane = store.read_workstream(lane_id)
+    if lane.status != "OK" or lane.record is None:
+        raise StateUnavailable(lane.reason or "live probe lane is unavailable")
+
+    operation_key = "ues-v2:jules-read-only-probe:" + sha256(
+        f"{repository}|jules-read-only-probe-v1".encode("utf-8")
+    ).hexdigest()
+    current = store.read_operation(operation_key)
+    now = _iso(_utc_now())
+    receipt = {
+        "result": "JULES_READ_ONLY_AUTHENTICATION_PASS",
+        "read_only": True,
+        "provider_mutation": False,
+        "session_identity_persisted": False,
+        "secret_material_persisted": False,
+        "confirmed_at": now,
+    }
+    if current.status == "MISSING":
+        record = OperationRecord(
+            operation_key=operation_key,
+            lane_id=lane_id,
+            workstream_id=PROBE_WORKSTREAM,
+            action="jules-read-only-authentication-probe",
+            request_digest=sha256(b"JULES_READ_ONLY_AUTH_PROBE_V1").hexdigest(),
+            state="CONFIRMED",
+            owner="ues-live-runtime",
+            started_at=now,
+            updated_at=now,
+            receipt=receipt,
+        )
+        saved = store.compare_and_swap_operation(operation_key, 0, record)
+    elif current.status == "OK" and current.record is not None:
+        if current.record.state != "CONFIRMED":
+            raise StateUnavailable("existing Jules probe proof is not in CONFIRMED state")
+        record = OperationRecord.from_dict(current.record.to_dict())
+        record.updated_at = now
+        record.receipt = receipt
+        saved = store.compare_and_swap_operation(operation_key, current.version, record)
+    else:
+        raise StateUnavailable(current.reason or "Jules probe proof state is unavailable")
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "result": "JULES_READ_ONLY_PROBE_PROOF_PERSISTED",
+        "operation_key": operation_key,
+        "operation_state": saved.record.state if saved.record else None,
+        "operation_version": saved.version,
+        "provider_mutation_performed": False,
+        "session_identity_persisted": False,
+        "secret_material_persisted": False,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="UES live runtime foundation")
     parser.add_argument(
         "command",
-        choices=("state-smoke", "state-audit", "jules-probe"),
+        choices=("state-smoke", "state-audit", "jules-probe", "record-jules-probe"),
     )
     args = parser.parse_args(argv)
     if args.command == "state-smoke":
         result = run_state_smoke()
     elif args.command == "state-audit":
         result = run_state_audit()
+    elif args.command == "record-jules-probe":
+        result = record_jules_probe_proof()
     else:
         result = run_jules_read_only_probe()
     print(json.dumps(result, sort_keys=True))
