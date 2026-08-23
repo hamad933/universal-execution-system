@@ -35,7 +35,7 @@ def evaluate_idempotency(
     ]
     if not matches:
         return {
-            "schema_version": "0.7",
+            "schema_version": "0.8",
             "decision": "NEW_OPERATION",
             "operation_id": operation_id,
             "safe_to_execute": True,
@@ -45,7 +45,7 @@ def evaluate_idempotency(
     record = matches[-1]
     if record.get("request_digest") != request_digest:
         return {
-            "schema_version": "0.7",
+            "schema_version": "0.8",
             "decision": "OPERATION_ID_COLLISION",
             "operation_id": operation_id,
             "safe_to_execute": False,
@@ -66,7 +66,7 @@ def evaluate_idempotency(
         decision = "TERMINAL_REPLAY_REJECTED"
         safe_to_execute = False
     return {
-        "schema_version": "0.7",
+        "schema_version": "0.8",
         "decision": decision,
         "operation_id": operation_id,
         "existing_state": state,
@@ -78,6 +78,13 @@ def evaluate_idempotency(
 def canonical_request_digest(value: Any) -> str:
     raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _required_text(value: Any, name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{name} is required")
+    return text
 
 
 def _normalize_target(target: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
@@ -93,27 +100,32 @@ def _normalize_target(target: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
 
 @dataclass(frozen=True)
 class EffectIdentity:
-    """Canonical identity of one external effect, independent of request payload.
+    """One canonical external effect, independent of request payload.
 
-    The payload/request digest MUST NOT be placed in ``target``. A different
-    payload for the same effect therefore collides against the same operation
-    key and fails closed instead of creating a second external effect.
+    `lane_id` is supplied by Integration Authority and represents the complete
+    `(project, route, workstream)` lane. Audit fields are retained explicitly so
+    a scalar collision or wrong-lane handoff fails closed rather than becoming
+    an implicit authority grant.
     """
 
+    lane_id: str
     project: str
+    route: str
     workstream_id: str
     action: str
     target: tuple[tuple[str, str], ...]
 
     def __post_init__(self) -> None:
-        if not self.project or not self.workstream_id or not self.action:
-            raise ValueError("project, workstream_id, and action are required")
+        for name in ("lane_id", "project", "route", "workstream_id", "action"):
+            _required_text(getattr(self, name), name)
         if not self.target:
             raise ValueError("effect target is required")
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "lane_id": self.lane_id,
             "project": self.project,
+            "route": self.route,
             "workstream_id": self.workstream_id,
             "action": self.action,
             "target": dict(self.target),
@@ -125,24 +137,30 @@ class EffectIdentity:
         if not isinstance(target, Mapping):
             raise ValueError("effect target must be an object")
         return canonical_effect_identity(
-            action=str(value.get("action") or ""),
+            lane_id=str(value.get("lane_id") or ""),
             project=str(value.get("project") or ""),
+            route=str(value.get("route") or ""),
             workstream_id=str(value.get("workstream_id") or ""),
+            action=str(value.get("action") or ""),
             target=target,
         )
 
 
 def canonical_effect_identity(
     *,
-    action: str,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
+    action: str,
     target: Mapping[str, Any],
 ) -> EffectIdentity:
     return EffectIdentity(
-        project=str(project),
-        workstream_id=str(workstream_id),
-        action=str(action),
+        lane_id=_required_text(lane_id, "lane_id"),
+        project=_required_text(project, "project"),
+        route=_required_text(route, "route"),
+        workstream_id=_required_text(workstream_id, "workstream_id"),
+        action=_required_text(action, "action"),
         target=_normalize_target(target),
     )
 
@@ -157,20 +175,19 @@ def effect_operation_key(effect: EffectIdentity) -> str:
 
 def build_operation_key(
     *,
+    lane_id: str,
     action: str,
     project: str,
+    route: str,
     workstream_id: str,
     identity: Mapping[str, Any],
 ) -> str:
-    """Compatibility wrapper for canonical external-effect identity.
-
-    ``identity`` is effect identity only. Request payload/message/finding digests
-    belong in ``request_digest`` evidence and must not be included here.
-    """
     return effect_operation_key(
         canonical_effect_identity(
+            lane_id=lane_id,
             action=action,
             project=project,
+            route=route,
             workstream_id=workstream_id,
             target=identity,
         )
@@ -179,14 +196,18 @@ def build_operation_key(
 
 def waiting_answer_effect_identity(
     *,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
     session_id: str,
     waiting_activity_id: str,
 ) -> EffectIdentity:
     return canonical_effect_identity(
+        lane_id=lane_id,
         action="waiting-answer",
         project=project,
+        route=route,
         workstream_id=workstream_id,
         target={
             "provider": "jules",
@@ -198,17 +219,20 @@ def waiting_answer_effect_identity(
 
 def waiting_answer_operation_key(
     *,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
     session_id: str,
     waiting_activity_id: str,
     answer_digest: str | None = None,
 ) -> str:
-    # ``answer_digest`` is intentionally ignored for backward compatibility.
-    # It is request evidence, never external-effect identity.
+    # Payload digest is request evidence and never effect identity.
     return effect_operation_key(
         waiting_answer_effect_identity(
+            lane_id=lane_id,
             project=project,
+            route=route,
             workstream_id=workstream_id,
             session_id=session_id,
             waiting_activity_id=waiting_activity_id,
@@ -218,15 +242,19 @@ def waiting_answer_operation_key(
 
 def correction_packet_effect_identity(
     *,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
     writer_session_id: str,
     reviewer_session_id: str,
     candidate_sha: str,
 ) -> EffectIdentity:
     return canonical_effect_identity(
+        lane_id=lane_id,
         action="reviewer-writer-correction",
         project=project,
+        route=route,
         workstream_id=workstream_id,
         target={
             "writer_session_id": writer_session_id,
@@ -238,17 +266,20 @@ def correction_packet_effect_identity(
 
 def correction_packet_operation_key(
     *,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
     writer_session_id: str,
     reviewer_session_id: str,
     candidate_sha: str,
     findings_digest: str | None = None,
 ) -> str:
-    # ``findings_digest`` is request evidence and intentionally not identity.
     return effect_operation_key(
         correction_packet_effect_identity(
+            lane_id=lane_id,
             project=project,
+            route=route,
             workstream_id=workstream_id,
             writer_session_id=writer_session_id,
             reviewer_session_id=reviewer_session_id,
@@ -259,7 +290,9 @@ def correction_packet_operation_key(
 
 def reviewer_dispatch_effect_identity(
     *,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
     candidate_sha: str,
     reviewer_lineage: str,
@@ -267,8 +300,10 @@ def reviewer_dispatch_effect_identity(
     re_review: bool = False,
 ) -> EffectIdentity:
     return canonical_effect_identity(
+        lane_id=lane_id,
         action="reviewer-rereview-dispatch" if re_review else "reviewer-dispatch",
         project=project,
+        route=route,
         workstream_id=workstream_id,
         target={
             "candidate_sha": candidate_sha,
@@ -280,7 +315,9 @@ def reviewer_dispatch_effect_identity(
 
 def reviewer_dispatch_operation_key(
     *,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
     candidate_sha: str,
     reviewer_lineage: str,
@@ -289,7 +326,9 @@ def reviewer_dispatch_operation_key(
 ) -> str:
     return effect_operation_key(
         reviewer_dispatch_effect_identity(
+            lane_id=lane_id,
             project=project,
+            route=route,
             workstream_id=workstream_id,
             candidate_sha=candidate_sha,
             reviewer_lineage=reviewer_lineage,
@@ -301,7 +340,9 @@ def reviewer_dispatch_operation_key(
 
 def task_session_effect_identity(
     *,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
     intent: str,
     task_kind: str,
@@ -311,8 +352,10 @@ def task_session_effect_identity(
     if intent not in {"recommendation", "create"}:
         raise ValueError("intent must be 'recommendation' or 'create'")
     return canonical_effect_identity(
+        lane_id=lane_id,
         action=f"task-session-{intent}",
         project=project,
+        route=route,
         workstream_id=workstream_id,
         target={
             "task_kind": task_kind,
@@ -324,7 +367,9 @@ def task_session_effect_identity(
 
 def task_session_operation_key(
     *,
+    lane_id: str,
     project: str,
+    route: str,
     workstream_id: str,
     intent: str,
     task_kind: str,
@@ -333,7 +378,9 @@ def task_session_operation_key(
 ) -> str:
     return effect_operation_key(
         task_session_effect_identity(
+            lane_id=lane_id,
             project=project,
+            route=route,
             workstream_id=workstream_id,
             intent=intent,
             task_kind=task_kind,
@@ -363,12 +410,9 @@ def evaluate_branch_serialization(
             continue
         if str(record.get("state") or "") not in ACTIVE_STATES:
             continue
-        conflicts.append({
-            "operation_id": current_id,
-            "state": record.get("state"),
-        })
+        conflicts.append({"operation_id": current_id, "state": record.get("state")})
     return {
-        "schema_version": "0.7",
+        "schema_version": "0.8",
         "serialization_key": branch_serialization_key(repository, ref),
         "available": not conflicts,
         "conflicts": conflicts,
@@ -389,7 +433,7 @@ def make_operation_receipt(
     if state not in ACTIVE_STATES | TERMINAL_STATES | READBACK_RETRYABLE_STATES:
         raise ValueError(f"unsupported operation state: {state}")
     return {
-        "schema_version": "0.7",
+        "schema_version": "0.8",
         "operation_id": operation_id,
         "request_digest": request_digest,
         "repository": repository,
@@ -439,7 +483,7 @@ def evaluate_write_boundary(
 
     ready = not failures
     return {
-        "schema_version": "0.7",
+        "schema_version": "0.8",
         "decision": "READY_FOR_EXECUTOR_INTEGRATION" if ready else "BLOCKED",
         "ready": ready,
         "execution_enabled": False,
