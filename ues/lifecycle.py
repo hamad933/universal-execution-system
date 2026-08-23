@@ -75,9 +75,13 @@ class NextAction(str, Enum):
     VERIFY_ACTION_IN_FLIGHT = "VERIFY_ACTION_IN_FLIGHT"
 
 
-class Capability(str, Enum):
+class ActionCapability(str, Enum):
     READ_ONLY = "READ_ONLY"
-    MUTATION = "MUTATION"
+    CONTROL_SIGNAL = "CONTROL_SIGNAL"
+    EXTERNAL_EFFECT = "EXTERNAL_EFFECT"
+
+
+Capability = ActionCapability
 
 
 class AuthorizationDecision(str, Enum):
@@ -112,9 +116,13 @@ class StopGate(str, Enum):
     PROVIDER_SOURCE_BINDING_REQUIRED = "PROVIDER_SOURCE_BINDING_REQUIRED"
     AMBIGUOUS_PROVIDER_SOURCE_BINDING = "AMBIGUOUS_PROVIDER_SOURCE_BINDING"
     PROVIDER_SOURCE_MISMATCH = "PROVIDER_SOURCE_MISMATCH"
+    ACTOR_BINDING_REQUIRED = "ACTOR_BINDING_REQUIRED"
+    AMBIGUOUS_ACTOR_BINDING = "AMBIGUOUS_ACTOR_BINDING"
+    EVIDENCE_INCOMPLETE = "EVIDENCE_INCOMPLETE"
+    BINDING_DRIFT_RECONCILIATION_REQUIRED = "BINDING_DRIFT_RECONCILIATION_REQUIRED"
 
 
-MUTATION_ACTIONS = frozenset(
+EXTERNAL_EFFECT_ACTIONS = frozenset(
     {
         NextAction.PUBLISH_CANDIDATE,
         NextAction.RUN_EXACT_HEAD_CI,
@@ -122,12 +130,13 @@ MUTATION_ACTIONS = frozenset(
         NextAction.ROUTE_FINDINGS_TO_SAME_WRITER,
         NextAction.CONTINUE_SAME_WRITER,
         NextAction.START_RE_REVIEW,
-        NextAction.REQUEST_PARENT_REVIEW,
         NextAction.CONTINUE_SAME_SESSION,
         NextAction.RECOVER_SAME_LINEAGE,
         NextAction.RESUME_PAUSED_LANE,
     }
 )
+
+CONTROL_SIGNAL_ACTIONS = frozenset({NextAction.REQUEST_PARENT_REVIEW})
 
 
 class ForgottenLaneError(ValueError):
@@ -155,7 +164,7 @@ class LifecycleResolution:
     action: Optional[NextAction] = None
     stop_gate: Optional[StopGate] = None
     reason: str = ""
-    required_capability: Capability = Capability.READ_ONLY
+    required_capability: ActionCapability = ActionCapability.READ_ONLY
     required_evidence: tuple[str, ...] = ()
 
     @property
@@ -163,12 +172,27 @@ class LifecycleResolution:
         return self.action
 
     @property
-    def executable(self) -> bool:
+    def semantic_candidate(self) -> bool:
         return self.action is not None and self.stop_gate is None
+
+    @property
+    def executable(self) -> bool:
+        return (
+            self.semantic_candidate
+            and self.required_capability is not ActionCapability.EXTERNAL_EFFECT
+        )
+
+
+def action_capability(action: Optional[NextAction]) -> ActionCapability:
+    if action in EXTERNAL_EFFECT_ACTIONS:
+        return ActionCapability.EXTERNAL_EFFECT
+    if action in CONTROL_SIGNAL_ACTIONS:
+        return ActionCapability.CONTROL_SIGNAL
+    return ActionCapability.READ_ONLY
 
 
 def action_requires_mutation(action: Optional[NextAction]) -> bool:
-    return action in MUTATION_ACTIONS
+    return action_capability(action) is ActionCapability.EXTERNAL_EFFECT
 
 
 def ensure_lifecycle_resolution(
@@ -178,23 +202,20 @@ def ensure_lifecycle_resolution(
     action: Optional[NextAction] = None,
     stop_gate: Optional[StopGate] = None,
     reason: str = "",
-    required_capability: Optional[Capability] = None,
+    required_capability: Optional[ActionCapability] = None,
     required_evidence: tuple[str, ...] = (),
 ) -> LifecycleResolution:
     if action is None and stop_gate is None:
         raise ForgottenLaneError(
             f"{StopGate.FORGOTTEN_LANE.value}: {state.value} requires a semantic next action or Stop Gate"
         )
-    capability = required_capability
-    if capability is None:
-        capability = Capability.MUTATION if action_requires_mutation(action) else Capability.READ_ONLY
     return LifecycleResolution(
         state,
         next_state or state,
         action,
         stop_gate,
         reason,
-        capability,
+        required_capability or action_capability(action),
         tuple(dict.fromkeys(required_evidence)),
     )
 
@@ -210,7 +231,7 @@ def _coerce(value: object, enum_type: type[Enum]):
         return None
 
 
-def _stop(state: LifecycleState, gate: StopGate, reason: str):
+def _stop(state: LifecycleState, gate: StopGate, reason: str) -> LifecycleResolution:
     return ensure_lifecycle_resolution(state, stop_gate=gate, reason=reason)
 
 
@@ -222,92 +243,13 @@ def _transition(
     *,
     required_evidence: tuple[str, ...] = (),
 ) -> LifecycleResolution:
-    capability = Capability.MUTATION if action_requires_mutation(action) else Capability.READ_ONLY
-    evidence = list(required_evidence)
-    if capability is Capability.READ_ONLY:
-        return ensure_lifecycle_resolution(
-            context.state,
-            next_state=target,
-            action=action,
-            reason=reason,
-            required_capability=capability,
-            required_evidence=tuple(evidence),
-        )
-
-    evidence.extend(("external_authorization", "provider_source_binding:PROVEN_EXPLICIT"))
-    source_status = _coerce(context.source_binding_status, SourceBindingStatus)
-    if source_status is SourceBindingStatus.AMBIGUOUS:
-        return ensure_lifecycle_resolution(
-            context.state,
-            next_state=target,
-            action=action,
-            stop_gate=StopGate.AMBIGUOUS_PROVIDER_SOURCE_BINDING,
-            reason=f"{reason}; mutation blocked by ambiguous provider/source binding",
-            required_capability=capability,
-            required_evidence=tuple(evidence),
-        )
-    if source_status is SourceBindingStatus.MISMATCH:
-        return ensure_lifecycle_resolution(
-            context.state,
-            next_state=target,
-            action=action,
-            stop_gate=StopGate.PROVIDER_SOURCE_MISMATCH,
-            reason=f"{reason}; mutation blocked by mismatched provider/source binding",
-            required_capability=capability,
-            required_evidence=tuple(evidence),
-        )
-    if source_status is not SourceBindingStatus.PROVEN_EXPLICIT:
-        return ensure_lifecycle_resolution(
-            context.state,
-            next_state=target,
-            action=action,
-            stop_gate=StopGate.PROVIDER_SOURCE_BINDING_REQUIRED,
-            reason=f"{reason}; explicit provider/source proof is required before mutation",
-            required_capability=capability,
-            required_evidence=tuple(evidence),
-        )
-
-    decision = _coerce(context.authorization_decision, AuthorizationDecision)
-    authorized_action = _coerce(context.authorized_action, NextAction)
-    if decision is AuthorizationDecision.DENIED and (
-        authorized_action is None or authorized_action is action
-    ):
-        return ensure_lifecycle_resolution(
-            context.state,
-            next_state=target,
-            action=action,
-            stop_gate=StopGate.EXTERNAL_AUTHORIZATION_DENIED,
-            reason=f"{reason}; external policy/routing authorization denied mutation",
-            required_capability=capability,
-            required_evidence=tuple(evidence),
-        )
-    if decision is AuthorizationDecision.AUTHORIZED and authorized_action is not action:
-        return ensure_lifecycle_resolution(
-            context.state,
-            next_state=target,
-            action=action,
-            stop_gate=StopGate.AUTHORIZATION_BINDING_MISMATCH,
-            reason=f"{reason}; authorization is not bound to the required semantic action",
-            required_capability=capability,
-            required_evidence=tuple(evidence),
-        )
-    if decision is not AuthorizationDecision.AUTHORIZED:
-        return ensure_lifecycle_resolution(
-            context.state,
-            next_state=target,
-            action=action,
-            stop_gate=StopGate.EXTERNAL_AUTHORIZATION_REQUIRED,
-            reason=f"{reason}; mutation requires an explicit external authorization decision",
-            required_capability=capability,
-            required_evidence=tuple(evidence),
-        )
     return ensure_lifecycle_resolution(
         context.state,
         next_state=target,
         action=action,
-        reason=f"{reason}; external authorization and provider/source proof are present",
-        required_capability=capability,
-        required_evidence=tuple(evidence),
+        reason=reason,
+        required_capability=action_capability(action),
+        required_evidence=required_evidence,
     )
 
 
@@ -425,7 +367,7 @@ def resolve_next_action(context: LifecycleContext) -> LifecycleResolution:
                 context,
                 LifecycleState.PARENT_REVIEW_PENDING,
                 NextAction.REQUEST_PARENT_REVIEW,
-                "PASS is not acceptance; Parent review remains",
+                "PASS is not acceptance; Parent review remains a control signal",
                 required_evidence=("exact_sha_review_evidence",),
             )
         if outcome is ReviewOutcome.FINDINGS:
