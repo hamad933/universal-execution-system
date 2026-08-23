@@ -12,5 +12,5 @@ dependencies = []
 [project.scripts]
 ues = "ues.cli:main"
 
-[tool.setuptools]
-packages = ["ues"]
+[tool.setuptools.packages.find]
+include = ["ues*"]
