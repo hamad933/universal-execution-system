@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 ACTIVE_STATES = {"PLANNED", "EXECUTING", "IN_FLIGHT", "UNKNOWN"}
@@ -34,7 +35,7 @@ def evaluate_idempotency(
     ]
     if not matches:
         return {
-            "schema_version": "0.6",
+            "schema_version": "0.7",
             "decision": "NEW_OPERATION",
             "operation_id": operation_id,
             "safe_to_execute": True,
@@ -44,7 +45,7 @@ def evaluate_idempotency(
     record = matches[-1]
     if record.get("request_digest") != request_digest:
         return {
-            "schema_version": "0.6",
+            "schema_version": "0.7",
             "decision": "OPERATION_ID_COLLISION",
             "operation_id": operation_id,
             "safe_to_execute": False,
@@ -65,7 +66,7 @@ def evaluate_idempotency(
         decision = "TERMINAL_REPLAY_REJECTED"
         safe_to_execute = False
     return {
-        "schema_version": "0.6",
+        "schema_version": "0.7",
         "decision": decision,
         "operation_id": operation_id,
         "existing_state": state,
@@ -79,6 +80,81 @@ def canonical_request_digest(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _normalize_target(target: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    normalized: list[tuple[str, str]] = []
+    for key, value in sorted(target.items(), key=lambda item: str(item[0])):
+        if value is None:
+            continue
+        normalized.append((str(key), str(value)))
+    if not normalized:
+        raise ValueError("effect target must contain at least one exact binding")
+    return tuple(normalized)
+
+
+@dataclass(frozen=True)
+class EffectIdentity:
+    """Canonical identity of one external effect, independent of request payload.
+
+    The payload/request digest MUST NOT be placed in ``target``. A different
+    payload for the same effect therefore collides against the same operation
+    key and fails closed instead of creating a second external effect.
+    """
+
+    project: str
+    workstream_id: str
+    action: str
+    target: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        if not self.project or not self.workstream_id or not self.action:
+            raise ValueError("project, workstream_id, and action are required")
+        if not self.target:
+            raise ValueError("effect target is required")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project": self.project,
+            "workstream_id": self.workstream_id,
+            "action": self.action,
+            "target": dict(self.target),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "EffectIdentity":
+        target = value.get("target")
+        if not isinstance(target, Mapping):
+            raise ValueError("effect target must be an object")
+        return canonical_effect_identity(
+            action=str(value.get("action") or ""),
+            project=str(value.get("project") or ""),
+            workstream_id=str(value.get("workstream_id") or ""),
+            target=target,
+        )
+
+
+def canonical_effect_identity(
+    *,
+    action: str,
+    project: str,
+    workstream_id: str,
+    target: Mapping[str, Any],
+) -> EffectIdentity:
+    return EffectIdentity(
+        project=str(project),
+        workstream_id=str(workstream_id),
+        action=str(action),
+        target=_normalize_target(target),
+    )
+
+
+def effect_operation_key(effect: EffectIdentity) -> str:
+    digest = canonical_request_digest(effect.to_dict())
+    safe_action = "".join(
+        ch if ch.isalnum() or ch in "-_" else "-" for ch in effect.action.lower()
+    )
+    return f"ues-v2:{safe_action}:{digest}"
+
+
 def build_operation_key(
     *,
     action: str,
@@ -86,28 +162,38 @@ def build_operation_key(
     workstream_id: str,
     identity: Mapping[str, Any],
 ) -> str:
-    """Build a stable, non-secret idempotency identity for one logical action.
+    """Compatibility wrapper for canonical external-effect identity.
 
-    Callers should put provider/session/activity/SHA/review/lineage identifiers in
-    ``identity`` and put message bodies or packets behind digests rather than raw
-    text. Empty identity fields are discarded so independent adapters can add
-    only the bindings they actually possess.
+    ``identity`` is effect identity only. Request payload/message/finding digests
+    belong in ``request_digest`` evidence and must not be included here.
     """
-    normalized = {
-        "action": str(action),
-        "project": str(project),
-        "workstream_id": str(workstream_id),
-        "identity": {
-            str(key): value
-            for key, value in sorted(identity.items())
-            if value not in (None, "", [], {})
-        },
-    }
-    digest = canonical_request_digest(normalized)
-    safe_action = "".join(
-        ch if ch.isalnum() or ch in "-_" else "-" for ch in action.lower()
+    return effect_operation_key(
+        canonical_effect_identity(
+            action=action,
+            project=project,
+            workstream_id=workstream_id,
+            target=identity,
+        )
     )
-    return f"ues-v2:{safe_action}:{digest}"
+
+
+def waiting_answer_effect_identity(
+    *,
+    project: str,
+    workstream_id: str,
+    session_id: str,
+    waiting_activity_id: str,
+) -> EffectIdentity:
+    return canonical_effect_identity(
+        action="waiting-answer",
+        project=project,
+        workstream_id=workstream_id,
+        target={
+            "provider": "jules",
+            "session_id": session_id,
+            "waiting_activity_id": waiting_activity_id,
+        },
+    )
 
 
 def waiting_answer_operation_key(
@@ -116,16 +202,36 @@ def waiting_answer_operation_key(
     workstream_id: str,
     session_id: str,
     waiting_activity_id: str,
-    answer_digest: str,
+    answer_digest: str | None = None,
 ) -> str:
-    return build_operation_key(
-        action="waiting-answer",
+    # ``answer_digest`` is intentionally ignored for backward compatibility.
+    # It is request evidence, never external-effect identity.
+    return effect_operation_key(
+        waiting_answer_effect_identity(
+            project=project,
+            workstream_id=workstream_id,
+            session_id=session_id,
+            waiting_activity_id=waiting_activity_id,
+        )
+    )
+
+
+def correction_packet_effect_identity(
+    *,
+    project: str,
+    workstream_id: str,
+    writer_session_id: str,
+    reviewer_session_id: str,
+    candidate_sha: str,
+) -> EffectIdentity:
+    return canonical_effect_identity(
+        action="reviewer-writer-correction",
         project=project,
         workstream_id=workstream_id,
-        identity={
-            "session_id": session_id,
-            "waiting_activity_id": waiting_activity_id,
-            "answer_digest": answer_digest,
+        target={
+            "writer_session_id": writer_session_id,
+            "reviewer_session_id": reviewer_session_id,
+            "candidate_sha": candidate_sha,
         },
     )
 
@@ -137,17 +243,37 @@ def correction_packet_operation_key(
     writer_session_id: str,
     reviewer_session_id: str,
     candidate_sha: str,
-    findings_digest: str,
+    findings_digest: str | None = None,
 ) -> str:
-    return build_operation_key(
-        action="reviewer-writer-correction",
+    # ``findings_digest`` is request evidence and intentionally not identity.
+    return effect_operation_key(
+        correction_packet_effect_identity(
+            project=project,
+            workstream_id=workstream_id,
+            writer_session_id=writer_session_id,
+            reviewer_session_id=reviewer_session_id,
+            candidate_sha=candidate_sha,
+        )
+    )
+
+
+def reviewer_dispatch_effect_identity(
+    *,
+    project: str,
+    workstream_id: str,
+    candidate_sha: str,
+    reviewer_lineage: str,
+    dispatch_target: str,
+    re_review: bool = False,
+) -> EffectIdentity:
+    return canonical_effect_identity(
+        action="reviewer-rereview-dispatch" if re_review else "reviewer-dispatch",
         project=project,
         workstream_id=workstream_id,
-        identity={
-            "writer_session_id": writer_session_id,
-            "reviewer_session_id": reviewer_session_id,
+        target={
             "candidate_sha": candidate_sha,
-            "findings_digest": findings_digest,
+            "reviewer_lineage": reviewer_lineage,
+            "dispatch_target": dispatch_target,
         },
     )
 
@@ -159,15 +285,39 @@ def reviewer_dispatch_operation_key(
     candidate_sha: str,
     reviewer_lineage: str,
     dispatch_target: str,
+    re_review: bool = False,
 ) -> str:
-    return build_operation_key(
-        action="reviewer-dispatch",
+    return effect_operation_key(
+        reviewer_dispatch_effect_identity(
+            project=project,
+            workstream_id=workstream_id,
+            candidate_sha=candidate_sha,
+            reviewer_lineage=reviewer_lineage,
+            dispatch_target=dispatch_target,
+            re_review=re_review,
+        )
+    )
+
+
+def task_session_effect_identity(
+    *,
+    project: str,
+    workstream_id: str,
+    intent: str,
+    task_kind: str,
+    lineage: str,
+    authority_event_id: str,
+) -> EffectIdentity:
+    if intent not in {"recommendation", "create"}:
+        raise ValueError("intent must be 'recommendation' or 'create'")
+    return canonical_effect_identity(
+        action=f"task-session-{intent}",
         project=project,
         workstream_id=workstream_id,
-        identity={
-            "candidate_sha": candidate_sha,
-            "reviewer_lineage": reviewer_lineage,
-            "dispatch_target": dispatch_target,
+        target={
+            "task_kind": task_kind,
+            "lineage": lineage,
+            "authority_event_id": authority_event_id,
         },
     )
 
@@ -181,17 +331,15 @@ def task_session_operation_key(
     lineage: str,
     authority_event_id: str,
 ) -> str:
-    if intent not in {"recommendation", "create"}:
-        raise ValueError("intent must be 'recommendation' or 'create'")
-    return build_operation_key(
-        action=f"task-session-{intent}",
-        project=project,
-        workstream_id=workstream_id,
-        identity={
-            "task_kind": task_kind,
-            "lineage": lineage,
-            "authority_event_id": authority_event_id,
-        },
+    return effect_operation_key(
+        task_session_effect_identity(
+            project=project,
+            workstream_id=workstream_id,
+            intent=intent,
+            task_kind=task_kind,
+            lineage=lineage,
+            authority_event_id=authority_event_id,
+        )
     )
 
 
@@ -220,7 +368,7 @@ def evaluate_branch_serialization(
             "state": record.get("state"),
         })
     return {
-        "schema_version": "0.6",
+        "schema_version": "0.7",
         "serialization_key": branch_serialization_key(repository, ref),
         "available": not conflicts,
         "conflicts": conflicts,
@@ -241,7 +389,7 @@ def make_operation_receipt(
     if state not in ACTIVE_STATES | TERMINAL_STATES | READBACK_RETRYABLE_STATES:
         raise ValueError(f"unsupported operation state: {state}")
     return {
-        "schema_version": "0.6",
+        "schema_version": "0.7",
         "operation_id": operation_id,
         "request_digest": request_digest,
         "repository": repository,
@@ -291,7 +439,7 @@ def evaluate_write_boundary(
 
     ready = not failures
     return {
-        "schema_version": "0.6",
+        "schema_version": "0.7",
         "decision": "READY_FOR_EXECUTOR_INTEGRATION" if ready else "BLOCKED",
         "ready": ready,
         "execution_enabled": False,
