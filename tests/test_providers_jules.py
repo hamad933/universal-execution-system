@@ -170,9 +170,20 @@ class JulesProviderTests(unittest.TestCase):
                 self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
 
     def test_write_429_reconciles_without_retry(self):
-        client,transport,sleeps=self.client([response(payload=SESSION),response(payload=SOURCE),response(payload={"activities":[]}),response(status=429,headers={"Retry-After":"7"}),response(payload=SESSION),response(payload={"activities":[])])
-        with self.assertRaises(WriteOutcomeUnknown) as ctx: client.send_message("123","continue",expected_repository="o/r")
-        self.assertEqual(ctx.exception.retry_after,7.0); self.assertEqual(sleeps,[]); self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
+        steps=[
+            response(payload=SESSION),
+            response(payload=SOURCE),
+            response(payload={"activities":[]}),
+            response(status=429,headers={"Retry-After":"7"}),
+            response(payload=SESSION),
+            response(payload={"activities":[]}),
+        ]
+        client,transport,sleeps=self.client(steps)
+        with self.assertRaises(WriteOutcomeUnknown) as ctx:
+            client.send_message("123","continue",expected_repository="o/r")
+        self.assertEqual(ctx.exception.retry_after,7.0)
+        self.assertEqual(sleeps,[])
+        self.assertEqual(len([r for r in transport.requests if r["method"]=="POST"]),1)
 
     def test_read_429_retries_with_retry_after(self):
         client,transport,sleeps=self.client([response(status=429,headers={"Retry-After":"3"}),response(payload=SESSION)])
