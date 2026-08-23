@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 
 from .idempotency import (
     canonical_request_digest,
@@ -64,6 +64,15 @@ def _deny(
     return result
 
 
+def _action_authorized(actions: Iterable[str]) -> bool:
+    normalized = {
+        str(action).strip().casefold()
+        for action in actions
+        if str(action).strip()
+    }
+    return WAITING_ANSWER_ACTION.casefold() in normalized
+
+
 def _writer_binding_failure(
     actor_bindings: Mapping[str, Any],
     *,
@@ -102,7 +111,8 @@ def execute_waiting_answer_canary(
     expected_repository: str,
     expected_source: str,
     prompt: str,
-    project_action_authorized: bool,
+    project_auto_safe_actions: Iterable[str],
+    project_policy_evidence_id: str,
     canary_authority_event_id: str,
     observed_start: Mapping[str, Any],
     owner: str,
@@ -112,10 +122,10 @@ def execute_waiting_answer_canary(
     """Execute at most one explicitly-authorized existing-session waiting answer.
 
     This is canary-ready plumbing, not canary authority. It has no task/session creation
-    path. Runtime CANARY mode alone is insufficient: project action authorization,
-    canonical lane identity, an exact one-shot CanaryGrant and a role-specific explicit
-    Writer/source binding are required. JulesClient then independently re-verifies the
-    live source/repository before its POST.
+    path. Runtime CANARY mode alone is insufficient: an exact project action allowlist and
+    policy evidence identity, canonical lane identity, an exact one-shot CanaryGrant and a
+    role-specific explicit Writer/source binding are all required. JulesClient then
+    independently re-verifies the live source/repository before its POST.
 
     Durable claim/lease/IN_FLIGHT state is persisted before the provider call. Any
     provider ambiguity is recorded as UNKNOWN and never retried blindly.
@@ -130,6 +140,9 @@ def execute_waiting_answer_canary(
     expected_repository = _required(expected_repository, "expected_repository")
     expected_source = _required(expected_source, "expected_source")
     prompt = _required(prompt, "prompt")
+    project_policy_evidence_id = _required(
+        project_policy_evidence_id, "project_policy_evidence_id"
+    )
     canary_authority_event_id = _required(
         canary_authority_event_id, "canary_authority_event_id"
     )
@@ -139,7 +152,7 @@ def execute_waiting_answer_canary(
 
     if lane_id != canonical_lane_id(project, route, workstream_id):
         return _deny("NONCANONICAL_LANE_ID")
-    if not project_action_authorized:
+    if not _action_authorized(project_auto_safe_actions):
         return _deny("PROJECT_ACTION_POLICY_DENIED")
 
     runtime = store.read_workstream(lane_id)
@@ -185,6 +198,10 @@ def execute_waiting_answer_canary(
         action=WAITING_ANSWER_ACTION,
         request_digest=request_digest,
         ttl_seconds=ttl_seconds,
+        receipt={
+            "project_policy_evidence_id": project_policy_evidence_id,
+            "canary_authority_event_id": canary_authority_event_id,
+        },
         effect_identity=effect,
         observed_start=observed_start,
         canary_authority_event_id=canary_authority_event_id,
