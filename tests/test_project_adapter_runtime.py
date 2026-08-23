@@ -73,11 +73,26 @@ class ProjectAdapterRuntimeTests(unittest.TestCase):
         self.assertEqual(adapter.route, "INTERNAL:SAMPLE")
         self.assertEqual(adapter.project_auto_safe_actions, ())
         self.assertFalse(adapter.config_grants_mutation_authority)
+        self.assertFalse(adapter.mutation_allowed)
         self.assertEqual(adapter.default_mode, "SHADOW")
 
     def test_runtime_mode_cannot_be_declared_authority(self):
         raw = sample_adapter()
         raw["activation"]["runtime_mode_is_authority"] = True
+        with self.assertRaises(ProjectAdapterError):
+            parse_project_adapter(raw)
+
+    def test_non_shadow_default_mode_is_rejected(self):
+        for mode in ("CANARY", "ACTIVE_AUTO_SAFE"):
+            with self.subTest(mode=mode):
+                raw = sample_adapter()
+                raw["activation"]["default_mode"] = mode
+                with self.assertRaises(ProjectAdapterError):
+                    parse_project_adapter(raw)
+
+    def test_config_cannot_enable_mutation(self):
+        raw = sample_adapter()
+        raw["activation"]["mutation_allowed"] = True
         with self.assertRaises(ProjectAdapterError):
             parse_project_adapter(raw)
 
@@ -111,7 +126,10 @@ class ProjectAdapterRuntimeTests(unittest.TestCase):
         requirement = profile.requirements[0]
         self.assertFalse(requirement.proven)
         self.assertFalse(requirement.current)
-        self.assertEqual(profile.issues_for(None), ("missing_required_evidence:GITHUB_ACTIONS:Core CI:validate",))
+        self.assertEqual(
+            profile.issues_for(None),
+            ("missing_required_evidence:GITHUB_ACTIONS:Core CI:validate",),
+        )
 
     def test_exact_observation_can_satisfy_generic_profile(self):
         adapter = parse_project_adapter(sample_adapter())
