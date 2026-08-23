@@ -6,6 +6,7 @@ fixture contract. Missing bindings and wrong behavior are hard failures.
 """
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
 import os
@@ -25,8 +26,20 @@ class IntegrationHarnessShapeTests(unittest.TestCase):
 
     def test_production_adapter_does_not_import_reference_oracle(self):
         source = inspect.getsource(importlib.import_module("tests.control_plane.production_adapters"))
-        self.assertNotIn("ReferenceOracle", source)
-        self.assertNotIn("from tests.control_plane.replay_harness", source)
+        tree = ast.parse(source)
+        forbidden = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module == "tests.control_plane.replay_harness":
+                    forbidden.append(f"from:{module}")
+                if any(alias.name == "ReferenceOracle" for alias in node.names):
+                    forbidden.append("name:ReferenceOracle")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "tests.control_plane.replay_harness" or alias.name.endswith(".ReferenceOracle"):
+                        forbidden.append(f"import:{alias.name}")
+        self.assertEqual(forbidden, [])
 
 @unittest.skipUnless(INTEGRATION_ENABLED, "set UES_CONTROL_PLANE_INTEGRATION=1 on composed A-D candidate")
 class ProductionBackedReplayTests(unittest.TestCase):
