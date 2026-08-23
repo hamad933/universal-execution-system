@@ -7,6 +7,7 @@ import re
 from typing import Iterable, Mapping, Optional
 
 from .lifecycle import (
+    ActionCapability,
     AuthorizationDecision,
     CIOutcome,
     FailureClass,
@@ -59,6 +60,31 @@ class ReviewBinding:
 
 
 @dataclass(frozen=True)
+class ActorBinding:
+    role: str
+    provider: Optional[str] = None
+    session_id: Optional[str] = None
+    task_id: Optional[str] = None
+    lineage: Optional[str] = None
+    source_repository: Optional[str] = None
+    source_identity: Optional[str] = None
+    proof_status: SourceBindingStatus = SourceBindingStatus.PROPOSED_UNVERIFIED
+    evidence_id: Optional[str] = None
+
+    @property
+    def status(self) -> SourceBindingStatus:
+        return self.proof_status
+
+    @property
+    def session_key(self) -> Optional[tuple[str, str]]:
+        provider = _text(self.provider)
+        session_id = _text(self.session_id)
+        if provider is None or session_id is None:
+            return None
+        return provider.casefold(), session_id
+
+
+@dataclass(frozen=True)
 class ProviderSourceBinding:
     provider: Optional[str] = None
     source_repository: Optional[str] = None
@@ -68,6 +94,7 @@ class ProviderSourceBinding:
     role: Optional[str] = None
     status: SourceBindingStatus = SourceBindingStatus.PROPOSED_UNVERIFIED
     evidence_id: Optional[str] = None
+    lineage: Optional[str] = None
 
     @property
     def session_key(self) -> Optional[tuple[str, str]]:
@@ -75,7 +102,76 @@ class ProviderSourceBinding:
         session_id = _text(self.session_id)
         if provider is None or session_id is None:
             return None
-        return provider, session_id
+        return provider.casefold(), session_id
+
+    def as_actor(self, *, fallback_role: Optional[str] = None) -> ActorBinding:
+        return ActorBinding(
+            role=_text(self.role) or _text(fallback_role) or "UNSPECIFIED",
+            provider=self.provider,
+            session_id=self.session_id,
+            task_id=self.task_id,
+            lineage=self.lineage,
+            source_repository=self.source_repository,
+            source_identity=self.source_identity,
+            proof_status=self.status,
+            evidence_id=self.evidence_id,
+        )
+
+
+@dataclass(frozen=True)
+class ActorBindingResolution:
+    role: str
+    state: str
+    binding: Optional[ActorBinding] = None
+    issues: tuple[str, ...] = ()
+
+    @property
+    def proven(self) -> bool:
+        return (
+            self.state == SourceBindingStatus.PROVEN_EXPLICIT.value
+            and self.binding is not None
+        )
+
+
+@dataclass(frozen=True)
+class EvidenceRequirement:
+    name: str
+    proven: bool
+    current: bool = True
+    evidence_id: Optional[str] = None
+    actions: tuple[str, ...] = ()
+
+    def applies_to(self, action: Optional[NextAction]) -> bool:
+        if not self.actions:
+            return True
+        if action is None:
+            return False
+        return action.value in self.actions
+
+
+@dataclass(frozen=True)
+class RequiredEvidenceProfile:
+    profile_id: str
+    requirements: tuple[EvidenceRequirement, ...] = ()
+
+    def issues_for(self, action: Optional[NextAction]) -> tuple[str, ...]:
+        issues: list[str] = []
+        seen: set[str] = set()
+        for requirement in self.requirements:
+            if not requirement.applies_to(action):
+                continue
+            name = _text(requirement.name)
+            if name is None:
+                issues.append("invalid:evidence_profile.requirement_name")
+                continue
+            if name in seen:
+                issues.append(f"duplicate:evidence_profile:{name}")
+            seen.add(name)
+            if not requirement.proven:
+                issues.append(f"missing_required_evidence:{name}")
+            elif not requirement.current:
+                issues.append(f"stale_required_evidence:{name}")
+        return tuple(dict.fromkeys(issues))
 
 
 @dataclass(frozen=True)
@@ -103,6 +199,9 @@ class WorkstreamBinding:
     jules_task_id: Optional[str] = None
     writer_lineage: Optional[str] = None
     reviewer_lineage: Optional[str] = None
+    actor_bindings: tuple[ActorBinding, ...] = ()
+    scope_identity: Optional[str] = None
+    evidence_profile: Optional[RequiredEvidenceProfile] = None
     provider_source: Optional[ProviderSourceBinding] = None
     authorization: Optional[AuthorizationBinding] = None
     pr_number: Optional[int] = None
@@ -119,6 +218,9 @@ class WorkstreamBinding:
     next_action: Optional[str] = None
     stop_gate: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "actor_bindings", tuple(self.actor_bindings or ()))
+
     @property
     def lane_key(self) -> Optional[LaneKey]:
         return canonical_lane_key(self)
@@ -132,6 +234,14 @@ class ReconciliationResult:
     candidate_sha_moved: bool = False
     prior_review_invalidated: bool = False
     prior_ci_invalidated: bool = False
+
+    @property
+    def semantic_candidate(self) -> bool:
+        return (
+            self.resolution.semantic_candidate
+            and not self.issues
+            and self.binding.action_in_flight is None
+        )
 
     @property
     def executable(self) -> bool:
@@ -157,6 +267,112 @@ def canonical_lane_key(binding: WorkstreamBinding) -> Optional[LaneKey]:
     if project is None or route is None or workstream is None:
         return None
     return project, route, workstream
+
+
+def _canonical_actors(binding: WorkstreamBinding) -> tuple[ActorBinding, ...]:
+    actors = list(binding.actor_bindings)
+    if binding.provider_source is not None:
+        actors.append(binding.provider_source.as_actor(fallback_role=binding.role))
+    if not actors and _text(binding.jules_session_id):
+        actors.append(
+            ActorBinding(
+                role=_text(binding.role) or "UNSPECIFIED",
+                provider="jules",
+                session_id=_text(binding.jules_session_id),
+                task_id=_text(binding.jules_task_id),
+                lineage=(
+                    _text(binding.writer_lineage)
+                    if str(binding.role or "").upper() == "WRITER"
+                    else _text(binding.reviewer_lineage)
+                ),
+                source_repository=_text(binding.repo),
+                proof_status=SourceBindingStatus.PROPOSED_UNVERIFIED,
+                evidence_id=None,
+            )
+        )
+    return tuple(actors)
+
+
+def resolve_actor_binding(
+    binding: WorkstreamBinding,
+    role: str,
+) -> ActorBindingResolution:
+    wanted = str(role or "").strip().upper()
+    if not wanted:
+        return ActorBindingResolution(
+            role=wanted,
+            state="MISSING",
+            issues=("missing:actor_role",),
+        )
+    candidates = [
+        actor
+        for actor in _canonical_actors(binding)
+        if str(actor.role or "").strip().upper() == wanted
+    ]
+    if not candidates:
+        return ActorBindingResolution(
+            role=wanted,
+            state="MISSING",
+            issues=(f"missing:actor_binding:{wanted}",),
+        )
+
+    unique = {}
+    for actor in candidates:
+        key = (
+            _text(actor.provider),
+            _text(actor.session_id),
+            _text(actor.task_id),
+            _text(actor.lineage),
+            _text(actor.source_repository),
+            _text(actor.source_identity),
+            str(actor.role or "").upper(),
+            actor.proof_status,
+            _text(actor.evidence_id),
+        )
+        unique[key] = actor
+    if len(unique) != 1:
+        return ActorBindingResolution(
+            role=wanted,
+            state=SourceBindingStatus.AMBIGUOUS.value,
+            issues=(f"ambiguous:actor_binding:{wanted}",),
+        )
+
+    actor = next(iter(unique.values()))
+    if _text(actor.source_repository) and _text(binding.repo):
+        if actor.source_repository != binding.repo:
+            return ActorBindingResolution(
+                role=wanted,
+                state=SourceBindingStatus.MISMATCH.value,
+                binding=actor,
+                issues=(f"mismatch:actor_source_repository:{wanted}",),
+            )
+
+    if actor.proof_status is SourceBindingStatus.PROVEN_EXPLICIT:
+        required = {
+            "provider": actor.provider,
+            "session_id": actor.session_id,
+            "source_repository": actor.source_repository,
+            "source_identity": actor.source_identity,
+            "evidence_id": actor.evidence_id,
+        }
+        missing = [
+            f"missing:actor_binding:{wanted}:{name}"
+            for name, value in required.items()
+            if _text(value) is None
+        ]
+        if missing:
+            return ActorBindingResolution(
+                role=wanted,
+                state=SourceBindingStatus.PROPOSED_UNVERIFIED.value,
+                binding=actor,
+                issues=tuple(missing),
+            )
+
+    return ActorBindingResolution(
+        role=wanted,
+        state=actor.proof_status.value,
+        binding=actor,
+    )
 
 
 def _structural_issues(binding: WorkstreamBinding) -> list[str]:
@@ -190,11 +406,19 @@ def _structural_issues(binding: WorkstreamBinding) -> list[str]:
     ):
         issues.append("invalid:last_activity_at_must_be_timezone_aware")
 
+    if binding.evidence_profile is not None:
+        if _text(binding.evidence_profile.profile_id) is None:
+            issues.append("missing:evidence_profile.profile_id")
+        names = [
+            _text(item.name)
+            for item in binding.evidence_profile.requirements
+            if _text(item.name)
+        ]
+        if len(names) != len(set(names)):
+            issues.append("duplicate:evidence_profile.requirement_name")
+
     if binding.ci:
-        if (
-            binding.ci.candidate_sha is not None
-            and not _sha(binding.ci.candidate_sha)
-        ):
+        if binding.ci.candidate_sha is not None and not _sha(binding.ci.candidate_sha):
             issues.append("invalid:ci.candidate_sha")
         if binding.ci.run_attempt is not None and binding.ci.run_attempt <= 0:
             issues.append("invalid:ci.run_attempt")
@@ -208,10 +432,7 @@ def _structural_issues(binding: WorkstreamBinding) -> list[str]:
             issues.append("missing:ci.producer_job_for_artifact")
 
     if binding.review:
-        if (
-            binding.review.reviewed_sha is not None
-            and not _sha(binding.review.reviewed_sha)
-        ):
+        if binding.review.reviewed_sha is not None and not _sha(binding.review.reviewed_sha):
             issues.append("invalid:review.reviewed_sha")
         if (
             _text(binding.review.source_repository)
@@ -220,37 +441,30 @@ def _structural_issues(binding: WorkstreamBinding) -> list[str]:
         ):
             issues.append("mismatch:review.source_repository")
 
-    if binding.provider_source:
-        provider = binding.provider_source
-        if _text(provider.provider) is None:
-            issues.append("missing:provider_source.provider")
-        if _text(provider.source_repository) is None:
-            issues.append("missing:provider_source.source_repository")
-        elif _text(binding.repo) and provider.source_repository != binding.repo:
-            issues.append("mismatch:provider_source.source_repository")
-        if provider.status is SourceBindingStatus.PROVEN_EXPLICIT:
-            if _text(provider.source_identity) is None:
-                issues.append("missing:provider_source.source_identity_for_proof")
-            if _text(provider.evidence_id) is None:
-                issues.append("missing:provider_source.evidence_id_for_proof")
+    for actor in _canonical_actors(binding):
+        role = str(actor.role or "").strip().upper() or "UNSPECIFIED"
+        if _text(actor.provider) is None:
+            issues.append(f"missing:actor_binding:{role}:provider")
+        if actor.proof_status is SourceBindingStatus.PROVEN_EXPLICIT:
+            if _text(actor.session_id) is None:
+                issues.append(f"missing:actor_binding:{role}:session_id")
+            if _text(actor.source_repository) is None:
+                issues.append(f"missing:actor_binding:{role}:source_repository")
+            if _text(actor.source_identity) is None:
+                issues.append(f"missing:actor_binding:{role}:source_identity")
+            if _text(actor.evidence_id) is None:
+                issues.append(f"missing:actor_binding:{role}:evidence_id")
         if (
-            _text(binding.jules_session_id)
-            and _text(provider.session_id)
-            and binding.jules_session_id != provider.session_id
+            _text(actor.source_repository)
+            and _text(binding.repo)
+            and actor.source_repository != binding.repo
         ):
-            issues.append("mismatch:jules_session_id_vs_provider_source")
-        if (
-            _text(binding.jules_task_id)
-            and _text(provider.task_id)
-            and binding.jules_task_id != provider.task_id
-        ):
-            issues.append("mismatch:jules_task_id_vs_provider_source")
+            issues.append(f"mismatch:actor_source_repository:{role}")
 
     if binding.authorization:
-        authorization = binding.authorization
-        if _text(authorization.source) is None:
+        if _text(binding.authorization.source) is None:
             issues.append("missing:authorization.source")
-        if _text(authorization.decision_id) is None:
+        if _text(binding.authorization.decision_id) is None:
             issues.append("missing:authorization.decision_id")
 
     if _text(binding.action_in_flight):
@@ -258,11 +472,10 @@ def _structural_issues(binding: WorkstreamBinding) -> list[str]:
             issues.append("missing:lease_id_for_action_in_flight")
         if _text(binding.operation_key) is None:
             issues.append("missing:operation_key_for_action_in_flight")
-    return issues
+    return list(dict.fromkeys(issues))
 
 
 def _ci_evidence_issues(binding: WorkstreamBinding) -> list[str]:
-    issues: list[str] = []
     ci = binding.ci
     if ci is None:
         return ["missing:ci"]
@@ -275,7 +488,7 @@ def _ci_evidence_issues(binding: WorkstreamBinding) -> list[str]:
         "ci.candidate_sha": ci.candidate_sha,
         "ci.classification": ci.classification,
     }
-    issues += [
+    issues = [
         f"missing:{name}"
         for name, value in required.items()
         if _text(value) is None
@@ -305,14 +518,14 @@ def _ci_evidence_issues(binding: WorkstreamBinding) -> list[str]:
             issues.append("missing:ci.producer_job_for_artifact")
         if ci.run_attempt is None:
             issues.append("missing:ci.run_attempt_for_artifact")
-    return issues
+    return list(dict.fromkeys(issues))
 
 
 def _review_evidence_issues(binding: WorkstreamBinding) -> list[str]:
-    issues: list[str] = []
     review = binding.review
     if review is None:
         return ["missing:review"]
+    issues: list[str] = []
     if not _sha(review.reviewed_sha):
         issues.append("missing_exact:review.reviewed_sha")
     elif (
@@ -329,6 +542,58 @@ def _review_evidence_issues(binding: WorkstreamBinding) -> list[str]:
     ):
         issues.append("mismatch:review.source_repository")
     return issues
+
+
+def _provider_actor_role(
+    binding: WorkstreamBinding,
+    action: Optional[NextAction],
+) -> Optional[str]:
+    if action in {
+        NextAction.ROUTE_FINDINGS_TO_SAME_WRITER,
+        NextAction.CONTINUE_SAME_WRITER,
+    }:
+        return "WRITER"
+    if action in {
+        NextAction.START_EXACT_SHA_REVIEW,
+        NextAction.START_RE_REVIEW,
+    }:
+        return "REVIEWER"
+    if action in {
+        NextAction.CONTINUE_SAME_SESSION,
+        NextAction.RECOVER_SAME_LINEAGE,
+        NextAction.RESUME_PAUSED_LANE,
+    }:
+        return str(binding.role or "").strip().upper() or None
+    return None
+
+
+def _actor_issues(
+    binding: WorkstreamBinding,
+    resolution: LifecycleResolution,
+) -> list[str]:
+    if resolution.required_capability is not ActionCapability.EXTERNAL_EFFECT:
+        return []
+    role = _provider_actor_role(binding, resolution.action)
+    if role is None:
+        return []
+    actor = resolve_actor_binding(binding, role)
+    if actor.proven:
+        return []
+    if actor.state == SourceBindingStatus.AMBIGUOUS.value:
+        return [f"ambiguous:actor_binding:{role}"]
+    if actor.state == SourceBindingStatus.MISMATCH.value:
+        return [f"mismatch:actor_binding:{role}"]
+    return [f"unproven:actor_binding:{role}", *actor.issues]
+
+
+def _profile_issues(
+    binding: WorkstreamBinding,
+    action: Optional[NextAction],
+) -> list[str]:
+    profile = binding.evidence_profile
+    if profile is None:
+        return []
+    return list(profile.issues_for(action))
 
 
 def _action_issues(
@@ -367,13 +632,12 @@ def _action_issues(
     if action in pr_actions and binding.pr_number is None:
         issues.append("missing:pr_number")
 
-    ci_evidence_actions = {
+    if action in {
         NextAction.CLASSIFY_CI,
         NextAction.RECONCILE_CI_EVIDENCE,
         NextAction.START_EXACT_SHA_REVIEW,
         NextAction.START_RE_REVIEW,
-    }
-    if action in ci_evidence_actions:
+    }:
         issues.extend(_ci_evidence_issues(binding))
 
     if action in {
@@ -399,12 +663,12 @@ def _action_issues(
     }:
         issues.extend(_review_evidence_issues(binding))
 
-    return issues
+    issues.extend(_actor_issues(binding, resolution))
+    issues.extend(_profile_issues(binding, action))
+    return list(dict.fromkeys(issues))
 
 
 def _context(binding: WorkstreamBinding) -> LifecycleContext:
-    authorization = binding.authorization
-    provider = binding.provider_source
     return LifecycleContext(
         state=binding.lifecycle_state,
         review_outcome=binding.review.outcome if binding.review else None,
@@ -413,9 +677,6 @@ def _context(binding: WorkstreamBinding) -> LifecycleContext:
         failure_class=binding.error_class,
         resume_state=binding.resume_state,
         review_stale=bool(binding.review and binding.review.stale),
-        authorization_decision=authorization.decision if authorization else None,
-        authorized_action=authorization.action if authorization else None,
-        source_binding_status=provider.status if provider else None,
     )
 
 
@@ -424,11 +685,7 @@ def _stale_ci(ci: CIBinding, reason: str) -> CIBinding:
 
 
 def _stale_review(review: ReviewBinding, reason: str) -> ReviewBinding:
-    return replace(
-        review,
-        stale=True,
-        stale_reason=review.stale_reason or reason,
-    )
+    return replace(review, stale=True, stale_reason=review.stale_reason or reason)
 
 
 def _invalidate_sha_move(
@@ -443,9 +700,7 @@ def _invalidate_sha_move(
     ):
         return current, False, False, False
 
-    reason = (
-        f"candidate SHA moved from {previous.head_sha} to {current.head_sha}"
-    )
+    reason = f"candidate SHA moved from {previous.head_sha} to {current.head_sha}"
     review = current.review or previous.review
     ci = current.ci or previous.ci
     review_invalidated = False
@@ -518,6 +773,62 @@ def _invalidate_mismatch(binding: WorkstreamBinding):
     )
 
 
+def _actor_source_map(binding: WorkstreamBinding) -> dict[str, tuple[str, ...]]:
+    result: dict[str, tuple[str, ...]] = {}
+    for role in {str(actor.role or "").upper() for actor in _canonical_actors(binding)}:
+        if not role:
+            continue
+        resolution = resolve_actor_binding(binding, role)
+        actor = resolution.binding
+        if actor is None:
+            continue
+        result[role] = (
+            _text(actor.provider) or "",
+            _text(actor.source_repository) or "",
+            _text(actor.source_identity) or "",
+        )
+    return result
+
+
+def _drift_issues(
+    current: WorkstreamBinding,
+    previous: Optional[WorkstreamBinding],
+) -> list[str]:
+    if previous is None:
+        return []
+    issues: list[str] = []
+    comparisons = {
+        "repository": (_text(previous.repo), _text(current.repo)),
+        "branch": (_text(previous.branch), _text(current.branch)),
+        "base_ref": (_text(previous.base_ref), _text(current.base_ref)),
+        "baseline_sha": (previous.baseline_sha, current.baseline_sha),
+        "scope_identity": (
+            _text(previous.scope_identity),
+            _text(current.scope_identity),
+        ),
+        "evidence_profile": (
+            _text(previous.evidence_profile.profile_id)
+            if previous.evidence_profile
+            else None,
+            _text(current.evidence_profile.profile_id)
+            if current.evidence_profile
+            else None,
+        ),
+    }
+    for name, (before, after) in comparisons.items():
+        if before != after:
+            issues.append(f"drift:{name}:{before!r}->{after!r}")
+
+    previous_sources = _actor_source_map(previous)
+    current_sources = _actor_source_map(current)
+    for role in sorted(set(previous_sources) | set(current_sources)):
+        before = previous_sources.get(role)
+        after = current_sources.get(role)
+        if before != after:
+            issues.append(f"drift:actor_source:{role}:{before!r}->{after!r}")
+    return issues
+
+
 def _blocked(
     binding: WorkstreamBinding,
     issues: Iterable[str],
@@ -541,35 +852,51 @@ def reconcile_workstream(
     if structural:
         return _blocked(binding, structural)
 
+    drift = _drift_issues(binding, previous)
+    if drift:
+        return _blocked(
+            binding,
+            drift,
+            StopGate.BINDING_DRIFT_RECONCILIATION_REQUIRED,
+        )
+
     current, moved, invalidated_review_move, invalidated_ci_move = (
         _invalidate_sha_move(binding, previous)
     )
     current, invalidated_review_mismatch, invalidated_ci_mismatch = (
         _invalidate_mismatch(current)
     )
-    invalidated_review = (
-        invalidated_review_move or invalidated_review_mismatch
-    )
+    invalidated_review = invalidated_review_move or invalidated_review_mismatch
     invalidated_ci = invalidated_ci_move or invalidated_ci_mismatch
 
     if _text(current.action_in_flight):
         resolution = ensure_lifecycle_resolution(
             current.lifecycle_state,
             action=NextAction.VERIFY_ACTION_IN_FLIGHT,
-            reason=(
-                "reconcile authoritative post-state before any duplicate action"
-            ),
+            reason="reconcile authoritative post-state before any duplicate action",
         )
     else:
         resolution = resolve_next_action(_context(current))
 
     action_issues = _action_issues(current, resolution)
     if action_issues:
-        gate = (
-            resolution.stop_gate
-            if resolution.stop_gate is not None
-            else StopGate.INCOMPLETE_BINDING
-        )
+        if any(
+            item.startswith(("missing_required_evidence:", "stale_required_evidence:"))
+            for item in action_issues
+        ):
+            gate = StopGate.EVIDENCE_INCOMPLETE
+        elif any("actor_binding" in item for item in action_issues):
+            gate = (
+                StopGate.AMBIGUOUS_ACTOR_BINDING
+                if any(item.startswith("ambiguous:") for item in action_issues)
+                else StopGate.ACTOR_BINDING_REQUIRED
+            )
+        else:
+            gate = (
+                resolution.stop_gate
+                if resolution.stop_gate is not None
+                else StopGate.INCOMPLETE_BINDING
+            )
         result = _blocked(current, action_issues, gate)
         return replace(
             result,
@@ -581,11 +908,7 @@ def reconcile_workstream(
     bound = replace(
         current,
         next_action=resolution.action.value if resolution.action else None,
-        stop_gate=(
-            resolution.stop_gate.value
-            if resolution.stop_gate
-            else None
-        ),
+        stop_gate=resolution.stop_gate.value if resolution.stop_gate else None,
     )
     return ReconciliationResult(
         bound,
@@ -597,17 +920,16 @@ def reconcile_workstream(
     )
 
 
-def _provider_session_key(
+def _session_role_bindings(
     binding: WorkstreamBinding,
-) -> Optional[tuple[str, str]]:
-    if binding.provider_source is not None:
-        session_key = binding.provider_source.session_key
+) -> tuple[tuple[tuple[str, str], str], ...]:
+    result: list[tuple[tuple[str, str], str]] = []
+    for actor in _canonical_actors(binding):
+        session_key = actor.session_key
+        role = str(actor.role or "").strip().upper() or "UNSPECIFIED"
         if session_key is not None:
-            return session_key
-    legacy_jules_session = _text(binding.jules_session_id)
-    if legacy_jules_session is not None:
-        return "jules", legacy_jules_session
-    return None
+            result.append((session_key, role))
+    return tuple(result)
 
 
 def reconcile_portfolio(
@@ -620,18 +942,17 @@ def reconcile_portfolio(
     lane_keys = [canonical_lane_key(item) for item in items]
     lane_counts = Counter(key for key in lane_keys if key is not None)
 
-    session_lanes: dict[tuple[str, str], set[LaneKey]] = defaultdict(set)
+    session_owners = defaultdict(set)
     for item, lane_key in zip(items, lane_keys):
-        if lane_key is None or item.provider_source is None:
+        if lane_key is None:
             continue
-        session_key = _provider_session_key(item)
-        if session_key is not None:
-            session_lanes[session_key].add(lane_key)
+        for session_key, role in _session_role_bindings(item):
+            session_owners[session_key].add((lane_key, role))
 
     ambiguous_sessions = {
         session_key
-        for session_key, lanes in session_lanes.items()
-        if len(lanes) > 1
+        for session_key, owners in session_owners.items()
+        if len(owners) > 1
     }
 
     results: list[ReconciliationResult] = []
@@ -646,21 +967,24 @@ def reconcile_portfolio(
             )
             continue
 
-        session_key = _provider_session_key(item)
-        if session_key in ambiguous_sessions:
+        conflicts = [
+            session_key
+            for session_key, _role in _session_role_bindings(item)
+            if session_key in ambiguous_sessions
+        ]
+        if conflicts:
             results.append(
                 _blocked(
                     item,
-                    [f"ambiguous:provider_session_across_lanes:{session_key!r}"],
+                    [
+                        f"ambiguous:provider_session_across_lane_or_role:{key!r}"
+                        for key in sorted(set(conflicts))
+                    ],
                     StopGate.AMBIGUOUS_PROVIDER_SESSION,
                 )
             )
             continue
 
-        previous = (
-            previous_by_lane.get(lane_key)
-            if lane_key is not None
-            else None
-        )
+        previous = previous_by_lane.get(lane_key) if lane_key is not None else None
         results.append(reconcile_workstream(item, previous))
     return tuple(results)
