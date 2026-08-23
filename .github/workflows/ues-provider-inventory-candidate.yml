@@ -1,0 +1,50 @@
+name: UES Provider Inventory Candidate
+
+on:
+  push:
+    branches:
+      - work/ues-v2-live-provider-ingestion-r01
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ues-provider-inventory-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Full repository tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check Jules secret availability without disclosure
+        id: jules_secret
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: |
+          if [ -n "$JULES_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Live Jules provider inventory read-only
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: python -m ues.provider_inventory
