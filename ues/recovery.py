@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 
 def reconcile_checkpoint(checkpoint: dict[str, Any], live_head_sha: str) -> dict[str, Any]:
@@ -36,5 +36,79 @@ def reconcile_checkpoint(checkpoint: dict[str, Any], live_head_sha: str) -> dict
         "checkpoint_head_sha": confirmed,
         "expected_post_sha": expected_post,
         "live_head_sha": live_head_sha,
+        "safe_to_blind_retry": False,
+    }
+
+
+def reconcile_provider_write(observation: Mapping[str, Any]) -> dict[str, Any]:
+    """Reconcile an attempted provider mutation from authoritative post-state.
+
+    This function never authorizes an automatic retry. It only proves delivery,
+    blocks on incomplete/unknown evidence, or exposes a retry *consideration*
+    point for a higher-level policy after authoritative reads completed.
+    """
+
+    read_complete = bool(observation.get("authoritative_read_complete"))
+    state = str(observation.get("post_session_state") or "UNKNOWN").upper()
+    pre_ids = {str(value) for value in observation.get("pre_activity_ids") or []}
+    activities = observation.get("post_activities") or []
+    expected_message = observation.get("expected_user_message")
+
+    if not read_complete:
+        return _provider_recovery_result(
+            "AUTHORITATIVE_READ_INCOMPLETE",
+            state,
+            retry_consideration="BLOCKED_UNTIL_AUTHORITATIVE_READ",
+        )
+    if state == "UNKNOWN":
+        return _provider_recovery_result(
+            "UNKNOWN_PROVIDER_STATE",
+            state,
+            retry_consideration="BLOCKED_UNKNOWN_PROVIDER_STATE",
+        )
+    if not isinstance(activities, list):
+        return _provider_recovery_result(
+            "AUTHORITATIVE_ACTIVITY_EVIDENCE_INVALID",
+            state,
+            retry_consideration="BLOCKED_UNTIL_AUTHORITATIVE_READ",
+        )
+
+    for activity in activities:
+        if not isinstance(activity, Mapping):
+            continue
+        identity = str(activity.get("name") or activity.get("id") or "")
+        user_message = activity.get("userMessaged")
+        if identity in pre_ids or not isinstance(user_message, Mapping):
+            continue
+        if expected_message is not None and user_message.get("userMessage") == expected_message:
+            return {
+                **_provider_recovery_result(
+                    "WRITE_CONFIRMED_BY_ACTIVITY",
+                    state,
+                    retry_consideration="NOT_REQUIRED",
+                ),
+                "matched_activity": identity or None,
+            }
+
+    if state in {"FAILED", "COMPLETED"}:
+        return _provider_recovery_result(
+            "SESSION_CONTINUATION_UNAVAILABLE",
+            state,
+            retry_consideration="NEW_TASK_RECOMMENDED_PARENT_ONLY",
+        )
+
+    return _provider_recovery_result(
+        "WRITE_NOT_OBSERVED_AFTER_AUTHORITATIVE_READ",
+        state,
+        retry_consideration="POLICY_OR_PARENT_DECISION_REQUIRED",
+    )
+
+
+def _provider_recovery_result(verdict: str, state: str, *, retry_consideration: str) -> dict[str, Any]:
+    return {
+        "schema_version": "0.4",
+        "verdict": verdict,
+        "post_session_state": state,
+        "retry_consideration": retry_consideration,
         "safe_to_blind_retry": False,
     }
