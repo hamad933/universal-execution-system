@@ -1,6 +1,10 @@
 import unittest
 
-from ues.watchdog import evaluate_control_cycle, evaluate_lane_watchdog, normalize_watchdog_policy
+from ues.watchdog import (
+    evaluate_control_cycle,
+    evaluate_lane_watchdog,
+    normalize_watchdog_policy,
+)
 
 
 class WatchdogTests(unittest.TestCase):
@@ -60,80 +64,101 @@ class WatchdogTests(unittest.TestCase):
         result = evaluate_lane_watchdog({"lane_id": "forgotten"})
         self.assertTrue(result["forgotten"])
 
+    def test_forgotten_lane_fails_control_cycle(self):
+        result = evaluate_control_cycle([{"lane_id": "forgotten"}])
+        self.assertEqual(result["cycle_status"], "CONTROL_CYCLE_FAILED")
+        self.assertEqual(result["forgotten_lanes"], ["forgotten"])
+
     def test_correction_rereview_loop_stall_detected(self):
-        result = evaluate_lane_watchdog({
-            "lane_id": "W07",
-            "rereview_pending": True,
-            "correction_rereview_age_seconds": 4000,
-            "next_action": "DISPATCH_REVIEW",
-        })
+        result = evaluate_lane_watchdog(
+            {
+                "lane_id": "W07",
+                "rereview_pending": True,
+                "correction_rereview_age_seconds": 4000,
+                "next_action": "DISPATCH_REVIEW",
+            }
+        )
         codes = {item["code"] for item in result["incidents"]}
         self.assertIn("CORRECTION_REREVIEW_LOOP_STALLED", codes)
 
     def test_exact_head_evidence_drift_detected(self):
-        result = evaluate_lane_watchdog({
-            "lane_id": "W08",
-            "evidence_drift_unresolved": True,
-            "evidence_drift_age_seconds": 2000,
-            "next_action": "RECONCILE_EXACT_HEAD",
-        })
+        result = evaluate_lane_watchdog(
+            {
+                "lane_id": "W08",
+                "evidence_drift_unresolved": True,
+                "evidence_drift_age_seconds": 2000,
+                "next_action": "RECONCILE_EXACT_HEAD",
+            }
+        )
         codes = {item["code"] for item in result["incidents"]}
         self.assertIn("EXACT_HEAD_EVIDENCE_DRIFT_UNRESOLVED", codes)
 
     def test_blocked_lane_does_not_freeze_other_lane(self):
-        result = evaluate_control_cycle([
-            {"lane_id": "blocked", "blocked": True, "stop_gate": "PARENT_REQUIRED"},
-            {"lane_id": "ready", "blocked": False, "next_action": "ROUTE_REVIEW"},
-        ])
+        result = evaluate_control_cycle(
+            [
+                {"lane_id": "blocked", "blocked": True, "stop_gate": "PARENT_REQUIRED"},
+                {"lane_id": "ready", "blocked": False, "next_action": "ROUTE_REVIEW"},
+            ]
+        )
         self.assertIn("ready", result["executable_lanes"])
         self.assertFalse(result["blocked_lane_freezes_independent_lanes"])
 
     def test_untreated_proven_auto_safe_incident_fails_cycle(self):
-        result = evaluate_control_cycle([
-            {
-                "lane_id": "W04",
-                "next_action": "CONTINUE_SAME_SESSION",
-                "auto_safe_incident_proven": True,
-                "auto_safe_treated": False,
-            }
-        ])
+        result = evaluate_control_cycle(
+            [
+                {
+                    "lane_id": "W04",
+                    "next_action": "CONTINUE_SAME_SESSION",
+                    "auto_safe_incident_proven": True,
+                    "auto_safe_treated": False,
+                }
+            ]
+        )
         self.assertEqual(result["cycle_status"], "CONTROL_CYCLE_FAILED")
         self.assertEqual(result["unresolved_auto_safe_lanes"], ["W04"])
 
     def test_parent_required_lane_alone_does_not_false_fail_cycle(self):
-        result = evaluate_control_cycle([
-            {
-                "lane_id": "parent",
-                "authority": "PARENT_REQUIRED",
-                "blocked": True,
-                "stop_gate": "PARENT_REQUIRED",
-                "waiting_class": "ENVIRONMENT_MISMATCH",
-                "waiting_age_seconds": 9999,
-            }
-        ])
+        result = evaluate_control_cycle(
+            [
+                {
+                    "lane_id": "parent",
+                    "authority": "PARENT_REQUIRED",
+                    "blocked": True,
+                    "stop_gate": "PARENT_REQUIRED",
+                    "waiting_class": "ENVIRONMENT_MISMATCH",
+                    "waiting_age_seconds": 9999,
+                }
+            ]
+        )
         self.assertEqual(result["cycle_status"], "CONTROL_CYCLE_OK")
         self.assertEqual(result["unresolved_auto_safe_lanes"], [])
+        self.assertEqual(result["forgotten_lanes"], [])
 
     def test_missing_active_heartbeat_fails_closed_to_warning(self):
-        result = evaluate_lane_watchdog({
-            "lane_id": "writer",
-            "active": True,
-            "role": "WRITER",
-            "next_action": "CONTINUE",
-        })
+        result = evaluate_lane_watchdog(
+            {
+                "lane_id": "writer",
+                "active": True,
+                "role": "WRITER",
+                "next_action": "CONTINUE",
+            }
+        )
         codes = {item["code"] for item in result["incidents"]}
         self.assertIn("STALE_ACTIVE_HEARTBEAT", codes)
 
     def test_terminal_failure_is_counted_without_forgetting_stop_gate(self):
-        result = evaluate_control_cycle([
-            {
-                "lane_id": "failed",
-                "terminal_failed_session": True,
-                "stop_gate": "PARENT_REQUIRED",
-            }
-        ])
+        result = evaluate_control_cycle(
+            [
+                {
+                    "lane_id": "failed",
+                    "terminal_failed_session": True,
+                    "stop_gate": "PARENT_REQUIRED",
+                }
+            ]
+        )
         self.assertEqual(result["terminal_failed_sessions"], ["failed"])
         self.assertEqual(result["forgotten_lanes"], [])
+        self.assertEqual(result["cycle_status"], "CONTROL_CYCLE_OK")
 
 
 if __name__ == "__main__":
