@@ -31,6 +31,17 @@ class GSControlAdapterTests(unittest.TestCase):
         self.assertFalse(self.adapter["task_budget"]["automatic_new_task_creation"])
         self.assertEqual(self.adapter["task_budget"]["unknown_lifetime_capacity"], "DENY")
 
+    def test_task_budget_matches_governed_gs_boundary_without_inventing_reserve(self):
+        budget = self.adapter["task_budget"]
+        self.assertEqual(budget["ceiling"], 30)
+        self.assertIsNone(budget["reserve_target"])
+        self.assertEqual(
+            budget["reserve_status"],
+            "NOT_DEFINED_BY_CURRENT_GS_AUTHORITY",
+        )
+        self.assertEqual(budget["new_task_authority"], "PARENT_ONLY")
+        self.assertEqual(budget["unknown_lifetime_capacity"], "DENY")
+
     def test_provider_effects_require_explicit_source_proof(self):
         binding = self.adapter["actor_binding"]
         self.assertEqual(binding["roles"], ["WRITER", "REVIEWER"])
