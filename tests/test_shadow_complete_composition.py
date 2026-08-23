@@ -150,7 +150,7 @@ class ShadowCompleteCompositionTests(unittest.TestCase):
         self.assertEqual(cycle["external_effects_dispatched"], 0)
         self.assertEqual(cycle["tasks_or_sessions_created"], 0)
         self.assertEqual(cycle["lane_count"], 2)
-        self.assertEqual(cycle["watchdog"]["forgotten_lane_count"], 0)
+        self.assertEqual(cycle["watchdog"]["forgotten_lanes"], [])
         self.assertEqual(
             {lane["stop_gate"] for lane in cycle["lanes"]},
             {"PARENT_AUTHORITY_REQUIRED"},
