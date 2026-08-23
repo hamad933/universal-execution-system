@@ -52,16 +52,82 @@ jobs:
         run: python -m ues.live_runtime state-audit
 
       - name: Jules credential read-only probe
+        id: jules_probe
+        continue-on-error: true
         env:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: python -m ues.live_runtime jules-probe
 
-      - name: Persist sanitized Jules probe proof
+      - name: Persist sanitized Jules probe success proof
+        if: steps.jules_probe.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
         run: python -m ues.live_runtime record-jules-probe
+
+      - name: Persist sanitized Jules probe failure status
+        if: steps.jules_probe.outcome != 'success'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: |
+          python - <<'PY'
+          from hashlib import sha256
+          from ues.identity import canonical_lane_id
+          from ues.live_runtime import build_live_state_store, _iso, _utc_now
+          from ues.state_store import OperationRecord, StateUnavailable
+
+          repository = __import__('os').environ['GITHUB_REPOSITORY']
+          store = build_live_state_store()
+          lane_id = canonical_lane_id('UES', 'INTERNAL:UES', 'LIVE-RUNTIME-PROBE')
+          lane = store.read_workstream(lane_id)
+          if lane.status != 'OK' or lane.record is None:
+              raise StateUnavailable(lane.reason or 'live probe lane unavailable')
+          operation_key = 'ues-v2:jules-read-only-probe-failure:' + sha256(
+              f'{repository}|jules-read-only-probe-failure-v1'.encode('utf-8')
+          ).hexdigest()
+          current = store.read_operation(operation_key)
+          now = _iso(_utc_now())
+          receipt = {
+              'result': 'JULES_READ_ONLY_AUTHENTICATION_NOT_PROVEN',
+              'classification': 'CREDENTIAL_OR_PROVIDER_READ_UNAVAILABLE',
+              'read_only': True,
+              'provider_mutation': False,
+              'exception_text_persisted': False,
+              'session_identity_persisted': False,
+          }
+          if current.status == 'MISSING':
+              record = OperationRecord(
+                  operation_key=operation_key,
+                  lane_id=lane_id,
+                  workstream_id='LIVE-RUNTIME-PROBE',
+                  action='jules-read-only-authentication-probe-failure',
+                  request_digest=sha256(b'JULES_READ_ONLY_AUTH_PROBE_FAILURE_V1').hexdigest(),
+                  state='REJECTED',
+                  owner='ues-live-runtime',
+                  started_at=now,
+                  updated_at=now,
+                  receipt=receipt,
+              )
+              store.compare_and_swap_operation(operation_key, 0, record)
+          elif current.status == 'OK' and current.record is not None:
+              record = OperationRecord.from_dict(current.record.to_dict())
+              record.state = 'REJECTED'
+              record.updated_at = now
+              record.receipt = receipt
+              store.compare_and_swap_operation(operation_key, current.version, record)
+          else:
+              raise StateUnavailable(current.reason or 'Jules probe failure status unavailable')
+          print('{"result":"JULES_PROBE_FAILURE_STATUS_PERSISTED","secret_emitted":false}')
+          PY
+
+      - name: Enforce Jules read-only proof gate
+        if: steps.jules_probe.outcome != 'success'
+        run: |
+          echo "Jules read-only authentication proof was not established; see sanitized durable status."
+          exit 1
 
   scheduled-watchdog:
     if: github.event_name == 'schedule'
