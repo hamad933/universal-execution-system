@@ -14,6 +14,7 @@ from ues.idempotency import (
     effect_operation_key,
     waiting_answer_effect_identity,
 )
+from ues.identity import canonical_lane_id
 from ues.providers.base import AuthenticationError, WriteOutcomeUnknown
 from ues.state_store import (
     CanaryGrant,
@@ -26,7 +27,7 @@ T0 = datetime(2026, 8, 24, 0, 20, tzinfo=UTC)
 PROJECT = "CEP"
 ROUTE = "PERSONAL:CEP"
 WORKSTREAM = "W04"
-LANE = "ues-lane:v1:CEP:PERSONAL%3ACEP:W04"
+LANE = canonical_lane_id(PROJECT, ROUTE, WORKSTREAM)
 SESSION = "existing-writer-session"
 ACTIVITY = "waiting-activity-1"
 REPOSITORY = "hamad933/Cybersecurity-Education-Platform"
@@ -108,14 +109,20 @@ class CanaryOrchestratorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _actors(self, *, proven: bool = True, session: str = SESSION):
+    def _actors(
+        self,
+        *,
+        proven: bool = True,
+        session: str = SESSION,
+        source_identity: str = SOURCE,
+    ):
         return {
             "WRITER": {
                 "provider": "jules",
                 "session_id": session,
                 "proof_status": "PROVEN_EXPLICIT" if proven else "PROPOSED_UNVERIFIED",
                 "source_repository": REPOSITORY,
-                "source_identity": SOURCE,
+                "source_identity": source_identity,
                 "evidence_id": "writer-binding-proof",
             },
             "REVIEWER": {
@@ -149,6 +156,7 @@ class CanaryOrchestratorTests(unittest.TestCase):
         with_grant: bool,
         proven: bool = True,
         session: str = SESSION,
+        source_identity: str = SOURCE,
     ) -> None:
         read = self.store.read_workstream(LANE)
         expected = read.version if read.status == "OK" else 0
@@ -158,7 +166,11 @@ class CanaryOrchestratorTests(unittest.TestCase):
             route=ROUTE,
             workstream_id=WORKSTREAM,
             activation_mode=mode,
-            actor_bindings=self._actors(proven=proven, session=session),
+            actor_bindings=self._actors(
+                proven=proven,
+                session=session,
+                source_identity=source_identity,
+            ),
             canary_grants=[self._grant()] if with_grant else [],
         )
         self.store.compare_and_swap_workstream(LANE, expected, record)
@@ -183,6 +195,12 @@ class CanaryOrchestratorTests(unittest.TestCase):
         }
         args.update(overrides)
         return execute_waiting_answer_canary(self.store, jules, **args)
+
+    def test_noncanonical_lane_is_denied_before_state_or_provider_effect(self):
+        jules = FakeJules()
+        result = self._execute(jules, lane_id="CEP:PERSONAL:CEP:W04")
+        self.assertEqual(result["decision"], "NONCANONICAL_LANE_ID")
+        self.assertEqual(jules.calls, [])
 
     def test_policy_denial_happens_before_state_claim_or_provider_call(self):
         jules = FakeJules()
@@ -217,6 +235,13 @@ class CanaryOrchestratorTests(unittest.TestCase):
         jules = FakeJules()
         result = self._execute(jules)
         self.assertEqual(result["decision"], "WRITER_SESSION_MISMATCH")
+        self.assertEqual(jules.calls, [])
+
+    def test_wrong_source_identity_never_calls_provider(self):
+        self._put_lane(mode="CANARY", with_grant=True, source_identity="sources/other")
+        jules = FakeJules()
+        result = self._execute(jules)
+        self.assertEqual(result["decision"], "WRITER_SOURCE_IDENTITY_MISMATCH")
         self.assertEqual(jules.calls, [])
 
     def test_matching_one_shot_grant_claims_before_one_send_and_confirms(self):
