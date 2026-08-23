@@ -44,11 +44,14 @@ def build_operational_metrics(
     forgotten_lane_count = sum(1 for lane in lanes if lane.get("forgotten"))
     failed_session_count = sum(1 for lane in lanes if lane.get("terminal_failed_session"))
     unresolved_auto_safe_count = sum(
-        1 for lane in lanes if lane.get("auto_safe_incident") and not lane.get("auto_safe_treated")
+        1
+        for lane in lanes
+        if (lane.get("auto_safe_incident_proven") or lane.get("auto_safe_incident"))
+        and not lane.get("auto_safe_treated")
     )
 
     return {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "waiting_age": {
             "count": len(waiting_ages),
             "max_seconds": max(waiting_ages) if waiting_ages else None,
