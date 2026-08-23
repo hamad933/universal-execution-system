@@ -18,6 +18,20 @@ class TaskBudgetTests(unittest.TestCase):
         self.assertFalse(budget["budget_allows_new_task"])
         self.assertFalse(budget["current_enumeration_proves_lifetime_consumption"])
 
+    def test_lifetime_unknown_means_no_new_task_even_with_parent_gate(self):
+        budget = evaluate_task_budget(
+            project="GS",
+            ceiling=20,
+            reserve=3,
+            lifetime_consumption_known=False,
+            proven_lifetime_used=None,
+            current_enumerated_tasks=1,
+        )
+        gate = evaluate_new_task_gate(budget, parent_gate_satisfied=True)
+        self.assertFalse(gate["allowed"])
+        self.assertEqual(gate["authority"], "PARENT_ONLY")
+        self.assertFalse(gate["automatic_creation"])
+
     def test_proven_usage_respects_reserve(self):
         budget = evaluate_task_budget(
             project="GS",
