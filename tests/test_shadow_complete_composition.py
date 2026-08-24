@@ -7,11 +7,11 @@ import unittest
 from ues.control_loop import run_shadow_cycle
 from ues.identity import canonical_lane_id
 from ues.lifecycle import LifecycleState
+from ues.policy_resolution import resolve_execution_policy
 from ues.project_adapter import build_required_evidence_profile, load_project_adapter
 from ues.reconciliation import WorkstreamBinding
 from ues.routing import classify_waiting_activity
 from ues.state_backends import GitHubRefStateStore
-from ues.task_budget import evaluate_task_budget
 
 UTC = timezone.utc
 NOW = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)
@@ -41,65 +41,79 @@ class ShadowCompleteCompositionTests(unittest.TestCase):
         cep_lane = canonical_lane_id(self.cep.project, self.cep.route, "W01")
         self.assertNotEqual(gs_lane, cep_lane)
 
-    def test_governed_task_budget_boundaries_are_project_specific_and_runtime_safe(self):
-        gs_budget = self.gs.raw["task_budget"]
-        cep_budget = self.cep.raw["task_budget"]
-        self.assertEqual(gs_budget["ceiling"], 40)
-        self.assertIsNone(gs_budget["reserve_target"])
-        self.assertEqual(
-            gs_budget["unknown_lifetime_capacity"],
-            "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
-        )
-        self.assertTrue(gs_budget["necessity_based_new_generation_authorized"])
-        self.assertFalse(gs_budget["automatic_new_task_creation"])
-        self.assertTrue(gs_budget["runtime_budget_preflight_required"])
-        self.assertEqual(cep_budget["ceiling"], 70)
-        self.assertEqual(cep_budget["reserve_target"], 15)
-        self.assertEqual(cep_budget["unknown_lifetime_capacity"], "DENY")
+    def test_task_budget_boundaries_are_resolved_from_current_authority_not_adapter_snapshots(self):
+        self.assertNotIn("ceiling", self.gs.raw["task_budget"])
+        self.assertNotIn("ceiling", self.cep.raw["task_budget"])
+        self.assertEqual(self.gs.raw["task_budget"]["unknown_lifetime_capacity"], "DENY")
+        self.assertEqual(self.cep.raw["task_budget"]["unknown_lifetime_capacity"], "DENY")
 
-        gs_unknown = evaluate_task_budget(
-            project="GS",
-            ceiling=gs_budget["ceiling"],
-            reserve=0,
-            lifetime_consumption_known=False,
-            proven_lifetime_used=None,
-            current_enumerated_tasks=5,
-            unknown_lifetime_policy=gs_budget["unknown_lifetime_capacity"],
-        )
+        gs_authority = {
+            "current": True,
+            "authority_event_id": "GS-CURRENT-TEST",
+            "task_budget": {
+                "ceiling": 40,
+                "unknown_lifetime_capacity": "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+            },
+            "generation_policy": {"necessary_generation_authorized": True},
+        }
+        gs_unknown = resolve_execution_policy(
+            adapter=self.gs.raw,
+            governed_authority=gs_authority,
+            provider_observation={
+                "lifetime_consumption_known": False,
+                "current_enumerated_tasks": 5,
+            },
+        ).to_dict()
+        self.assertEqual(gs_unknown["ceiling"], 40)
         self.assertEqual(
-            gs_unknown["state"],
+            gs_unknown["budget"]["state"],
             "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_LIFETIME",
         )
-        self.assertTrue(gs_unknown["budget_allows_new_task"])
-        self.assertFalse(gs_unknown["fail_closed"])
+        self.assertTrue(gs_unknown["budget"]["budget_allows_new_task"])
+        self.assertTrue(gs_unknown["generation_allowed"])
+        self.assertFalse(gs_unknown["provenance"]["adapter_mutable_snapshot_is_authority"])
 
-        gs_ceiling = evaluate_task_budget(
-            project="GS",
-            ceiling=gs_budget["ceiling"],
-            reserve=0,
-            lifetime_consumption_known=False,
-            proven_lifetime_used=None,
-            current_enumerated_tasks=40,
-            unknown_lifetime_policy=gs_budget["unknown_lifetime_capacity"],
-        )
+        gs_ceiling = resolve_execution_policy(
+            adapter=self.gs.raw,
+            governed_authority=gs_authority,
+            provider_observation={
+                "lifetime_consumption_known": False,
+                "current_enumerated_tasks": 40,
+            },
+        ).to_dict()
         self.assertEqual(
-            gs_ceiling["state"],
+            gs_ceiling["budget"]["state"],
             "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED",
         )
-        self.assertFalse(gs_ceiling["budget_allows_new_task"])
-        self.assertTrue(gs_ceiling["fail_closed"])
+        self.assertFalse(gs_ceiling["budget"]["budget_allows_new_task"])
+        self.assertFalse(gs_ceiling["generation_allowed"])
 
-        cep_unknown = evaluate_task_budget(
-            project="CEP",
-            ceiling=cep_budget["ceiling"],
-            reserve=cep_budget["reserve_target"],
-            lifetime_consumption_known=False,
-            proven_lifetime_used=None,
-            current_enumerated_tasks=5,
-        )
-        self.assertEqual(cep_unknown["state"], "UNKNOWN_LIFETIME_CONSUMPTION")
-        self.assertFalse(cep_unknown["budget_allows_new_task"])
-        self.assertTrue(cep_unknown["fail_closed"])
+        # Synthetic second-project authority proves per-project resolution is not
+        # hard-coded to GS and does not require a mutable CEP adapter snapshot.
+        cep_authority = {
+            "current": True,
+            "authority_event_id": "CEP-SYNTHETIC-POLICY-TEST",
+            "task_budget": {
+                "ceiling": 12,
+                "reserve_target": 2,
+                "reserve_is_hard": True,
+                "unknown_lifetime_capacity": "DENY",
+            },
+            "generation_policy": {"necessary_generation_authorized": True},
+        }
+        cep_unknown = resolve_execution_policy(
+            adapter=self.cep.raw,
+            governed_authority=cep_authority,
+            provider_observation={
+                "lifetime_consumption_known": False,
+                "current_enumerated_tasks": 5,
+            },
+        ).to_dict()
+        self.assertEqual(cep_unknown["ceiling"], 12)
+        self.assertEqual(cep_unknown["reserve_target"], 2)
+        self.assertEqual(cep_unknown["budget"]["state"], "UNKNOWN_LIFETIME_CONSUMPTION")
+        self.assertFalse(cep_unknown["budget"]["budget_allows_new_task"])
+        self.assertFalse(cep_unknown["generation_allowed"])
 
     def test_cep_structured_waiting_rule_matches_without_keyword_shortcut(self):
         matched = classify_waiting_activity(
