@@ -22,19 +22,20 @@ class GSControlAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter["truth_owners"]["governed_state"], "DRIVE")
         self.assertEqual(self.adapter["truth_owners"]["technical_state"], "GITHUB")
 
-    def test_adapter_remains_shadow_by_default_but_bounded_lineage_replacement_is_authorized(self):
+    def test_adapter_remains_shadow_and_auto_generation_is_fail_closed_pending_runtime_binding(self):
         activation = self.adapter["activation"]
         self.assertEqual(activation["default_mode"], "SHADOW")
         self.assertFalse(activation["mutation_allowed"])
         self.assertFalse(activation["runtime_mode_is_authority"])
         self.assertEqual(self.adapter["project_auto_safe_actions"], [])
         runtime = self.adapter["lineage_runtime"]
-        self.assertTrue(runtime["auto_create_next_generation"])
-        self.assertTrue(runtime["new_session_budget_safe"])
+        self.assertFalse(runtime["auto_create_next_generation"])
+        self.assertFalse(runtime["new_session_budget_safe"])
+        self.assertIn("BLOCKED_PENDING", runtime["generation_activation_status"])
         self.assertTrue(runtime["unbound_never_implies_replacement"])
         self.assertTrue(runtime["replacement_requires_proven_terminal_or_context_exhausted"])
 
-    def test_task_budget_matches_g93_owner_boundary(self):
+    def test_task_budget_matches_g93_owner_policy_without_mutable_usage_snapshot(self):
         budget = self.adapter["task_budget"]
         self.assertEqual(budget["ceiling"], 40)
         self.assertIsNone(budget["reserve_target"])
@@ -51,9 +52,10 @@ class GSControlAdapterTests(unittest.TestCase):
             "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
         )
         self.assertTrue(budget["automatic_new_task_creation"])
-        self.assertEqual(budget["proven_used_floor"], 5)
-        self.assertFalse(budget["direct_ceiling_reached"])
+        self.assertTrue(budget["runtime_budget_preflight_required"])
         self.assertFalse(budget["unknown_lifetime_alone_is_stop_gate"])
+        self.assertNotIn("proven_used_floor", budget)
+        self.assertNotIn("direct_ceiling_reached", budget)
 
     def test_provider_effects_require_explicit_source_proof(self):
         binding = self.adapter["actor_binding"]
