@@ -40,11 +40,11 @@ jobs:
       (github.event_name == 'repository_dispatch' && github.event.client_payload.project == matrix.project)
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 2
       matrix:
         project: [RP01, RP02, RP03, RP04]
     concurrency:
-      group: ues-rp-authority-${{ matrix.project }}
+      group: ues-project-lifecycle-${{ matrix.project }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 25
