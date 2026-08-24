@@ -15,13 +15,15 @@ class ParentControllerSingleTransportTests(unittest.TestCase):
     def test_legacy_parent_controller_trigger_workflow_is_retired(self):
         self.assertFalse(LEGACY.exists())
 
-    def test_current_transport_is_validate_to_trusted_dispatch(self):
+    def test_current_transport_is_validate_to_same_run_trusted_receiver(self):
         validate = VALIDATE.read_text(encoding="utf-8")
         receiver = RECEIVER.read_text(encoding="utf-8")
         self.assertIn("parent-controller-relay:", validate)
-        self.assertIn("github.rest.actions.createWorkflowDispatch", validate)
-        self.assertIn("workflow_id: 'ues-parent-controller-dispatch.yml'", validate)
-        self.assertIn("workflow_dispatch:", receiver)
+        self.assertIn("parent-controller-receiver:", validate)
+        self.assertIn("uses: ./.github/workflows/ues-parent-controller-dispatch.yml", validate)
+        self.assertNotIn("github.rest.actions.createWorkflowDispatch", validate)
+        self.assertIn("workflow_call:", receiver)
+        self.assertNotIn("workflow_dispatch:", receiver.split("permissions:", 1)[0])
         trigger = receiver.split("permissions:", 1)[0]
         self.assertNotIn("pull_request_target:", trigger)
         self.assertNotIn("issue_comment:", trigger)
@@ -32,8 +34,6 @@ class ParentControllerSingleTransportTests(unittest.TestCase):
         self.assertIn("Status: CURRENT operator contract", text)
         self.assertIn("one automatic Parent Controller transport path", text)
         self.assertIn("Validate Universal Core exact-head core PASS", text)
-        self.assertIn("secretless trusted dispatch relay", text)
-        self.assertIn("default-branch UES Parent Controller Trusted Dispatch", text)
         self.assertIn("no manual comment is required", text)
         self.assertIn("OPEN / DRAFT / DO_NOT_MERGE", text)
 
