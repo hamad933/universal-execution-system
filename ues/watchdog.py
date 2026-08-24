@@ -10,6 +10,7 @@ WATCHDOG_CATEGORIES = {
     "FORGOTTEN_LANE",
     "CORRECTION_REREVIEW_LOOP_STALLED",
     "EXACT_HEAD_EVIDENCE_DRIFT_UNRESOLVED",
+    "REUSE_CRITICAL_PATH_DRAG",
 }
 
 DEFAULT_THRESHOLDS = {
@@ -19,6 +20,7 @@ DEFAULT_THRESHOLDS = {
     "heartbeat_seconds": 1800,
     "correction_rereview_stalled_seconds": 3600,
     "evidence_drift_unresolved_seconds": 1800,
+    "reuse_critical_path_drag_seconds": 900,
 }
 
 
@@ -43,7 +45,7 @@ def normalize_watchdog_policy(policy: dict[str, Any] | None = None) -> dict[str,
             raise ValueError(f"unknown watchdog categories: {sorted(unknown)}")
 
     return {
-        "schema_version": "2.2",
+        "schema_version": "2.3",
         "thresholds": thresholds,
         "enabled_categories": enabled_categories,
         "source": "ADAPTER_OR_CONTROLLER_POLICY" if policy else "UNIVERSAL_DEFAULT_POLICY",
@@ -93,6 +95,20 @@ def evaluate_lane_watchdog(
         if _over_threshold(lane.get("evidence_drift_age_seconds"), limits["evidence_drift_unresolved_seconds"]):
             incidents.append({"code": "EXACT_HEAD_EVIDENCE_DRIFT_UNRESOLVED", "severity": "INCIDENT"})
 
+    reuse_nonviable = bool(lane.get("reuse_attempts_exhausted") or lane.get("reuse_viable") is False)
+    if (
+        "REUSE_CRITICAL_PATH_DRAG" in enabled
+        and lane.get("reuse_path_selected")
+        and reuse_nonviable
+        and lane.get("replacement_ready")
+    ):
+        if _over_threshold(
+            lane.get("reuse_delay_age_seconds"),
+            limits["reuse_critical_path_drag_seconds"],
+            missing_is_incident=False,
+        ):
+            incidents.append({"code": "REUSE_CRITICAL_PATH_DRAG", "severity": "INCIDENT"})
+
     if "FORGOTTEN_LANE" in enabled and not lane.get("next_action") and not lane.get("stop_gate"):
         incidents.append({"code": "FORGOTTEN_LANE", "severity": "INCIDENT"})
 
@@ -102,7 +118,7 @@ def evaluate_lane_watchdog(
     untreated_auto_safe = bool(proven_auto_safe_incident and not lane.get("auto_safe_treated"))
 
     return {
-        "schema_version": "2.2",
+        "schema_version": "2.3",
         "lane_id": lane_id,
         "incidents": incidents,
         "forgotten": any(item["code"] == "FORGOTTEN_LANE" for item in incidents),
@@ -134,7 +150,7 @@ def evaluate_control_cycle(
 
     cycle_failed = bool(untreated or forgotten)
     return {
-        "schema_version": "2.2",
+        "schema_version": "2.3",
         "cycle_status": "CONTROL_CYCLE_FAILED" if cycle_failed else "CONTROL_CYCLE_OK",
         "lane_evaluations": evaluations,
         "unresolved_auto_safe_lanes": untreated,
