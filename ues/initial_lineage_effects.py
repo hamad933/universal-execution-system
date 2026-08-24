@@ -5,7 +5,11 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any, Mapping
 
-from .current_authority import initial_lineage_authority
+from .current_authority import (
+    CurrentAuthorityError,
+    initial_lineage_authority,
+    validate_current_authority,
+)
 from .generation_transition import assess_initial_lineage_creation
 from .idempotency import canonical_effect_identity, canonical_request_digest, effect_operation_key
 from .lineage_effects import DEFAULT_TTL_SECONDS, _authorize_lane, _restore_lane_shadow
@@ -25,6 +29,16 @@ from .task_budget_accounting import record_confirmed_generation
 
 INITIAL_SCOPE = "INITIAL_LOGICAL_LINEAGE_CREATE"
 INITIAL_ACTION = "create-initial-lineage-session"
+_REQUIRED_TASK_SPEC_FIELDS = (
+    "objective",
+    "exact_baseline",
+    "write_scope",
+    "prohibited_scope",
+    "validation",
+    "evidence",
+    "handoff",
+    "stop_gate",
+)
 
 
 def _iso(value: datetime) -> str:
@@ -38,6 +52,60 @@ def _digest(value: Mapping[str, Any]) -> str:
 
 def _state_role(role: str) -> str:
     return "ASSURANCE" if str(role).upper() == "FINAL_ASSURANCE" else str(role).upper()
+
+
+def _task_spec_complete(value: Mapping[str, Any] | None) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    if any(field not in value for field in _REQUIRED_TASK_SPEC_FIELDS):
+        return False
+    for field in ("objective", "exact_baseline", "handoff", "stop_gate"):
+        if not isinstance(value.get(field), str) or not str(value.get(field)).strip():
+            return False
+    for field in ("write_scope", "prohibited_scope", "validation", "evidence"):
+        items = value.get(field)
+        if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
+            return False
+    return bool(value.get("validation")) and bool(value.get("evidence"))
+
+
+def _validated_lane_authority(
+    adapter: Mapping[str, Any],
+    authority: Mapping[str, Any] | None,
+    *,
+    transport_actor: str | None,
+    authority_now: datetime | None,
+    project: str,
+    route: str,
+    workstream: str,
+    role: str,
+    repository: str,
+    task_spec: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if not isinstance(authority, Mapping) or not _task_spec_complete(task_spec):
+        return None
+    if str(adapter.get("project") or "") != project or str(adapter.get("route") or "") != route:
+        return None
+    if str(adapter.get("repository") or "").casefold() != repository.casefold():
+        return None
+    try:
+        validated = validate_current_authority(
+            adapter,
+            authority,
+            transport_actor=transport_actor,
+            now=authority_now,
+        )
+    except CurrentAuthorityError:
+        return None
+    lane = initial_lineage_authority(validated, workstream=workstream, role=role)
+    if not isinstance(lane, Mapping):
+        return None
+    authorized_spec = lane.get("task_spec")
+    if not _task_spec_complete(authorized_spec):
+        return None
+    if _digest(authorized_spec) != _digest(task_spec):
+        return None
+    return dict(validated), dict(lane)
 
 
 def _ensure_initial_lane(
@@ -99,6 +167,7 @@ def _snapshot(store: Any, lane_id: str) -> dict[str, Any]:
         "generation": int(evidence.get("generation") or 0),
         "session_fingerprint": str(evidence.get("session_fingerprint") or "").strip() or None,
         "initial_lineage_transition_key": str(evidence.get("initial_lineage_transition_key") or "").strip() or None,
+        "task_spec_digest": str(evidence.get("task_spec_digest") or "").strip() or None,
         "pending": evidence.get("pending_initial_lineage_transition"),
         "unknown_write_state": read.record.unknown_write_state,
         "action_in_flight": read.record.action_in_flight,
@@ -286,7 +355,9 @@ def execute_initial_lineage_generation(
     store: Any,
     client: Any,
     *,
+    adapter: Mapping[str, Any],
     authority: Mapping[str, Any] | None,
+    transport_actor: str | None,
     current_policy: Mapping[str, Any],
     project: str,
     route: str,
@@ -302,28 +373,40 @@ def execute_initial_lineage_generation(
     active_duplicate_absent: bool,
     exact_repository_binding: bool,
     exact_starting_ref_binding: bool,
+    authority_now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Create the first Jules physical generation for an explicitly authorized logical lineage.
+    """Create the first Jules physical generation for an explicitly authorized lineage.
 
-    This primitive is not called by the scheduled runtime in A2. It performs a
-    provider mutation only when the exact fresh Current Authority contains the
-    matching initial-lineage entry and its task_spec is byte-equivalent under
-    canonical JSON to the task_spec supplied to this call.
+    The provider mutation boundary validates the Drive Current Authority itself;
+    callers cannot turn a raw authority-like mapping into mutation authority.
+    The exact task contract must match the authorized initial-lineage entry.
+    A2 intentionally leaves this primitive disconnected from scheduled runtime.
     """
 
-    lane_authority = initial_lineage_authority(authority, workstream=workstream, role=role)
-    event_id = str((authority or {}).get("authority_event_id") or "").strip()
-    authorized_spec = lane_authority.get("task_spec") if isinstance(lane_authority, Mapping) else None
-    if not event_id or not isinstance(authorized_spec, Mapping):
+    supplied_spec = dict(task_spec) if isinstance(task_spec, Mapping) else {}
+    validated_pair = _validated_lane_authority(
+        adapter,
+        authority,
+        transport_actor=transport_actor,
+        authority_now=authority_now,
+        project=project,
+        route=route,
+        workstream=workstream,
+        role=role,
+        repository=repository,
+        task_spec=supplied_spec,
+    )
+    if validated_pair is None:
         return {
-            "decision": "INITIAL_LINEAGE_CURRENT_AUTHORITY_REQUIRED",
+            "decision": "INITIAL_LINEAGE_CURRENT_AUTHORITY_OR_TASK_CONTRACT_REQUIRED",
             "provider_write_attempted": False,
             "safe_to_blind_retry": False,
         }
-    supplied_spec = dict(task_spec) if isinstance(task_spec, Mapping) else {}
-    if not supplied_spec or _digest(authorized_spec) != _digest(supplied_spec):
+    validated_authority, lane_authority = validated_pair
+    event_id = str(validated_authority.get("authority_event_id") or "").strip()
+    if not event_id or lane_authority.get("authorized") is not True:
         return {
-            "decision": "INITIAL_LINEAGE_TASK_SPEC_AUTHORITY_MISMATCH",
+            "decision": "INITIAL_LINEAGE_CURRENT_AUTHORITY_OR_TASK_CONTRACT_REQUIRED",
             "provider_write_attempted": False,
             "safe_to_blind_retry": False,
         }
@@ -334,6 +417,7 @@ def execute_initial_lineage_generation(
             "safe_to_blind_retry": False,
         }
 
+    task_spec_digest = _digest(supplied_spec)
     lane_id = _ensure_initial_lane(
         store,
         project=project,
@@ -343,18 +427,20 @@ def execute_initial_lineage_generation(
         candidate_sha=candidate_sha,
     )
     before = _snapshot(store, lane_id)
-    task_spec_digest = _digest(supplied_spec)
 
-    if (
-        before["generation"] == 1
-        and before["session_fingerprint"]
-        and before["initial_lineage_transition_key"]
-    ):
+    if before["generation"] == 1 and before["session_fingerprint"]:
+        if before["task_spec_digest"] == task_spec_digest and before["initial_lineage_transition_key"]:
+            return {
+                "decision": "IDEMPOTENT_INITIAL_LINEAGE_ALREADY_BOUND",
+                "provider_write_attempted": False,
+                "generation": 1,
+                "session_fingerprint": before["session_fingerprint"],
+                "safe_to_blind_retry": False,
+            }
         return {
-            "decision": "IDEMPOTENT_INITIAL_LINEAGE_ALREADY_BOUND",
+            "decision": "INITIAL_LINEAGE_ALREADY_BOUND_DIFFERENT_TASK_SPEC",
             "provider_write_attempted": False,
             "generation": 1,
-            "session_fingerprint": before["session_fingerprint"],
             "safe_to_blind_retry": False,
         }
 
@@ -624,6 +710,7 @@ def execute_initial_lineage_generation(
             after["generation"] != 1
             or after["session_fingerprint"] != new_fp
             or after["initial_lineage_transition_key"] != transition_key
+            or after["task_spec_digest"] != task_spec_digest
             or after["pending"] is not None
         ):
             raise StateUnavailable("initial lineage exact post-condition mismatch")
