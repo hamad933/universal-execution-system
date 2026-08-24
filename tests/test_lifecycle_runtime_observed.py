@@ -34,7 +34,7 @@ class LifecycleRuntimeObservedTests(unittest.TestCase):
         self.assertEqual(binding["ref_name"], "main")
         self.assertEqual(binding["run_id"], 123456)
         self.assertEqual(binding["run_attempt"], 2)
-        self.assertFalse(binding["telemetry_grants_no_authority"])
+        self.assertTrue(binding["telemetry_grants_no_authority"])
         self.assertNotIn("GITHUB_TOKEN", binding)
         self.assertNotIn("must-not-persist", repr(binding))
 
