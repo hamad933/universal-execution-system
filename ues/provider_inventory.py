@@ -4,7 +4,7 @@ import json
 import os
 from typing import Any
 
-from .provider_observer import ProjectTarget, _digest, _provider_action, load_project_targets
+from .provider_targets import ProjectTarget, digest, load_project_targets, provider_action
 from .providers.jules import JulesClient
 
 SCHEMA_VERSION = "2.1"
@@ -60,17 +60,18 @@ def inventory_provider_sessions(
         if not session_name:
             continue
         state = str(session.get("normalizedState") or "UNKNOWN").upper()
-        classification = _provider_action(state)
+        classification = provider_action(state)
         title = str(session.get("title") or session.get("displayName") or "").strip()
         observation = {
             "project": target.project,
             "route": target.route,
             "repository": target.repository,
+            "starting_branch": session.get("sourceStartingBranch"),
             "state": state,
             "classification": classification,
-            "session_identity_hash": _digest(session_name),
-            "title_digest": _digest(title) if title else None,
-            "source_identity_hash": _digest(source_name),
+            "session_identity_hash": digest(session_name),
+            "title_digest": digest(title) if title else None,
+            "source_identity_hash": digest(source_name),
             "raw_session_identity_emitted": False,
             "raw_title_emitted": False,
         }
