@@ -1,6 +1,7 @@
 name: UES Bounded Existing Session Continuation
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
