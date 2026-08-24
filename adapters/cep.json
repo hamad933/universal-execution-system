@@ -1,7 +1,7 @@
 {
-  "schema_version": "2.0",
+  "schema_version": "2.1",
   "adapter_kind": "portfolio-project-control",
-  "adapter_id": "CEP_SHADOW_V2",
+  "adapter_id": "CEP_BOUNDED_RUNTIME_V3",
   "project": "CEP",
   "route": "PERSONAL:CEP",
   "repository": "hamad933/Cybersecurity-Education-Platform",
@@ -26,12 +26,32 @@
     "source_repository_must_match": true
   },
   "project_auto_safe_actions": [],
+  "bounded_existing_session_runtime": {
+    "enabled": true,
+    "authority_event_id": "OWNER_2026_08_24_BOUNDED_EXISTING_SESSION_CONTINUATION",
+    "policy_evidence_id": "UES_BOUNDED_EXISTING_SESSION_CONTINUATION_V1",
+    "new_task_creation": false,
+    "merge_release_deploy": false,
+    "waiting_continuations": [
+      {
+        "workstream": "W03",
+        "starting_branch": "work/cep-w03-parent-reconciliation-r01-13880329436073387601",
+        "response": "Continue the existing W03 correction on this same session, branch, and PR. You are authorized to proceed within the already-governed W03 scope and resolve W03-owned exact-head failures. Do not weaken shared tests/contracts or edit unrelated workstreams. If a blocker is owned by a shared contract or another workstream, do not guess or widen scope: report the exact blocker and required owner. Otherwise complete the correction, push to the same branch, and return the exact new SHA, changed paths, validation/CI evidence, and any remaining blocker."
+      },
+      {
+        "workstream": "W04",
+        "starting_branch": "work/cep-w04-parent-reconciliation-r02",
+        "response": "Continue the existing W04 correction on this same session, branch, and PR. The existing Handoff Receipt remains valid for continuation within W04 scope. Resolve W04-owned failures only. Do not edit or weaken shared ModuleBoundaryTest, architecture governance, or unrelated workstreams merely to make CI green. If a shared-contract blocker remains, report the exact owner/boundary required; otherwise complete the correction, push the same branch, and return the exact new SHA, changed paths, validation/CI evidence, and any remaining blocker."
+      }
+    ]
+  },
   "task_budget": {
     "ceiling": 70,
     "reserve_target": 15,
     "new_task_authority": "PARENT_ONLY",
     "unknown_lifetime_capacity": "DENY",
-    "automatic_new_task_creation": false
+    "automatic_new_task_creation": false,
+    "existing_session_continuation_consumes_budget": false
   },
   "evidence_profiles": {
     "core_ci": {
@@ -75,12 +95,18 @@
     "unmatched": "UNCLASSIFIED",
     "keyword_shortcuts_allowed": false
   },
+  "blocker_remediation": {
+    "generic_blocker_is_stop_gate": false,
+    "root_cause_required_before_stop": true,
+    "exhaust_controller_resolvable_actions": true,
+    "same_session_continuation_preferred": true
+  },
   "stop_gates": [
     "PARENT_AUTHORITY_REQUIRED",
     "OWNER_AUTHORITY_REQUIRED",
     "SHARED_CONTRACT_REQUIRED",
     "UNCLASSIFIED_WAITING",
-    "EVIDENCE_INCOMPLETE",
+    "EVIDENCE_INCOMPLETE_AFTER_ROOT_CAUSE_REMEDIATION",
     "BINDING_DRIFT_RECONCILIATION_REQUIRED"
   ],
   "prohibitions": [
