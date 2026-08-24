@@ -49,7 +49,7 @@
     "ceiling": 70,
     "reserve_target": 15,
     "new_task_authority": "PARENT_ONLY",
-    "unknown_lifetime_capacity": "DENY_NEW_TASK_ONLY",
+    "unknown_lifetime_capacity": "DENY",
     "automatic_new_task_creation": false,
     "existing_session_continuation_consumes_budget": false
   },
@@ -60,6 +60,7 @@
         {
           "provider": "GITHUB_ACTIONS",
           "workflow": "Core CI",
+          "job": "core",
           "exact_candidate_sha": true,
           "required": true
         }
