@@ -21,6 +21,14 @@ class ParentControllerControlQueueWorkflowTests(unittest.TestCase):
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", self.text)
         self.assertIn("github.event.pull_request.base.ref == github.event.repository.default_branch", self.text)
 
+    def test_signal_requires_owner_sender_and_full_delta_is_single_path(self):
+        self.assertIn("context.payload.sender.login !== context.repo.owner", self.text)
+        self.assertIn("github.rest.repos.compareCommits", self.text)
+        self.assertIn("base: before", self.text)
+        self.assertIn("head: control.head.sha", self.text)
+        self.assertIn("eventFiles.length !== 1", self.text)
+        self.assertIn("synchronize delta must change only .ues/parent-controller-request.json", self.text)
+
     def test_control_commit_is_owner_authored_and_single_path(self):
         self.assertIn("controlCommit.author.login !== context.repo.owner", self.text)
         self.assertIn("controlCommit.committer.login !== context.repo.owner", self.text)
