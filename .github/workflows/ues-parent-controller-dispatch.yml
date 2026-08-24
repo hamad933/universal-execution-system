@@ -1,27 +1,32 @@
-name: UES Parent Controller Validated Auto-Wakeup
+name: UES Parent Controller Trusted Dispatch
 
 on:
-  workflow_run:
-    workflows: ["Validate Universal Core"]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      control_head:
+        description: Exact validated ues-parent-control head SHA
+        required: true
+        type: string
+      validation_run_id:
+        description: Validate Universal Core run id whose core job passed
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ues-parent-controller-autowakeup-${{ github.repository }}
+  group: ues-parent-controller-control-queue-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   preflight:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_branch == 'ues-parent-control'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
+      issues: read
       pull-requests: read
     outputs:
       runtime_sha: ${{ steps.control.outputs.runtime_sha }}
@@ -30,90 +35,121 @@ jobs:
       validation_run_id: ${{ steps.control.outputs.validation_run_id }}
       project: ${{ steps.metadata.outputs.project }}
       request_id: ${{ steps.metadata.outputs.request_id }}
+      request_digest: ${{ steps.metadata.outputs.request_digest }}
       wakeup_type: ${{ steps.metadata.outputs.wakeup_type }}
       wakeup_event_id: ${{ steps.metadata.outputs.wakeup_event_id }}
       wakeup_repository: ${{ steps.metadata.outputs.wakeup_repository }}
       wakeup_workstream: ${{ steps.metadata.outputs.wakeup_workstream }}
       wakeup_sha: ${{ steps.metadata.outputs.wakeup_sha }}
+      already_receipted: ${{ steps.receipt.outputs.already_receipted }}
     steps:
-      - name: Resolve validated persistent control request
+      - name: Resolve exact validated persistent control request
         id: control
         uses: actions/github-script@v7
+        env:
+          CONTROL_HEAD: ${{ inputs.control_head }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
         with:
           script: |
             const fs = require('fs');
-            const run = context.payload.workflow_run;
             const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
-            const requestPath = '.ues/parent-controller-request.json';
             const defaultBranch = context.payload.repository.default_branch;
+            const requestPath = '.ues/parent-controller-request.json';
+            const controlHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
+            const validationRunId = Number(process.env.VALIDATION_RUN_ID || '0');
 
-            if (run.name !== 'Validate Universal Core' || run.conclusion !== 'success' || run.event !== 'pull_request') {
-              core.setFailed('Auto-wakeup requires one successful Validate Universal Core pull-request run');
+            if (!/^[0-9a-f]{40}$/.test(controlHead)) {
+              core.setFailed('Trusted Parent Controller dispatch requires exact 40-hex control head');
               return;
             }
-            if (run.head_branch !== 'ues-parent-control' || !run.head_repository || run.head_repository.full_name !== expectedRepo) {
-              core.setFailed('Auto-wakeup requires the same-repository ues-parent-control branch');
+            if (!Number.isSafeInteger(validationRunId) || validationRunId <= 0) {
+              core.setFailed('Trusted Parent Controller dispatch requires exact validation run id');
               return;
             }
-            if (!run.actor || run.actor.login !== context.repo.owner ||
-                !run.triggering_actor || run.triggering_actor.login !== context.repo.owner) {
-              core.setFailed('Auto-wakeup validation run must be Owner-triggered');
-              return;
-            }
-            const prs = Array.isArray(run.pull_requests) ? run.pull_requests : [];
-            if (prs.length !== 1 || !Number.isInteger(Number(prs[0].number))) {
-              core.setFailed('Auto-wakeup requires exactly one control pull request');
-              return;
-            }
-            const controlPrNumber = Number(prs[0].number);
-            const { data: control } = await github.rest.pulls.get({
+
+            const pulls = await github.paginate(github.rest.pulls.list, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: controlPrNumber,
+              state: 'open',
+              head: `${context.repo.owner}:ues-parent-control`,
+              base: defaultBranch,
+              per_page: 100,
             });
-            if (control.state !== 'open' || control.draft !== true) {
-              core.setFailed('Persistent Parent Controller control PR must remain open and Draft');
+            if (pulls.length !== 1) {
+              core.setFailed('Exactly one persistent Parent Controller control PR must be open');
               return;
             }
-            if (!control.head.repo || control.head.repo.full_name !== expectedRepo || control.head.ref !== 'ues-parent-control') {
-              core.setFailed('Persistent Parent Controller control PR must use the same-repository ues-parent-control branch');
+            const control = pulls[0];
+            if (control.draft !== true || !control.head.repo || control.head.repo.full_name !== expectedRepo ||
+                control.head.ref !== 'ues-parent-control' || String(control.head.sha || '').toLowerCase() !== controlHead) {
+              core.setFailed('Persistent control PR identity/head is not exact');
               return;
             }
-            if (control.base.ref !== defaultBranch) {
-              core.setFailed('Persistent Parent Controller control PR must target the default branch');
-              return;
-            }
-            const validatedHead = String(run.head_sha || '').toLowerCase();
-            const liveControlHead = String(control.head.sha || '').toLowerCase();
-            if (!/^[0-9a-f]{40}$/.test(validatedHead) || validatedHead !== liveControlHead) {
-              core.setFailed('Successful validation must bind the exact live control head SHA');
+            if (!control.user || control.user.login !== context.repo.owner) {
+              core.setFailed('Persistent control PR must be owned by repository Owner');
               return;
             }
 
             const prFiles = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: controlPrNumber,
+              pull_number: control.number,
               per_page: 100,
             });
             if (prFiles.length !== 1 || prFiles[0].filename !== requestPath) {
-              core.setFailed('Persistent Parent Controller control PR must contain only .ues/parent-controller-request.json');
+              core.setFailed('Persistent Parent Controller PR must contain only .ues/parent-controller-request.json');
               return;
             }
-
             const { data: controlCommit } = await github.rest.repos.getCommit({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: liveControlHead,
+              ref: controlHead,
             });
             if (!controlCommit.author || controlCommit.author.login !== context.repo.owner ||
                 !controlCommit.committer || controlCommit.committer.login !== context.repo.owner) {
-              core.setFailed('Control request commit must be repository-owner authored and committed');
+              core.setFailed('Control request commit must be Owner-authored and committed');
               return;
             }
             const changed = controlCommit.files || [];
             if (changed.length !== 1 || changed[0].filename !== requestPath) {
-              core.setFailed('Control request commit must change only .ues/parent-controller-request.json');
+              core.setFailed('Control request commit must change only the semantic request file');
+              return;
+            }
+
+            const { data: validation } = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: validationRunId,
+            });
+            if (validation.name !== 'Validate Universal Core' || validation.event !== 'pull_request' ||
+                !['in_progress', 'completed'].includes(validation.status) ||
+                (validation.status === 'completed' && validation.conclusion !== 'success') ||
+                validation.head_branch !== 'ues-parent-control' ||
+                String(validation.head_sha || '').toLowerCase() !== controlHead) {
+              core.setFailed('Dispatch is not bound to the exact Owner control validation run');
+              return;
+            }
+            if (!validation.actor || validation.actor.login !== context.repo.owner ||
+                !validation.triggering_actor || validation.triggering_actor.login !== context.repo.owner) {
+              core.setFailed('Validation run must be Owner-triggered');
+              return;
+            }
+            const validationPrs = Array.isArray(validation.pull_requests) ? validation.pull_requests : [];
+            if (validationPrs.length !== 1 || Number(validationPrs[0].number) !== Number(control.number)) {
+              core.setFailed('Validation run must bind the exact persistent control PR');
+              return;
+            }
+            const validationJobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: validationRunId,
+              per_page: 100,
+            });
+            const coreJobs = validationJobs.filter((job) =>
+              job.name === 'core' && job.status === 'completed' && job.conclusion === 'success'
+            );
+            if (coreJobs.length !== 1) {
+              core.setFailed('Dispatch requires exactly one completed/successful Validate Universal Core core job');
               return;
             }
 
@@ -132,7 +168,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               path: requestPath,
-              ref: liveControlHead,
+              ref: controlHead,
             });
             if (Array.isArray(requestFile) || requestFile.type !== 'file' || !requestFile.content) {
               core.setFailed('Parent Controller request file is missing or invalid');
@@ -145,8 +181,8 @@ jobs:
             );
             core.setOutput('runtime_sha', runtimeSha);
             core.setOutput('request_file_sha', String(requestFile.sha || ''));
-            core.setOutput('control_pr_number', String(controlPrNumber));
-            core.setOutput('validation_run_id', String(run.id || ''));
+            core.setOutput('control_pr_number', String(control.number));
+            core.setOutput('validation_run_id', String(validationRunId));
 
       - name: Checkout exact trusted UES runtime
         uses: actions/checkout@v4
@@ -180,6 +216,7 @@ jobs:
           for key, item in (
               ('project', value.get('project', '')),
               ('request_id', value.get('request_id', '')),
+              ('request_digest', value.get('request_digest', '')),
               ('wakeup_type', wakeup.get('event_type', '')),
               ('wakeup_event_id', wakeup.get('event_id', '')),
               ('wakeup_repository', wakeup.get('repository', '')),
@@ -189,10 +226,41 @@ jobs:
               print(f'{key}={item}')
           PY
 
+      - name: Suppress already-receipted request
+        id: receipt
+        uses: actions/github-script@v7
+        env:
+          CONTROL_PR_NUMBER: ${{ steps.control.outputs.control_pr_number }}
+          REQUEST_ID: ${{ steps.metadata.outputs.request_id }}
+          REQUEST_DIGEST: ${{ steps.metadata.outputs.request_digest }}
+          RUNTIME_SHA: ${{ steps.control.outputs.runtime_sha }}
+        with:
+          script: |
+            const prNumber = Number(process.env.CONTROL_PR_NUMBER || '0');
+            const requestId = String(process.env.REQUEST_ID || '');
+            const requestDigest = String(process.env.REQUEST_DIGEST || '');
+            const runtimeSha = String(process.env.RUNTIME_SHA || '');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const marker = '<!-- UES_PARENT_CONTROLLER_RECEIPT_V1 -->';
+            const duplicate = comments.some((comment) => {
+              const body = String(comment.body || '');
+              return body.includes(marker) &&
+                body.includes(`\"request_id\": \"${requestId}\"`) &&
+                body.includes(`\"request_digest\": \"${requestDigest}\"`) &&
+                body.includes(`\"runtime_sha\": \"${runtimeSha}\"`);
+            });
+            core.setOutput('already_receipted', duplicate ? 'true' : 'false');
+
       - name: Preserve validated request transport
+        if: steps.receipt.outputs.already_receipted != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ues-parent-auto-request-${{ steps.control.outputs.request_file_sha }}
+          name: ues-parent-dispatch-request-${{ steps.control.outputs.request_file_sha }}
           path: |
             current-authority.json
             parent-request-metadata.json
@@ -201,6 +269,7 @@ jobs:
 
   execute:
     needs: preflight
+    if: needs.preflight.outputs.already_receipted != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -244,7 +313,7 @@ jobs:
       - name: Restore validated Parent Controller request
         uses: actions/download-artifact@v4
         with:
-          name: ues-parent-auto-request-${{ needs.preflight.outputs.request_file_sha }}
+          name: ues-parent-dispatch-request-${{ needs.preflight.outputs.request_file_sha }}
           path: .
 
       - name: Run authority-gated lifecycle and guarded initial-lineage runtime
@@ -257,7 +326,7 @@ jobs:
           UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.repository_owner }}
           UES_WAKEUP_EVENT_ID: ${{ needs.preflight.outputs.wakeup_event_id }}
           UES_WAKEUP_EVENT_TYPE: ${{ needs.preflight.outputs.wakeup_type }}
-          UES_WAKEUP_EVENT_SOURCE: PARENT_CONTROLLER_VALIDATED_AUTOWAKEUP
+          UES_WAKEUP_EVENT_SOURCE: PARENT_CONTROLLER_VALIDATED_DISPATCH
           UES_WAKEUP_REPOSITORY: ${{ needs.preflight.outputs.wakeup_repository }}
           UES_WAKEUP_WORKSTREAM: ${{ needs.preflight.outputs.wakeup_workstream }}
           UES_WAKEUP_SHA: ${{ needs.preflight.outputs.wakeup_sha }}
@@ -276,7 +345,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ues-parent-auto-result-${{ needs.preflight.outputs.request_id }}
+          name: ues-parent-dispatch-result-${{ needs.preflight.outputs.request_id }}
           path: |
             parent-request-metadata.json
             lifecycle-result.json
@@ -324,7 +393,6 @@ jobs:
               if lifecycle_created is not None and initial_created is not None
               else None
           )
-
           receipt = {
               'schema_version': 'UES_PARENT_CONTROLLER_RECEIPT_V1',
               'request_id': metadata.get('request_id'),
@@ -332,7 +400,7 @@ jobs:
               'authority_event_id': metadata.get('authority_event_id'),
               'project': metadata.get('project'),
               'runtime_sha': metadata.get('runtime_sha'),
-              'trigger_kind': 'VALIDATE_WORKFLOW_RUN',
+              'trigger_kind': 'VALIDATE_WORKFLOW_DISPATCH',
               'validation_run_id': os.environ.get('UES_VALIDATION_RUN_ID') or None,
               'execution_outcome': os.environ.get('UES_RUNTIME_OUTCOME') or 'unknown',
               'lifecycle_result': lifecycle.get('result') if isinstance(lifecycle, dict) else None,
