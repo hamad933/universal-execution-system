@@ -32,7 +32,9 @@ A valid queue request therefore contains a fresh `current_authority` object sour
 
 ## 3. Preferred low-friction ingress
 
-When the ChatGPT GitHub connector cannot call `workflow_dispatch` directly, use the persistent same-repository `ues-control` branch / control PR as the preferred Parent Controller ingress.
+When the ChatGPT GitHub connector cannot call `workflow_dispatch` directly, use the dedicated persistent same-repository `ues-parent-control` branch / control PR as the preferred Parent Controller ingress.
+
+This branch is intentionally separate from legacy `ues-control`, which remains owned by the v1 format-fix queue. Separating them prevents one semantic request from waking unrelated workflows.
 
 The Parent Controller performs one semantic operation:
 
@@ -45,7 +47,7 @@ Internally that means:
 1. Re-read live UES `main` and capture the full 40-hex SHA.
 2. Reconstruct fresh project Current Authority.
 3. Build one `UES_PARENT_CONTROLLER_REQUEST_V1` payload.
-4. Create or replace `.ues/parent-controller-request.json` on `ues-control`.
+4. Create or replace `.ues/parent-controller-request.json` on `ues-parent-control`.
 5. Change no other path in that queue commit.
 6. Let trusted default-branch workflow code validate and execute the request.
 7. Read the resulting lifecycle/provider/StateStore evidence and continue project adjudication.
@@ -87,12 +89,18 @@ The example is structural only. Never copy stale project state, IDs, branches, w
 
 `wakeup` may be omitted when no extra routing metadata is useful; UES supplies the safe default `EXTERNAL_RECONCILIATION_REQUEST` and uses `request_id` as the wakeup event ID.
 
+### Public-Git transport boundary
+
+`ues-parent-control` is Git history in the UES repository. Therefore the request payload must contain only non-secret, non-sensitive governed control data that is appropriate to persist in that repository. The validator rejects common secret-bearing key names, and the Parent Controller must never place provider keys, passwords, private keys, tokens, credentials, sensitive production data, or other confidential payloads in the request.
+
+If a future project's authority envelope contains material that is not suitable for the UES repository history, do not use this queue for that payload. Select an authorized private transport instead while preserving the same UES Current Authority/runtime gates.
+
 ## 5. What the queue validates before secrets are available
 
 The trusted workflow fails closed unless all are true:
 
 - event is a `pull_request_target:synchronize` from the same repository;
-- head branch is exactly `ues-control`;
+- head branch is exactly `ues-parent-control`;
 - control PR targets the repository default branch;
 - latest queue commit is authored and committed by the repository Owner identity;
 - that commit changes exactly one path: `.ues/parent-controller-request.json`;
@@ -103,7 +111,8 @@ The trusted workflow fails closed unless all are true:
 - transported authority says `source=DRIVE_CURRENT_STATE`, `current=true`, and matches the governed project/route;
 - authority has source ID, authority event ID, and bounded expiry;
 - no secret-bearing keys are present in the request payload;
-- wakeup type is allowlisted.
+- wakeup type is allowlisted;
+- optional repository/workstream routing metadata is restricted to safe single-line formats before it can cross a GitHub Actions job-output boundary.
 
 The control branch is read as data through the GitHub API. It is never checked out or executed.
 
@@ -188,14 +197,16 @@ Use direct evidence: exact workflow run/job, StateStore receipt, provider readba
 
 ## 12. First use of the persistent queue
 
-After this workflow is integrated to UES `main`, initialize the control branch once if the request file does not yet exist:
+After this workflow is integrated to UES `main`, initialize a dedicated control branch once:
 
 ```text
-ues-control
+ues-parent-control
 └── .ues/parent-controller-request.json
 ```
 
-The first create and every later replacement must be a single-path queue commit. Existing `.ues/request.json` used by the legacy format-fix queue is separate and must not be modified by Parent Controller lifecycle requests.
+Create a persistent Draft PR from `ues-parent-control` to `main`. Opening the PR does not execute a Parent Controller cycle because the workflow reacts only to later `synchronize` events. Each real request then replaces only `.ues/parent-controller-request.json` in one queue commit, producing a deterministic `synchronize` signal.
+
+The legacy `ues-control` branch and `.ues/request.json` remain separate and must not be used or modified by Parent Controller lifecycle requests.
 
 ## 13. Failure handling
 
