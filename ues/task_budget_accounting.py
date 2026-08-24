@@ -18,9 +18,10 @@ def record_confirmed_generation(
 ) -> dict[str, Any]:
     """Count a provider generation exactly once after authoritative confirmation.
 
-    The counter records only UES-confirmed creations. It is never represented as
-    proof of complete provider lifetime usage and is therefore only a durable
-    lower bound used alongside current provider observations.
+    This cumulative counter is historical audit/idempotency evidence only. It is
+    never current provider quota-window usage and MUST NOT reduce current-window
+    capacity. Current capacity comes from authoritative provider-window
+    observation in the runtime budget preflight.
     """
 
     operation_key = str(operation_key or "").strip()
@@ -57,6 +58,8 @@ def record_confirmed_generation(
                 "ues_confirmed_generation_count": count,
                 "operation_key": operation_key,
                 "generation_transition_key": transition_key,
+                "historical_audit_only": True,
+                "capacity_gate_consumption": False,
                 "version": read.version,
             }
 
@@ -66,6 +69,8 @@ def record_confirmed_generation(
             "scope": "UES_CONFIRMED_PROVIDER_GENERATION_ACCOUNTING",
             "complete_lifetime_usage_proven": False,
             "counter_is_durable_lower_bound_only": True,
+            "historical_audit_only": True,
+            "capacity_gate_consumption": False,
         }
         record.evidence_bindings = {
             **evidence,
@@ -73,6 +78,8 @@ def record_confirmed_generation(
             "confirmed_generation_operation_keys": (seen + [operation_key])[-512:],
             "confirmed_generation_transition_keys": (transitions + [transition_key])[-512:],
             "complete_lifetime_usage_proven": False,
+            "historical_audit_only": True,
+            "capacity_gate_consumption": False,
         }
         record.last_successful_transition = {
             "kind": "CONFIRMED_GENERATION_ACCOUNTED",
@@ -95,6 +102,8 @@ def record_confirmed_generation(
             "ues_confirmed_generation_count": count + 1,
             "operation_key": operation_key,
             "generation_transition_key": transition_key,
+            "historical_audit_only": True,
+            "capacity_gate_consumption": False,
             "version": saved.version,
         }
     raise StateUnavailable("generation accounting exhausted CAS attempts")
@@ -107,11 +116,15 @@ def read_budget_accounting(store: Any, *, project: str, route: str) -> dict[str,
         return {
             "ues_confirmed_generation_count": 0,
             "complete_lifetime_usage_proven": False,
+            "historical_audit_only": True,
+            "capacity_gate_consumption": False,
             "status": read.status,
         }
     evidence = read.record.evidence_bindings or {}
     return {
         "ues_confirmed_generation_count": int(evidence.get("ues_confirmed_generation_count") or 0),
         "complete_lifetime_usage_proven": False,
+        "historical_audit_only": True,
+        "capacity_gate_consumption": False,
         "status": "OK",
     }
