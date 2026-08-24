@@ -14,7 +14,7 @@ concurrency:
 jobs:
   preflight:
     if: >-
-      github.event.pull_request.head.ref == 'ues-control' &&
+      github.event.pull_request.head.ref == 'ues-parent-control' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
@@ -27,7 +27,6 @@ jobs:
       request_file_sha: ${{ steps.control.outputs.request_file_sha }}
       project: ${{ steps.metadata.outputs.project }}
       request_id: ${{ steps.metadata.outputs.request_id }}
-      authority_event_id: ${{ steps.metadata.outputs.authority_event_id }}
       wakeup_type: ${{ steps.metadata.outputs.wakeup_type }}
       wakeup_event_id: ${{ steps.metadata.outputs.wakeup_event_id }}
       wakeup_repository: ${{ steps.metadata.outputs.wakeup_repository }}
@@ -45,8 +44,8 @@ jobs:
             const defaultBranch = context.payload.repository.default_branch;
             const requestPath = '.ues/parent-controller-request.json';
 
-            if (!control.head.repo || control.head.repo.full_name !== expectedRepo || control.head.ref !== 'ues-control') {
-              core.setFailed('Parent Controller queue requires same-repository ues-control branch');
+            if (!control.head.repo || control.head.repo.full_name !== expectedRepo || control.head.ref !== 'ues-parent-control') {
+              core.setFailed('Parent Controller queue requires same-repository ues-parent-control branch');
               return;
             }
             if (control.base.ref !== defaultBranch) {
@@ -146,7 +145,7 @@ jobs:
             --authority-output current-authority.json \
             --metadata-output parent-request-metadata.json
 
-      - name: Export sanitized request metadata
+      - name: Export validated routing metadata
         id: metadata
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -156,7 +155,6 @@ jobs:
           for key, item in (
               ('project', value.get('project', '')),
               ('request_id', value.get('request_id', '')),
-              ('authority_event_id', value.get('authority_event_id', '')),
               ('wakeup_type', wakeup.get('event_type', '')),
               ('wakeup_event_id', wakeup.get('event_id', '')),
               ('wakeup_repository', wakeup.get('repository', '')),
