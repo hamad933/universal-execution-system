@@ -18,10 +18,12 @@ from .lineage_registry import lineage_lane_id
 from .live_runtime import build_live_state_store
 from .policy_resolution import resolve_execution_policy
 from .providers.github import GitHubClient
+from .task_budget import observe_rolling_quota_window
 
 SCHEMA_VERSION = "1.0"
 SUPPORTED_PROJECTS = frozenset({"GS", "CEP", "RP01", "RP02", "RP03", "RP04"})
 SUPPORTED_ROLES = frozenset({"WRITER", "REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"})
+JULES_TASK_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _ALLOWED_TASK_FIELDS = frozenset(
@@ -311,10 +313,13 @@ def run(project: str) -> dict[str, Any]:
     github = GitHubClient(github_token)
     inventory = legacy._provider_inventory(jules)
     source_name, source_proven = _source_for_repository(jules, repository)
-    provider_observation = {
-        "lifetime_consumption_known": False,
-        "current_enumerated_tasks": len(inventory),
-    }
+    # Jules currently meters tasks in a rolling 24-hour window. Historical
+    # sessions stay in inventory for reconciliation/marker matching but are not
+    # charged against the current capacity gate.
+    provider_observation = observe_rolling_quota_window(
+        inventory,
+        window_seconds=JULES_TASK_QUOTA_WINDOW_SECONDS,
+    )
     owner, repo = legacy._repo_parts(repository)
     event_id = str(authority.get("authority_event_id") or "").strip()
 
@@ -499,6 +504,7 @@ def run(project: str) -> dict[str, Any]:
         "result": "INITIAL_LINEAGE_RUNTIME_COMPLETE",
         "authority_event_id": event_id,
         "lineage_count": len(results),
+        "provider_quota_window": provider_observation,
         "effect_decision_counts": dict(sorted(decisions.items())),
         "external_effects_dispatched": external,
         "new_tasks_or_sessions_created": created,
