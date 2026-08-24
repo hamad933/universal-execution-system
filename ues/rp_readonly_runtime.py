@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable
 
-from . import lifecycle_runtime as legacy
-from . import lifecycle_runtime_observed as observed
 from . import provider_observer as provider_observer
 from . import provider_observer_runtime as provider_runtime
+from .observation_backed_health import run_observation_backed_no_effect_health
 
 
 RP_PROJECTS: tuple[dict[str, str], ...] = (
@@ -66,22 +66,21 @@ def audit_provider(*, stale_seconds: int = 45 * 60) -> dict[str, Any]:
 
 
 def lifecycle_health(project: str) -> dict[str, Any]:
-    """Run shared lifecycle supervision for one RP project.
+    """Persist RP SHADOW health from the provider-observer snapshot.
 
-    This wrapper supplies only the stable RP adapter loader. Mutation authority is
-    still owned by the shared current-authority runtime. The scheduled workflow
-    invokes this with an empty UES_CURRENT_AUTHORITY_JSON, so provider-routing
-    effects remain unreachable and the result is SHADOW health telemetry only.
+    The scheduled/push read-only workflow runs provider-observer first. With no
+    Current Authority and no RP lineage topology there is no reason for each RP
+    health job to re-read Jules. Reusing the fresh sanitized StateStore observation
+    eliminates redundant provider load while preserving fail-closed freshness and
+    exact repository binding. Any non-empty authority transport is rejected here;
+    effect-capable RP cycles belong to rp_authority_runtime.
     """
 
     project_name = str(project or "").strip().upper()
-    _load_rp_adapter(project_name)
-    original_loader = legacy._load_adapter
-    legacy._load_adapter = _load_rp_adapter
-    try:
-        result = dict(observed.run(project_name))
-    finally:
-        legacy._load_adapter = original_loader
+    adapter = _load_rp_adapter(project_name)
+    if str(os.environ.get("UES_CURRENT_AUTHORITY_JSON") or "").strip():
+        raise ValueError("RP read-only lifecycle health rejects Current Authority transport")
+    result = dict(run_observation_backed_no_effect_health(adapter, authority=None))
     result["rp_runtime_mode"] = "READ_ONLY_SHADOW"
     result["project"] = project_name
     result["runtime_wrapper_grants_authority"] = False
