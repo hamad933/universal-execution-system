@@ -22,12 +22,23 @@ class CEPControlAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter["truth_owners"]["governed_state"], "DRIVE")
         self.assertEqual(self.adapter["truth_owners"]["technical_state"], "GITHUB")
 
-    def test_adapter_is_shadow_only_and_cannot_auto_mutate(self):
+    def test_default_adapter_remains_shadow_but_owner_bounded_existing_session_action_is_declared(self):
         activation = self.adapter["activation"]
         self.assertEqual(activation["default_mode"], "SHADOW")
         self.assertFalse(activation["mutation_allowed"])
         self.assertFalse(activation["runtime_mode_is_authority"])
-        self.assertEqual(self.adapter["project_auto_safe_actions"], [])
+        self.assertEqual(
+            self.adapter["project_auto_safe_actions"],
+            ["WAITING_SAME_SESSION_CONTINUATION"],
+        )
+        bounded = self.adapter["bounded_existing_session_runtime"]
+        self.assertTrue(bounded["enabled"])
+        self.assertFalse(bounded["new_task_creation"])
+        self.assertFalse(bounded["merge_release_deploy"])
+        self.assertEqual(
+            [item["workstream"] for item in bounded["waiting_continuations"]],
+            ["W03", "W04"],
+        )
         self.assertEqual(self.adapter["task_budget"]["new_task_authority"], "PARENT_ONLY")
         self.assertEqual(self.adapter["task_budget"]["unknown_lifetime_capacity"], "DENY")
         self.assertFalse(self.adapter["task_budget"]["automatic_new_task_creation"])
@@ -38,6 +49,7 @@ class CEPControlAdapterTests(unittest.TestCase):
         self.assertEqual(budget["reserve_target"], 15)
         self.assertEqual(budget["new_task_authority"], "PARENT_ONLY")
         self.assertEqual(budget["unknown_lifetime_capacity"], "DENY")
+        self.assertFalse(budget["existing_session_continuation_consumes_budget"])
 
     def test_provider_effects_require_explicit_source_proof(self):
         binding = self.adapter["actor_binding"]
@@ -78,6 +90,13 @@ class CEPControlAdapterTests(unittest.TestCase):
         self.assertNotIn("keyword", rule)
         self.assertNotIn("prompt", rule)
         self.assertNotIn("session", rule)
+
+    def test_blocker_classification_is_not_a_final_stop_without_root_cause_remediation(self):
+        remediation = self.adapter["blocker_remediation"]
+        self.assertFalse(remediation["generic_blocker_is_stop_gate"])
+        self.assertTrue(remediation["root_cause_required_before_stop"])
+        self.assertTrue(remediation["exhaust_controller_resolvable_actions"])
+        self.assertTrue(remediation["same_session_continuation_preferred"])
 
 
 if __name__ == "__main__":
