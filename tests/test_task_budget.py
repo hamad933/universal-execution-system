@@ -24,10 +24,9 @@ class TaskBudgetTests(unittest.TestCase):
             ceiling=40,
             reserve=0,
             lifetime_consumption_known=False,
-            proven_lifetime_used=5,
+            proven_lifetime_used=None,
             current_enumerated_tasks=5,
             unknown_lifetime_policy="ALLOW_UNLESS_DIRECT_CEILING_REACHED",
-            hard_ceiling_reached=False,
         )
         self.assertEqual(
             budget["state"],
@@ -35,7 +34,7 @@ class TaskBudgetTests(unittest.TestCase):
         )
         self.assertTrue(budget["budget_allows_new_task"])
         self.assertIsNone(budget["safe_remaining"])
-        self.assertEqual(budget["proven_floor_remaining"], 35)
+        self.assertEqual(budget["observed_headroom"], 35)
         gate = evaluate_new_task_gate(
             budget,
             parent_gate_satisfied=True,
@@ -44,17 +43,18 @@ class TaskBudgetTests(unittest.TestCase):
         self.assertTrue(gate["allowed"])
         self.assertTrue(gate["automatic_creation"])
 
-    def test_direct_hard_ceiling_always_stops_creation(self):
+    def test_direct_enumeration_at_hard_ceiling_stops_creation(self):
         budget = evaluate_task_budget(
             project="GS",
             ceiling=40,
             reserve=0,
             lifetime_consumption_known=False,
-            proven_lifetime_used=40,
+            proven_lifetime_used=None,
+            current_enumerated_tasks=40,
             unknown_lifetime_policy="ALLOW_UNLESS_DIRECT_CEILING_REACHED",
-            hard_ceiling_reached=True,
         )
-        self.assertEqual(budget["state"], "DIRECT_HARD_CEILING_REACHED")
+        self.assertEqual(budget["state"], "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED")
+        self.assertTrue(budget["hard_ceiling_reached"])
         self.assertFalse(budget["budget_allows_new_task"])
 
     def test_proven_usage_respects_reserve(self):
