@@ -25,7 +25,7 @@
     "heuristic_match_status": "PROPOSED_UNVERIFIED",
     "source_repository_must_match": true
   },
-  "project_auto_safe_actions": ["WAITING_SAME_SESSION_CONTINUATION"],
+  "project_auto_safe_actions": [],
   "bounded_existing_session_runtime": {
     "enabled": true,
     "authority_event_id": "OWNER_2026_08_24_BOUNDED_EXISTING_SESSION_CONTINUATION",
@@ -60,7 +60,6 @@
         {
           "provider": "GITHUB_ACTIONS",
           "workflow": "Core CI",
-          "job": "core",
           "exact_candidate_sha": true,
           "required": true
         }
