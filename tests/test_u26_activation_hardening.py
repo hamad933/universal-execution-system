@@ -30,6 +30,18 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
         for text in (self.parent, self.rp_readonly, self.rp_authority, self.portfolio):
             self.assertIn("cancel-in-progress: false", text)
 
+    def test_parent_control_heads_do_not_cancel_inflight_effect_runs(self):
+        top_level = self.parent.split("\njobs:\n", 1)[0]
+        self.assertIn(
+            "group: validate-${{ github.workflow }}-${{ github.event.pull_request.head.ref == 'ues-parent-control' && github.event.pull_request.head.sha || (github.event.pull_request.number || github.ref) }}",
+            top_level,
+        )
+        self.assertIn(
+            "cancel-in-progress: ${{ github.event.pull_request.head.ref != 'ues-parent-control' }}",
+            top_level,
+        )
+        self.assertNotIn("cancel-in-progress: true", top_level)
+
     def test_rp_matrix_burst_is_bounded(self):
         self.assertIn("max-parallel: 2", self.rp_readonly)
         self.assertIn("max-parallel: 2", self.rp_authority)
