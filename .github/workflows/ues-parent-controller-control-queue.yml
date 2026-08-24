@@ -206,6 +206,23 @@ jobs:
           ref: ${{ needs.preflight.outputs.runtime_sha }}
           persist-credentials: false
 
+      - name: Reverify validated runtime is still current before effects
+        uses: actions/github-script@v7
+        env:
+          EXPECTED_RUNTIME_SHA: ${{ needs.preflight.outputs.runtime_sha }}
+        with:
+          script: |
+            const { data: liveBase } = await github.rest.repos.getBranch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: context.payload.repository.default_branch,
+            });
+            const liveSha = String(liveBase.commit.sha || '').toLowerCase();
+            const expectedSha = String(process.env.EXPECTED_RUNTIME_SHA || '').toLowerCase();
+            if (liveSha !== expectedSha) {
+              core.setFailed('UES default branch moved after preflight; submit a fresh request bound to the current runtime');
+            }
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
