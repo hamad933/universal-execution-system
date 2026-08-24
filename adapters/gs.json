@@ -124,8 +124,9 @@
     "reserve_status": "NOT_DEFINED_BY_CURRENT_GS_AUTHORITY",
     "new_task_authority": "PARENT_ONLY",
     "owner_new_task_policy": "OWNER_AUTHORIZED_NECESSITY_BASED_NEW_GENERATION",
+    "necessity_based_new_generation_authorized": true,
     "unknown_lifetime_capacity": "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
-    "automatic_new_task_creation": true,
+    "automatic_new_task_creation": false,
     "runtime_budget_preflight_required": true,
     "unknown_lifetime_alone_is_stop_gate": false
   },
