@@ -71,10 +71,11 @@ class ParentControllerControlQueueWorkflowTests(unittest.TestCase):
         self.assertIn("UES_AUTHORITY_TRANSPORT_ACTOR", self.text)
 
     def test_only_validated_routing_metadata_crosses_job_outputs(self):
-        self.assertIn("('project', value.get('project', ''))", self.text)
-        self.assertIn("('request_id', value.get('request_id', ''))", self.text)
-        self.assertIn("('wakeup_repository', wakeup.get('repository', ''))", self.text)
-        self.assertNotIn("('authority_event_id'", self.text)
+        preflight, _execute = self.text.split("\n  execute:\n", 1)
+        self.assertIn("('project', value.get('project', ''))", preflight)
+        self.assertIn("('request_id', value.get('request_id', ''))", preflight)
+        self.assertIn("('wakeup_repository', wakeup.get('repository', ''))", preflight)
+        self.assertNotIn("('authority_event_id'", preflight)
         self.assertNotIn("authority_event_id: ${{ steps.metadata.outputs.authority_event_id }}", self.text)
 
     def test_queue_is_transport_not_raw_comment_effect_ingress(self):

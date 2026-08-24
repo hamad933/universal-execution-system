@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -22,6 +22,7 @@ from ..state_store import (
 )
 
 OWNER_AUTHORIZED_PUBLIC_SAME_REPO_POLICY = "OWNER_AUTHORIZED_PUBLIC_SAME_REPOSITORY"
+_T = TypeVar("_T")
 
 
 def _repository(value: str) -> str:
@@ -45,6 +46,8 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
     """
 
     storage_policy = OWNER_AUTHORIZED_PUBLIC_SAME_REPO_POLICY
+    read_throttle_attempts = 3
+    read_throttle_delay_seconds = 0.75
 
     def __init__(
         self,
@@ -68,12 +71,39 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
             timeout_seconds=timeout_seconds,
         )
 
+    def _retry_throttled_read(self, action: Callable[[], _T]) -> _T:
+        """Boundedly retry only read-side 403/429 transport failures.
+
+        Runtime state uses GitHub Git Data reads heavily. A concurrent observation
+        burst can receive a temporary 403/429 even though the token remains valid.
+        Repeating GET-only work is side-effect free, so this transport gives those
+        statuses a short bounded recovery window. Writes are intentionally not
+        wrapped here and therefore preserve the existing no-blind-write-retry rule.
+
+        A persistent or authorization-related 403 still fails closed after the
+        bounded read attempts; no mutation is attempted as part of recovery.
+        """
+
+        attempts = max(1, int(self.read_throttle_attempts))
+        delay = max(0.0, float(self.read_throttle_delay_seconds))
+        for attempt in range(attempts):
+            try:
+                return action()
+            except GitHubRefTransportError as exc:
+                message = str(exc)
+                throttled = "(HTTP 403)" in message or "(HTTP 429)" in message
+                if not throttled or attempt + 1 >= attempts:
+                    raise
+                if delay:
+                    time.sleep(delay * (attempt + 1))
+        raise AssertionError("unreachable read retry state")
+
     def assert_private_repository(self) -> None:
         """Verify exact repository identity; public visibility is owner-authorized here only."""
 
         if self._storage_policy_verified:
             return
-        value = self._request_json("GET", self._repo_path)
+        value = self._retry_throttled_read(lambda: self._request_json("GET", self._repo_path))
         assert value is not None
         observed = str(value.get("full_name") or "").strip()
         if not observed or observed.casefold() != self.expected_repository.casefold():
@@ -83,12 +113,15 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
         self.storage_visibility = "PRIVATE" if bool(value.get("private")) else "PUBLIC"
         self._storage_policy_verified = True
 
-    def list_refs(self, prefix: str) -> dict[str, str]:
-        """List refs under a bounded prefix for restart/watchdog discovery."""
+    def get_ref(self, ref: str) -> str | None:
+        base = super()
+        return self._retry_throttled_read(lambda: base.get_ref(ref))
 
-        prefix = str(prefix or "").strip().strip("/")
-        if not prefix:
-            raise ValueError("ref prefix is required")
+    def read_snapshot(self, commit_sha: str) -> Mapping[str, Any]:
+        base = super()
+        return self._retry_throttled_read(lambda: base.read_snapshot(commit_sha))
+
+    def _list_refs_once(self, prefix: str) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self._token}",
@@ -126,6 +159,14 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
                 raise GitHubRefTransportError("GitHub matching-ref item is missing ref identity")
             result[ref[len("refs/"):]] = str(obj["sha"])
         return dict(sorted(result.items()))
+
+    def list_refs(self, prefix: str) -> dict[str, str]:
+        """List refs under a bounded prefix for restart/watchdog discovery."""
+
+        prefix = str(prefix or "").strip().strip("/")
+        if not prefix:
+            raise ValueError("ref prefix is required")
+        return self._retry_throttled_read(lambda: self._list_refs_once(prefix))
 
 
 class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):

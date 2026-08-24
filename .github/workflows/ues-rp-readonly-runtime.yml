@@ -45,11 +45,11 @@ jobs:
     needs: provider-observer
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 2
       matrix:
         project: [RP01, RP02, RP03, RP04]
     concurrency:
-      group: ues-rp-lifecycle-${{ matrix.project }}
+      group: ues-project-lifecycle-${{ matrix.project }}
       cancel-in-progress: false
     permissions:
       contents: write
