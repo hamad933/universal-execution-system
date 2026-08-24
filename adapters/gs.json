@@ -43,8 +43,9 @@
     "execute_safe_transitions": true,
     "route_structured_findings": true,
     "route_writer_to_existing_reviewer": true,
-    "auto_create_next_generation": true,
-    "new_session_budget_safe": true,
+    "auto_create_next_generation": false,
+    "new_session_budget_safe": false,
+    "generation_activation_status": "BLOCKED_PENDING_DURABLE_NEW_GENERATION_BINDING_AND_RUNTIME_BUDGET_PREFLIGHT",
     "closure_assurance": "ON_CLOSURE_CANDIDATE_OR_RISK_TRIGGER",
     "structured_handoff_required_for_new_generations": true,
     "workstreams": {
@@ -124,8 +125,7 @@
     "new_task_authority": "OWNER_AUTHORIZED_NECESSITY_BASED_NEW_GENERATION",
     "unknown_lifetime_capacity": "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
     "automatic_new_task_creation": true,
-    "proven_used_floor": 5,
-    "direct_ceiling_reached": false,
+    "runtime_budget_preflight_required": true,
     "unknown_lifetime_alone_is_stop_gate": false
   },
   "evidence_profiles": {
