@@ -18,26 +18,12 @@ on:
     secrets:
       JULES_API_KEY:
         required: false
-  workflow_dispatch:
-    inputs:
-      control_head:
-        description: Exact validated ues-parent-control head SHA
-        required: true
-        type: string
-      validation_run_id:
-        description: Validate Universal Core run id whose core job passed
-        required: true
-        type: string
-      control_pr_number:
-        description: Exact persistent Parent Controller control PR number
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ues-parent-controller-control-queue-${{ github.repository }}
+  group: ues-parent-controller-control-queue-${{ inputs.control_head }}
   cancel-in-progress: false
 
 jobs:
