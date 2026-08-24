@@ -171,6 +171,12 @@ def upsert_lineage_observation(
     else:
         raise StateUnavailable(read.reason or f"lineage state unavailable: {lane_id}")
 
+    # Every passive reconciliation starts fail-closed. Exact effect helpers may
+    # open ACTIVE_AUTO_SAFE only around a durable, authority-bound claim and
+    # must close it again. This also repairs stale ACTIVE state left by an older
+    # runtime without dispatching any provider effect.
+    record.activation_mode = "SHADOW"
+
     status = str(binding.get("status") or "UNBOUND")
     session = binding.get("session") if isinstance(binding.get("session"), Mapping) else None
     current_fp = str(binding.get("session_fingerprint") or "") or None
@@ -205,6 +211,7 @@ def upsert_lineage_observation(
         "replacement_policy": "NEW_GENERATION_SAME_LOGICAL_LINEAGE_ONLY",
         "labels_or_titles_are_authority": False,
         "provider_branch_and_pr_head_are_separate_facts": True,
+        "observation_resets_transient_effect_authority": True,
     }
     record.evidence_bindings = {
         "schema_version": SCHEMA_VERSION,
