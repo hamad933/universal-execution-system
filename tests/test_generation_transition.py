@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from ues.generation_transition import assess_generation_transition
+from ues.generation_transition import assess_generation_transition, assess_initial_lineage_creation
 
 
 class GenerationTransitionTests(unittest.TestCase):
@@ -35,6 +35,30 @@ class GenerationTransitionTests(unittest.TestCase):
         args.update(overrides)
         return assess_generation_transition(**args)
 
+    def assess_initial(self, **overrides):
+        args = dict(
+            project="RP01",
+            route="RP01",
+            workstream="IPA-S01",
+            role="REVIEWER",
+            current_generation=0,
+            predecessor_session_fingerprint=None,
+            candidate_sha="b" * 40,
+            current_policy=self.policy(),
+            active_duplicate_absent=True,
+            unknown_write_state=False,
+            effect_in_flight=False,
+            exact_repository_binding=True,
+            exact_starting_ref_binding=True,
+            initial_task_spec={
+                "objective": "Review the governed frozen S01 candidate",
+                "write_scope": [],
+                "stop_gate": "READ_ONLY_REVIEW_RETURNED",
+            },
+        )
+        args.update(overrides)
+        return assess_initial_lineage_creation(**args)
+
     def test_cep_w02_irrecoverably_unbound_replacement_allowed(self) -> None:
         result = self.assess()
         self.assertTrue(result["allowed"])
@@ -60,6 +84,42 @@ class GenerationTransitionTests(unittest.TestCase):
         )
         self.assertTrue(result["allowed"])
         self.assertEqual(result["next_generation"], 1)
+
+    def test_initial_logical_lineage_is_explicit_generation_one(self) -> None:
+        result = self.assess_initial()
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["creation_kind"], "INITIAL_LOGICAL_LINEAGE")
+        self.assertEqual(result["current_generation"], 0)
+        self.assertEqual(result["next_generation"], 1)
+        self.assertTrue(result["initial_logical_lineage"])
+        self.assertFalse(result["safe_to_blind_retry"])
+
+    def test_initial_lineage_cannot_replace_existing_generation(self) -> None:
+        result = self.assess_initial(current_generation=1, predecessor_session_fingerprint="a" * 64)
+        self.assertFalse(result["allowed"])
+        self.assertIn("INITIAL_LINEAGE_ALREADY_EXISTS", result["failures"])
+
+    def test_initial_lineage_requires_structured_task_and_exact_bindings(self) -> None:
+        result = self.assess_initial(
+            initial_task_spec=None,
+            exact_repository_binding=False,
+            exact_starting_ref_binding=False,
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("INITIAL_TASK_SPEC_REQUIRED", result["failures"])
+        self.assertIn("EXACT_REPOSITORY_BINDING_REQUIRED", result["failures"])
+        self.assertIn("EXACT_STARTING_REF_BINDING_REQUIRED", result["failures"])
+
+    def test_initial_lineage_unknown_or_inflight_effect_blocks(self) -> None:
+        unknown = self.assess_initial(unknown_write_state=True)
+        inflight = self.assess_initial(effect_in_flight=True)
+        self.assertIn("UNKNOWN_WRITE_RECONCILIATION_REQUIRED", unknown["failures"])
+        self.assertIn("EFFECT_IN_FLIGHT_RECONCILIATION_REQUIRED", inflight["failures"])
+
+    def test_initial_task_spec_changes_transition_key(self) -> None:
+        first = self.assess_initial(initial_task_spec={"objective": "first"})
+        second = self.assess_initial(initial_task_spec={"objective": "second"})
+        self.assertNotEqual(first["transition_key"], second["transition_key"])
 
     def test_active_duplicate_blocks(self) -> None:
         result = self.assess(active_duplicate_absent=False)
