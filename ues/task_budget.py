@@ -103,8 +103,8 @@ def evaluate_task_budget(
     """Evaluate task capacity for the *current provider quota window*.
 
     Historical/lifetime usage is never combined with current-window usage.
-    Legacy arguments are accepted only as compatibility aliases for callers that
-    already supply current-window evidence under the old names.
+    Legacy inputs/outputs remain compatibility surfaces only so older replay and
+    adapter contracts do not need to change atomically with the runtime fix.
     """
 
     if ceiling < 0 or reserve < 0:
@@ -160,16 +160,21 @@ def evaluate_task_budget(
         "historical_usage_affects_capacity": False,
         "new_task_creation_authority": "PARENT_ONLY",
         "unknown_quota_window_policy": policy,
-        # Compatibility output only; semantics are current-window, not lifetime.
+        "hard_ceiling_reached": direct_limit_reached,
+        # Compatibility outputs only; all values below now describe the current
+        # quota window rather than cumulative history.
+        "lifetime_consumption_known": window_known,
+        "proven_lifetime_used": proven_window_used,
+        "current_enumerated_tasks": current_window,
         "unknown_lifetime_policy": policy,
         "current_enumeration_proves_lifetime_consumption": False,
-        "hard_ceiling_reached": direct_limit_reached,
     }
 
     if direct_limit_reached:
         return {
             **common,
             "state": "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED",
+            "state_v3": "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED",
             "safe_remaining": 0 if window_known else None,
             "observed_headroom": 0,
             "budget_allows_new_task": False,
@@ -181,7 +186,8 @@ def evaluate_task_budget(
         if policy == "DENY":
             return {
                 **common,
-                "state": "UNKNOWN_QUOTA_WINDOW_CONSUMPTION",
+                "state": "UNKNOWN_LIFETIME_CONSUMPTION",
+                "state_v3": "UNKNOWN_QUOTA_WINDOW_CONSUMPTION",
                 "safe_remaining": None,
                 "observed_headroom": max(0, effective_limit - observed_lower_bound),
                 "budget_allows_new_task": False,
@@ -191,7 +197,8 @@ def evaluate_task_budget(
 
         return {
             **common,
-            "state": "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_QUOTA_WINDOW",
+            "state": "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_LIFETIME",
+            "state_v3": "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_QUOTA_WINDOW",
             "safe_remaining": None,
             "observed_headroom": max(0, effective_limit - observed_lower_bound),
             "budget_allows_new_task": True,
@@ -206,6 +213,7 @@ def evaluate_task_budget(
         return {
             **common,
             "state": "TASK_BUDGET_EVIDENCE_INCONSISTENT",
+            "state_v3": "TASK_BUDGET_EVIDENCE_INCONSISTENT",
             "safe_remaining": None,
             "observed_headroom": None,
             "budget_allows_new_task": False,
@@ -218,6 +226,7 @@ def evaluate_task_budget(
     return {
         **common,
         "state": state,
+        "state_v3": state,
         "safe_remaining": safe_remaining,
         "observed_headroom": safe_remaining,
         "budget_allows_new_task": safe_remaining > 0,
