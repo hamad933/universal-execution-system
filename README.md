@@ -11,8 +11,17 @@ A lean, extensible execution-control framework for safe, fast, recoverable, and 
 - CI is a verifier and asynchronous worker, not a chat polling loop.
 - Resource optimization is measured: cache/prebuild decisions are advisory and telemetry-driven.
 - Repository-native commands remain authoritative; the universal layer provides semantic command names.
+- Parent Controllers should operate at project-intent level; UES should hide routine provider/control plumbing rather than expose it to the Owner.
 
-## UES v1
+## Parent Controller / Jules automation
+
+UES-AUTO-V2 keeps the Parent Controller above the automation layer while Jules executes behind UES. The preferred low-friction path for ChatGPT Parent Controllers is the dedicated trusted persistent `ues-parent-control` queue: the Controller reconstructs fresh project Current Authority, submits one structured request, and UES handles exact runtime binding, lifecycle reconciliation, guarded Jules generation, duplicate/UNKNOWN safety, StateStore accounting, and provider readback.
+
+The queue is transport only. It cannot grant project authority, and it never bypasses the existing Current Authority, task-budget, exact source/ref/SHA, idempotency, provider-readback, or Stop-Gate controls. Its persisted request is non-secret control data only; legacy `ues-control` remains separate for v1 format-fix signaling.
+
+Start with [`docs/PARENT_CONTROLLER_OPERATOR_MANUAL_V2.md`](docs/PARENT_CONTROLLER_OPERATOR_MANUAL_V2.md) for GS/CEP/RP01–RP04 Parent Controller operation.
+
+## UES v1 bounded repository operations
 
 UES v1 has a proven bounded-write path using the ChatGPT GitHub Connector:
 
@@ -32,9 +41,10 @@ The primary operator rule is simple: live GitHub state is authoritative, and an 
 
 ## Start here
 
-For a fresh ChatGPT execution chat, use:
+Choose the manual that matches the job:
 
-- [`docs/CHAT_OPERATOR_MANUAL.md`](docs/CHAT_OPERATOR_MANUAL.md) — the complete UES v1 operating manual, including the copy-paste bootstrap prompt for any chat.
+- [`docs/PARENT_CONTROLLER_OPERATOR_MANUAL_V2.md`](docs/PARENT_CONTROLLER_OPERATOR_MANUAL_V2.md) — current Parent Controller + Jules automation flow, including the low-friction trusted control queue.
+- [`docs/CHAT_OPERATOR_MANUAL.md`](docs/CHAT_OPERATOR_MANUAL.md) — UES v1 bounded repository-operation manual and exact-state GitHub Connector flow.
 - [`docs/FUTURE_IMPROVEMENTS.md`](docs/FUTURE_IMPROVEMENTS.md) — optional future apps/tools/infrastructure, with clear triggers for when they are worth adding.
 - [`docs/architecture.md`](docs/architecture.md) — core architecture and extension model.
 - [`docs/adapters.md`](docs/adapters.md) — project-family adapter model.
@@ -58,4 +68,4 @@ python -m ues.cli validate-contract examples/project.contract.json
 python -m unittest discover -s tests -v
 ```
 
-For operational use, start with `docs/CHAT_OPERATOR_MANUAL.md` rather than reconstructing the protocol from previous conversations.
+For Parent Controller automation, do not reconstruct UES-AUTO-V2 from old conversations; use `docs/PARENT_CONTROLLER_OPERATOR_MANUAL_V2.md` and fresh project/UES authority.
