@@ -1,20 +1,71 @@
 {
   "schema_version": "UES_PARENT_CONTROLLER_REQUEST_V1",
-  "request_id": "RP01-U26-ACTIVE-PROOF-20260824-2251",
-  "project": "RP01",
+  "request_id": "GS-G106-FINAL-ASSURANCE-G1-20260824T2052Z",
+  "project": "GS",
   "runtime_sha": "0dfcd87620e410f02ddf44fa46e496ce20cb22c4",
   "current_authority": {
     "source": "DRIVE_CURRENT_STATE",
-    "source_id": "1Q7c5wYcNlJ7GAbMMu7Fupcl2poKFMKAe8APKq1rQdx8",
-    "project": "RP01",
-    "route": "RP01",
+    "source_id": "1KtYBFso9phyZ3UQIStvPWeN2bg1twt_J",
+    "project": "GS",
+    "route": "GS",
     "current": true,
-    "authority_event_id": "RP01-U26-NO-EFFECT-ACTIVATION-PROOF-20260824",
-    "expires_at": "2026-08-25T00:30:00+03:00",
-    "lineages": {},
+    "authority_event_id": "GS-G105-CURRENT-FINAL-ASSURANCE-G1-REDISPATCH-20260824T2052Z",
+    "expires_at": "2026-08-24T21:30:00Z",
+    "task_budget": {
+      "ceiling": 40,
+      "reserve_target": 0,
+      "reserve_is_hard": false,
+      "unknown_lifetime_capacity": "ALLOW_UNLESS_DIRECT_CEILING_REACHED"
+    },
+    "lineages": {
+      "GS-FINAL-ASSURANCE-PR88-R1": {
+        "pr_number": 88,
+        "final_assurance": {
+          "pr_number": 88,
+          "provider_starting_branch": "remediation/gs-dependency-remediation-r1"
+        }
+      }
+    },
     "generation_policy": {
-      "authorized_initial_lineages": {},
+      "authorized_initial_lineages": {
+        "GS-FINAL-ASSURANCE-PR88-R1:FINAL_ASSURANCE": {
+          "authorized": true,
+          "creation_kind": "INITIAL_LOGICAL_LINEAGE",
+          "task_spec": {
+            "objective": "Perform independent Final Assurance of GS PR #88 at the exact candidate SHA. Verify dependency/security remediation, lockfile integrity, visual-test stale-label alignment without assertion weakening, exact-head CI and visual artifact binding, and material router/runtime regression risk. Return PASS or actionable FINDINGS only.",
+            "exact_baseline": "remediation/gs-dependency-remediation-r1@511ae72e49d258a14036548fedb7f6ca6f265352",
+            "write_scope": [],
+            "prohibited_scope": [
+              "No code, test, branch, PR, issue, integration, main, release, deploy, publication, or repository mutation",
+              "No self-approval or merge recommendation beyond the bounded assurance verdict",
+              "Do not treat stale SHA evidence as current"
+            ],
+            "validation": [
+              "Re-read PR #88 and prove its current head is exactly 511ae72e49d258a14036548fedb7f6ca6f265352 before substantive review",
+              "Verify the changed-path boundary and dependency/lockfile correctness against base 27bd49bfdc48e8f0ca7ce93f0dc614d072e33f67",
+              "Verify tests/visual/hero.visual.spec.ts changes are stale-label alignment only and do not weaken coverage/assertions",
+              "Inspect exact-head CI run 32679083245 and Visual Evidence run 32679083146 and confirm successful exact-SHA binding",
+              "Check material react-router/runtime regression risk relevant to the remediation line"
+            ],
+            "evidence": [
+              "PR #88 exact head/base/state and changed paths",
+              "CI run/job identity and conclusion for exact head",
+              "Visual Evidence run and artifact 9503620129 binding, including digest sha256:f247d23b187e9a3162137e6f6751590c30d3df548dbee9d3be5482699f665772",
+              "Structured exact-SHA PASS or FINDINGS with file/path-specific rationale"
+            ],
+            "handoff": "Return one independent READ_ONLY Final Assurance result bound to exact SHA 511ae72e49d258a14036548fedb7f6ca6f265352. If findings exist, make them actionable for the existing PR #88 Writer lineage. If the SHA moved, report STALE_SHA and stop without reviewing a different candidate.",
+            "stop_gate": "Stop after producing the exact-SHA Final Assurance result. Do not mutate code or merge/release/deploy/publish."
+          }
+        }
+      },
       "authorized_lineages": {}
     }
+  },
+  "wakeup": {
+    "event_type": "EXTERNAL_RECONCILIATION_REQUEST",
+    "event_id": "GS-G106-FINAL-ASSURANCE-G1-20260824T2052Z",
+    "repository": "hamad933/GS-2",
+    "workstream": "GS-FINAL-ASSURANCE-PR88-R1",
+    "sha": "511ae72e49d258a14036548fedb7f6ca6f265352"
   }
 }
