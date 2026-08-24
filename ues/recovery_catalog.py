@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 
 
 def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
@@ -12,6 +12,8 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
     - an UNBOUND lineage is a reconciliation state, not proof that a replacement
       provider session should be created;
     - unknown writes are reconciled before any new external effect;
+    - persisted external task intent is evidence only until authoritative provider
+      acknowledgement/session binding is proven;
     - terminal/context-exhausted/repeated-no-op replacement may proceed only when
       budget, exact task spec, and explicit duplicate-safety checks are satisfied;
     - Writer handoff SHA claims never override the authoritative current PR SHA;
@@ -35,6 +37,20 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
     budget_safe = bool(observation.get("new_session_budget_safe", False))
     replacement_prompt_ready = bool(observation.get("replacement_prompt_ready", False))
     replacement_required_proven = bool(observation.get("replacement_required_proven", False))
+
+    external_intent = (
+        observation.get("external_intent")
+        if isinstance(observation.get("external_intent"), Mapping)
+        else {}
+    )
+    external_signal_persisted = external_intent.get("signal_persisted") is True
+    external_provider_ack_proven = external_intent.get("provider_ack_proven") is True
+    external_provider_session_readback_proven = (
+        external_intent.get("provider_session_readback_proven") is True
+    )
+    external_provider_observation_after_signal_complete = (
+        external_intent.get("provider_observation_after_signal_complete") is True
+    )
 
     try:
         consecutive_noop_writer_successors = max(
@@ -62,11 +78,40 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
             executable=True,
         )
 
+    # UNKNOWN write reconciliation always has precedence over any external intent
+    # state. A persisted comment/signal must never make an unknown provider write
+    # safe to retry.
     if observation.get("unknown_write_state"):
         return _decision(
             "AUTHORITATIVE_POST_WRITE_RECONCILIATION",
             root_cause="UNKNOWN_PROVIDER_WRITE",
             executable=True,
+        )
+
+    # External GitHub comments/issues are intent evidence only. Until provider-side
+    # session readback is proven, recovery is read/reconcile-only and must not fall
+    # through to any generation, same-session continuation, or other provider
+    # effect. The external intent cannot become authority or duplicate-safety proof.
+    if external_signal_persisted and not external_provider_session_readback_proven:
+        if external_provider_ack_proven:
+            return _decision(
+                "RECONCILE_EXTERNAL_INTENT_ACK_TO_PROVIDER_SESSION_BINDING",
+                root_cause="EXTERNAL_INTENT_ACK_WITHOUT_AUTHORITATIVE_SESSION_BINDING",
+                executable=True,
+                stop_gate="NO_BLIND_RETRY+AUTHORITATIVE_PROVIDER_SESSION_READBACK_REQUIRED",
+            )
+        if external_provider_observation_after_signal_complete:
+            return _decision(
+                "RECONCILE_EXTERNAL_INTENT_NO_EFFECT",
+                root_cause="EXTERNAL_INTENT_PERSISTED_NO_PROVIDER_SESSION_AFTER_AUTHORITATIVE_OBSERVATION",
+                executable=True,
+                stop_gate="NO_BLIND_RETRY+PARENT_OR_PROVIDER_ACK_RECONCILIATION_REQUIRED",
+            )
+        return _decision(
+            "WAIT_FOR_AUTHORITATIVE_PROVIDER_OBSERVATION_AFTER_EXTERNAL_INTENT",
+            root_cause="EXTERNAL_INTENT_PERSISTED_PROVIDER_EFFECT_UNKNOWN",
+            executable=True,
+            stop_gate="NO_BLIND_RETRY+AUTHORITATIVE_PROVIDER_OBSERVATION_REQUIRED",
         )
 
     if binding == "UNBOUND":

@@ -12,6 +12,90 @@ class RecoveryCatalogTests(unittest.TestCase):
         self.assertEqual(result["action"], "CONTINUE_SAME_SESSION")
         self.assertTrue(result["external_effect"])
 
+    def test_external_intent_persisted_without_provider_readback_waits_fail_closed(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
+            "work_remaining": True, "new_session_budget_safe": True,
+            "replacement_prompt_ready": True, "active_duplicate_absent": True,
+            "external_intent": {
+                "signal_persisted": True,
+                "provider_ack_proven": False,
+                "provider_session_readback_proven": False,
+                "provider_observation_after_signal_complete": False,
+            },
+        })
+        self.assertEqual(result["action"], "WAIT_FOR_AUTHORITATIVE_PROVIDER_OBSERVATION_AFTER_EXTERNAL_INTENT")
+        self.assertEqual(result["root_cause"], "EXTERNAL_INTENT_PERSISTED_PROVIDER_EFFECT_UNKNOWN")
+        self.assertIn("NO_BLIND_RETRY", result["stop_gate"])
+        self.assertFalse(result["external_effect"])
+
+    def test_external_intent_ack_without_session_binding_reconciles_fail_closed(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "FAILED", "role": "WRITER",
+            "work_remaining": True, "new_session_budget_safe": True,
+            "replacement_prompt_ready": True, "active_duplicate_absent": True,
+            "external_intent": {
+                "signal_persisted": True,
+                "provider_ack_proven": True,
+                "provider_session_readback_proven": False,
+                "provider_observation_after_signal_complete": True,
+            },
+        })
+        self.assertEqual(result["action"], "RECONCILE_EXTERNAL_INTENT_ACK_TO_PROVIDER_SESSION_BINDING")
+        self.assertEqual(result["root_cause"], "EXTERNAL_INTENT_ACK_WITHOUT_AUTHORITATIVE_SESSION_BINDING")
+        self.assertIn("NO_BLIND_RETRY", result["stop_gate"])
+        self.assertFalse(result["external_effect"])
+
+    def test_external_intent_no_effect_after_authoritative_observation_does_not_create_generation(self):
+        result = plan_recovery({
+            "binding_status": "UNBOUND", "provider_state": "UNKNOWN", "role": "WRITER",
+            "work_remaining": True, "replacement_required_proven": True,
+            "new_session_budget_safe": True, "replacement_prompt_ready": True,
+            "active_duplicate_absent": True,
+            "external_intent": {
+                "signal_persisted": True,
+                "provider_ack_proven": False,
+                "provider_session_readback_proven": False,
+                "provider_observation_after_signal_complete": True,
+            },
+        })
+        self.assertEqual(result["action"], "RECONCILE_EXTERNAL_INTENT_NO_EFFECT")
+        self.assertEqual(
+            result["root_cause"],
+            "EXTERNAL_INTENT_PERSISTED_NO_PROVIDER_SESSION_AFTER_AUTHORITATIVE_OBSERVATION",
+        )
+        self.assertIn("NO_BLIND_RETRY", result["stop_gate"])
+        self.assertFalse(result["external_effect"])
+
+    def test_unknown_write_precedes_external_intent_reconciliation(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "FAILED", "role": "WRITER",
+            "unknown_write_state": True,
+            "external_intent": {
+                "signal_persisted": True,
+                "provider_ack_proven": True,
+                "provider_session_readback_proven": False,
+                "provider_observation_after_signal_complete": True,
+            },
+        })
+        self.assertEqual(result["action"], "AUTHORITATIVE_POST_WRITE_RECONCILIATION")
+        self.assertEqual(result["root_cause"], "UNKNOWN_PROVIDER_WRITE")
+        self.assertFalse(result["external_effect"])
+
+    def test_external_intent_with_authoritative_session_readback_allows_normal_lifecycle(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
+            "candidate_sha": "a"*40, "ci_verdict": "PASS", "work_remaining": True,
+            "external_intent": {
+                "signal_persisted": True,
+                "provider_ack_proven": True,
+                "provider_session_readback_proven": True,
+                "provider_observation_after_signal_complete": True,
+            },
+        })
+        self.assertEqual(result["action"], "ROUTE_CURRENT_SHA_TO_REVIEWER_LINEAGE")
+        self.assertFalse(result["external_effect"])
+
     def test_completed_writer_with_green_ci_routes_to_reviewer(self):
         result = plan_recovery({
             "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
