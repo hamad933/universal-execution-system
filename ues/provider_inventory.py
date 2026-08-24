@@ -4,13 +4,7 @@ import json
 import os
 from typing import Any
 
-from .provider_observer import (
-    ProjectTarget,
-    _digest,
-    _provider_action,
-    _source_repository,
-    load_project_targets,
-)
+from .provider_observer import ProjectTarget, _digest, _provider_action, load_project_targets
 from .providers.jules import JulesClient
 
 SCHEMA_VERSION = "2.1"
@@ -23,6 +17,17 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _source_repository_map(client: JulesClient) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for source in client.list_sources(page_size=100):
+        name = str(source.get("name") or "").strip()
+        repository = source.get("repository")
+        explicit = bool(source.get("explicitRepositoryIdentity"))
+        if name and explicit and isinstance(repository, str) and repository:
+            result[name] = repository
+    return result
+
+
 def inventory_provider_sessions(
     *,
     client: JulesClient | None = None,
@@ -32,7 +37,7 @@ def inventory_provider_sessions(
     targets = targets or load_project_targets()
     target_by_repo = {target.repository.casefold(): target for target in targets}
     sessions = client.list_sessions(page_size=100)
-    source_cache: dict[str, str | None] = {}
+    source_repositories = _source_repository_map(client)
 
     observations: list[dict[str, Any]] = []
     state_counts: dict[str, dict[str, int]] = {target.project: {} for target in targets}
@@ -41,7 +46,8 @@ def inventory_provider_sessions(
     outside_monitored_repositories = 0
 
     for session in sessions:
-        repository = _source_repository(client, session, source_cache)
+        source_name = str(session.get("sourceIdentifier") or "").strip()
+        repository = source_repositories.get(source_name)
         if repository is None:
             unbound_source += 1
             continue
@@ -64,7 +70,7 @@ def inventory_provider_sessions(
             "classification": classification,
             "session_identity_hash": _digest(session_name),
             "title_digest": _digest(title) if title else None,
-            "source_identity_hash": _digest(str(session.get("sourceIdentifier") or "")),
+            "source_identity_hash": _digest(source_name),
             "raw_session_identity_emitted": False,
             "raw_title_emitted": False,
         }
@@ -87,7 +93,9 @@ def inventory_provider_sessions(
         "raw_session_identity_emitted": False,
         "raw_title_emitted": False,
         "secret_material_emitted": False,
+        "provider_read_shape": "ONE_PAGINATED_SESSION_LIST_PLUS_ONE_PAGINATED_SOURCE_LIST",
         "account_session_count": len(sessions),
+        "provider_source_count": len(source_repositories),
         "monitored_session_count": len(observations),
         "unbound_source_count": unbound_source,
         "outside_monitored_repository_count": outside_monitored_repositories,
