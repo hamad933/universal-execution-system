@@ -22,13 +22,68 @@ class RPAuthorityRuntimeTests(unittest.TestCase):
                 "new_tasks_or_sessions_created": 0,
             }
 
-        with patch("ues.rp_authority_runtime.observed.run", side_effect=fake_observed):
+        with patch("ues.rp_authority_runtime._validated_authority", return_value=None), patch(
+            "ues.rp_authority_runtime.observed.run", side_effect=fake_observed
+        ):
             result = run("RP02")
 
         self.assertIs(legacy._load_adapter, original_loader)
         self.assertEqual(result["project"], "RP02")
         self.assertEqual(result["rp_runtime_mode"], "CURRENT_AUTHORITY_GATED")
         self.assertFalse(result["runtime_wrapper_grants_authority"])
+
+    def test_empty_validated_authority_uses_no_effect_observation_path(self):
+        authority = {
+            "source": "DRIVE_CURRENT_STATE",
+            "project": "RP01",
+            "route": "RP01",
+            "current": True,
+            "authority_event_id": "RP01-AUTH",
+            "lineages": {},
+            "generation_policy": {
+                "authorized_initial_lineages": {},
+                "authorized_lineages": {},
+            },
+        }
+        expected = {
+            "project": "RP01",
+            "current_authority_loaded": True,
+            "external_effects_dispatched": 0,
+            "new_tasks_or_sessions_created": 0,
+            "provider_live_read_performed": False,
+        }
+        with patch("ues.rp_authority_runtime._validated_authority", return_value=authority), patch(
+            "ues.rp_authority_runtime.run_observation_backed_no_effect_health",
+            return_value=expected,
+        ) as health, patch("ues.rp_authority_runtime.observed.run") as live:
+            result = run("RP01")
+
+        health.assert_called_once()
+        self.assertEqual(health.call_args.kwargs["authority"], authority)
+        live.assert_not_called()
+        self.assertFalse(result["provider_live_read_performed"])
+        self.assertEqual(result["external_effects_dispatched"], 0)
+        self.assertEqual(result["new_tasks_or_sessions_created"], 0)
+
+    def test_effect_capable_authority_keeps_live_runtime(self):
+        authority = {
+            "source": "DRIVE_CURRENT_STATE",
+            "project": "RP01",
+            "route": "RP01",
+            "current": True,
+            "authority_event_id": "RP01-AUTH",
+            "lineages": {
+                "W01": {"writer": {"provider_starting_branch": "main"}},
+            },
+        }
+        with patch("ues.rp_authority_runtime._validated_authority", return_value=authority), patch(
+            "ues.rp_authority_runtime.observed.run",
+            return_value={"project": "RP01", "external_effects_dispatched": 0, "new_tasks_or_sessions_created": 0},
+        ) as live, patch("ues.rp_authority_runtime.run_observation_backed_no_effect_health") as health:
+            run("RP01")
+
+        live.assert_called_once_with("RP01")
+        health.assert_not_called()
 
     def test_non_rp_project_is_rejected(self):
         with self.assertRaises(ValueError):
