@@ -52,6 +52,27 @@ jobs:
               core.setFailed('Parent Controller queue must target the repository default branch');
               return;
             }
+            if (!context.payload.sender || context.payload.sender.login !== context.repo.owner) {
+              core.setFailed('Parent Controller queue synchronize event must be triggered by the repository Owner');
+              return;
+            }
+
+            const before = String(context.payload.before || '').toLowerCase();
+            if (!/^[0-9a-f]{40}$/.test(before)) {
+              core.setFailed('Parent Controller synchronize event is missing exact prior head');
+              return;
+            }
+            const { data: eventDelta } = await github.rest.repos.compareCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              base: before,
+              head: control.head.sha,
+            });
+            const eventFiles = eventDelta.files || [];
+            if (eventFiles.length !== 1 || eventFiles[0].filename !== requestPath) {
+              core.setFailed('Parent Controller synchronize delta must change only .ues/parent-controller-request.json');
+              return;
+            }
 
             const { data: liveBase } = await github.rest.repos.getBranch({
               owner: context.repo.owner,
@@ -91,11 +112,6 @@ jobs:
               return;
             }
 
-            const before = String(context.payload.before || '').toLowerCase();
-            if (!/^[0-9a-f]{40}$/.test(before)) {
-              core.setFailed('Parent Controller synchronize event is missing exact prior head');
-              return;
-            }
             let previousFileSha = null;
             try {
               const { data: previousFile } = await github.rest.repos.getContent({
