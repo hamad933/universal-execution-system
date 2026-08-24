@@ -40,11 +40,12 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("validation_run_id", relay)
 
     def test_receiver_is_trusted_workflow_dispatch_only(self):
-        self.assertIn("workflow_dispatch:", self.receiver)
-        self.assertNotIn("pull_request:", self.receiver.split("permissions:", 1)[0])
-        self.assertNotIn("pull_request_target:", self.receiver.split("permissions:", 1)[0])
-        self.assertNotIn("issue_comment:", self.receiver.split("permissions:", 1)[0])
-        self.assertNotIn("workflow_run:", self.receiver.split("permissions:", 1)[0])
+        trigger = self.receiver.split("permissions:", 1)[0]
+        self.assertIn("workflow_dispatch:", trigger)
+        self.assertNotIn("pull_request:\n", trigger)
+        self.assertNotIn("pull_request_target:", trigger)
+        self.assertNotIn("issue_comment:", trigger)
+        self.assertNotIn("workflow_run:", trigger)
         self.assertIn("control_head:", self.receiver)
         self.assertIn("validation_run_id:", self.receiver)
         self.assertIn("group: ues-parent-controller-control-queue-${{ github.repository }}", self.receiver)
@@ -59,13 +60,22 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
             "controlCommit.author.login !== context.repo.owner",
             "controlCommit.committer.login !== context.repo.owner",
             "validation.name !== 'Validate Universal Core'",
-            "validation.conclusion !== 'success'",
             "validation.head_branch !== 'ues-parent-control'",
             "validation.actor.login !== context.repo.owner",
             "validation.triggering_actor.login !== context.repo.owner",
             "validationPrs.length !== 1",
         ):
             self.assertIn(expected, self.receiver)
+
+    def test_receiver_binds_to_completed_successful_core_job_not_full_run_race(self):
+        self.assertIn("github.rest.actions.listJobsForWorkflowRun", self.receiver)
+        self.assertIn("job.name === 'core'", self.receiver)
+        self.assertIn("job.status === 'completed'", self.receiver)
+        self.assertIn("job.conclusion === 'success'", self.receiver)
+        self.assertIn("coreJobs.length !== 1", self.receiver)
+        self.assertIn("['in_progress', 'completed'].includes(validation.status)", self.receiver)
+        self.assertIn("validation.status === 'completed' && validation.conclusion !== 'success'", self.receiver)
+        self.assertNotIn("validation.status !== 'completed' || validation.conclusion !== 'success'", self.receiver)
 
     def test_receiver_executes_only_trusted_live_runtime_after_semantic_validation(self):
         self.assertIn("github.rest.repos.getBranch", self.receiver)
