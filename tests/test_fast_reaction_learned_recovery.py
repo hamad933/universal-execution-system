@@ -19,6 +19,43 @@ class RecoveryCatalogTests(unittest.TestCase):
         })
         self.assertEqual(result["action"], "ROUTE_CURRENT_SHA_TO_REVIEWER_LINEAGE")
 
+    def test_repeated_writer_noop_successors_can_start_guarded_same_lineage_replacement(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
+            "candidate_sha": "a"*40, "work_remaining": True,
+            "consecutive_noop_writer_successors": 2,
+            "new_session_budget_safe": True, "replacement_prompt_ready": True,
+            "active_duplicate_absent": True,
+        })
+        self.assertEqual(result["action"], "CREATE_NEXT_SESSION_GENERATION_SAME_LINEAGE")
+        self.assertEqual(result["root_cause"], "REPEATED_WRITER_NOOP_SESSION_INEFFECTIVE")
+        self.assertTrue(result["external_effect"])
+
+    def test_repeated_writer_noop_successors_still_require_replacement_guards(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
+            "candidate_sha": "a"*40, "work_remaining": True,
+            "consecutive_noop_writer_successors": 2,
+            "new_session_budget_safe": False, "replacement_prompt_ready": True,
+        })
+        self.assertEqual(result["action"], "PREPARE_SAME_LINEAGE_REPLACEMENT")
+        self.assertEqual(result["root_cause"], "REPEATED_WRITER_NOOP_SESSION_INEFFECTIVE")
+        self.assertIn("ACTIVE_DUPLICATE_CHECK_REQUIRED", result["stop_gate"])
+        self.assertIn("TASK_BUDGET_OR_NEW_SESSION_AUTHORITY", result["stop_gate"])
+        self.assertFalse(result["external_effect"])
+
+    def test_single_writer_noop_does_not_force_replacement(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
+            "candidate_sha": "a"*40, "ci_verdict": "FAIL", "work_remaining": True,
+            "consecutive_noop_writer_successors": 1,
+            "new_session_budget_safe": True, "replacement_prompt_ready": True,
+            "active_duplicate_absent": True,
+        })
+        self.assertEqual(result["action"], "VALIDATE_EXACT_WRITER_CANDIDATE")
+        self.assertEqual(result["root_cause"], "WRITER_COMPLETED_REQUIRES_EXACT_HEAD_EVIDENCE")
+        self.assertFalse(result["external_effect"])
+
     def test_stale_writer_handoff_is_reconciled_to_authoritative_current_sha(self):
         result = plan_recovery({
             "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
