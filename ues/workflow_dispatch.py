@@ -22,6 +22,11 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _inputs_digest(inputs: Mapping[str, str]) -> str:
+    normalized = {str(k): str(v) for k, v in sorted(inputs.items())}
+    return sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _ensure_effect_lane(
     store: Any,
     *,
@@ -106,9 +111,7 @@ def dispatch_workflow_once(
     """Durably claim and execute one exact bounded workflow_dispatch effect."""
 
     normalized_inputs = {str(k): str(v) for k, v in sorted(inputs.items())}
-    input_digest = sha256(
-        json.dumps(normalized_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    input_digest = _inputs_digest(normalized_inputs)
     lane_id = _ensure_effect_lane(
         store,
         project=project,
@@ -206,6 +209,7 @@ def dispatch_workflow_once(
                 "decision": "WORKFLOW_DISPATCH_OUTCOME_UNKNOWN_RECONCILIATION_REQUIRED",
                 "provider_write_attempted": True,
                 "operation_key": operation_key,
+                "recovery": recovery,
                 "safe_to_blind_retry": False,
             }
         except ProviderError as exc:
@@ -252,3 +256,103 @@ def dispatch_workflow_once(
         }
     finally:
         _restore_shadow(store, lane_id, authority_event_id=authority_event_id)
+
+
+def reconcile_unknown_workflow_dispatch(
+    store: Any,
+    github: Any,
+    *,
+    project: str,
+    route: str,
+    workstream: str,
+    owner: str,
+    repo: str,
+    workflow: str,
+    ref: str,
+    expected_sha: str,
+    inputs: Mapping[str, str],
+    purpose: str,
+) -> dict[str, Any]:
+    """Authoritatively reconcile an UNKNOWN dispatch without another POST."""
+
+    lane_id = canonical_lane_id(project, route, workstream)
+    ws = store.read_workstream(lane_id)
+    if ws.status != "OK" or ws.record is None or not isinstance(ws.record.unknown_write_state, Mapping):
+        raise StateUnavailable("workflow dispatch reconciliation requires durable UNKNOWN state")
+    operation_key = str(ws.record.unknown_write_state.get("operation_key") or "").strip()
+    op_read = store.read_operation(operation_key)
+    if op_read.status != "OK" or op_read.record is None:
+        raise StateUnavailable("workflow dispatch operation record is unavailable")
+    op = op_read.record
+    if op.state not in {"UNKNOWN", "IN_FLIGHT"}:
+        return {
+            "decision": "WORKFLOW_DISPATCH_ALREADY_RECONCILED",
+            "operation_key": operation_key,
+            "operation_state": op.state,
+            "provider_write_attempted": False,
+            "safe_to_blind_retry": False,
+        }
+
+    expected_target = {
+        "repository": f"{owner}/{repo}",
+        "workflow": workflow,
+        "ref": ref,
+        "expected_sha": expected_sha.lower(),
+        "inputs_digest": _inputs_digest(inputs),
+        "purpose": purpose,
+    }
+    effect = op.effect_identity if isinstance(op.effect_identity, Mapping) else {}
+    actual_target = effect.get("target") if isinstance(effect.get("target"), Mapping) else {}
+    if dict(actual_target) != expected_target:
+        raise StateUnavailable("workflow dispatch reconciliation binding does not match UNKNOWN operation")
+
+    result = op.receipt.get("result") if isinstance(op.receipt, Mapping) else None
+    result = result if isinstance(result, Mapping) else {}
+    recovery = result.get("recovery") if isinstance(result.get("recovery"), Mapping) else {}
+    before_ids = recovery.get("before_run_ids") if isinstance(recovery.get("before_run_ids"), list) else None
+    if before_ids is None:
+        raise StateUnavailable("workflow dispatch UNKNOWN state lacks pre-dispatch run identity set")
+
+    reconciled = github.reconcile_workflow_dispatch_bounded(
+        owner,
+        repo,
+        workflow=workflow,
+        ref=ref,
+        expected_sha=expected_sha,
+        before_run_ids=[int(item) for item in before_ids],
+    )
+    if reconciled.get("decision") != "WORKFLOW_DISPATCH_AUTHORITATIVELY_RECONCILED":
+        return {
+            **reconciled,
+            "operation_key": operation_key,
+            "provider_write_attempted": False,
+            "safe_to_blind_retry": False,
+        }
+
+    evidence = {
+        "repository": f"{owner}/{repo}",
+        "workflow": workflow,
+        "ref": ref,
+        "head_sha": expected_sha,
+        "run_id": reconciled.get("run_id"),
+        "run_attempt": reconciled.get("run_attempt"),
+        "event": "workflow_dispatch",
+        "inputs_digest": _inputs_digest(inputs),
+        "purpose": purpose,
+        "authoritative_reconciliation": True,
+        "safe_to_blind_retry": False,
+    }
+    confirmed = record_authoritative_readback(
+        store,
+        lane_id=lane_id,
+        operation_key=operation_key,
+        observed=True,
+        evidence=evidence,
+    )
+    return {
+        "decision": "WORKFLOW_DISPATCH_UNKNOWN_AUTHORITATIVELY_RECONCILED",
+        "operation_key": operation_key,
+        "operation_state": confirmed.record.state if confirmed.record else "CONFIRMED",
+        "provider_write_attempted": False,
+        **evidence,
+    }
