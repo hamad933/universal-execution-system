@@ -79,4 +79,4 @@ jobs:
           UES_WAKEUP_REPOSITORY: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.repository || '' }}
           UES_WAKEUP_WORKSTREAM: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.workstream || '' }}
           UES_WAKEUP_SHA: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || '' }}
-        run: python -m ues.lifecycle_runtime_current ${{ matrix.project }}
+        run: python -m ues.lifecycle_runtime_observed ${{ matrix.project }}
