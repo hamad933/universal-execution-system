@@ -93,6 +93,21 @@ class WatchdogTests(unittest.TestCase):
         codes = {item["code"] for item in result["incidents"]}
         self.assertIn("EXACT_HEAD_EVIDENCE_DRIFT_UNRESOLVED", codes)
 
+    def test_exhausted_reuse_that_drags_critical_path_is_incident(self):
+        result = evaluate_lane_watchdog(
+            {
+                "lane_id": "W09",
+                "next_action": "PREPARE_REPLACEMENT",
+                "reuse_path_selected": True,
+                "reuse_viable": False,
+                "replacement_ready": True,
+                "reuse_delay_age_seconds": 601,
+            },
+            policy={"thresholds": {"reuse_critical_path_drag_seconds": 600}},
+        )
+        codes = {item["code"] for item in result["incidents"]}
+        self.assertIn("REUSE_CRITICAL_PATH_DRAG", codes)
+
     def test_blocked_lane_does_not_freeze_other_lane(self):
         result = evaluate_control_cycle(
             [

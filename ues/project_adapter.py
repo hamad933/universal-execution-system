@@ -174,13 +174,24 @@ def parse_project_adapter(value: Mapping[str, Any]) -> ProjectAdapter:
     ).upper()
     if new_task_authority != "PARENT_ONLY":
         raise ProjectAdapterError("new task authority must remain PARENT_ONLY")
+
     unknown_capacity = _required_text(
         task_budget.get("unknown_lifetime_capacity"), "task_budget.unknown_lifetime_capacity"
     ).upper()
-    if unknown_capacity != "DENY":
-        raise ProjectAdapterError("unknown lifetime task capacity must fail closed")
+    allowed_unknown_capacity = {
+        "DENY",
+        "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+    }
+    if unknown_capacity not in allowed_unknown_capacity:
+        raise ProjectAdapterError(
+            "unknown lifetime task capacity policy must be DENY or ALLOW_UNLESS_DIRECT_CEILING_REACHED"
+        )
+
+    # Stable project policy may record that a Parent is authorized to create a
+    # necessary generation, but adapter parsing must never activate automatic
+    # creation. Runtime activation belongs to a separately proven effect gate.
     if bool(task_budget.get("automatic_new_task_creation")):
-        raise ProjectAdapterError("automatic new task creation is forbidden")
+        raise ProjectAdapterError("automatic new task creation remains runtime-gated and disabled in adapter config")
 
     classifier = value.get("waiting_classifier")
     if not isinstance(classifier, Mapping):

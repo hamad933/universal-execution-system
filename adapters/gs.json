@@ -1,7 +1,7 @@
 {
-  "schema_version": "3.0",
+  "schema_version": "4.0",
   "adapter_kind": "portfolio-project-control",
-  "adapter_id": "GS_LINEAGE_RUNTIME_V3",
+  "adapter_id": "GS_STABLE_CONTROL_TOPOLOGY_V1",
   "project": "GS",
   "route": "GS",
   "repository": "hamad933/GS-2",
@@ -14,6 +14,12 @@
     "governed_state": "DRIVE",
     "technical_state": "GITHUB",
     "provider_state": "PROVIDER"
+  },
+  "authority_transport": {
+    "canonical_source": "DRIVE_CURRENT_STATE",
+    "controller_actor_allowlist": ["hamad933"],
+    "bounded_expiry_required": true,
+    "transport_is_truth_owner": false
   },
   "canonical_lane": {
     "components": ["project", "route", "workstream"],
@@ -28,117 +34,59 @@
   "project_auto_safe_actions": [],
   "lineage_runtime": {
     "enabled": true,
-    "authority_event_id": "OWNER_2026_08_24_LOGICAL_LINEAGE_LIFECYCLE_V1",
-    "model": "ONE_PERSISTENT_WRITER_PLUS_ONE_PERSISTENT_REVIEWER_LINEAGE_PER_WORKSTREAM",
+    "model": "PERSISTENT_LOGICAL_LINEAGE_WITH_STATESTORE_PHYSICAL_GENERATIONS",
     "reuse_same_session_first": true,
     "replacement_creates_new_logical_lineage": false,
     "replacement_is_next_generation_only": true,
     "execute_safe_transitions": true,
     "route_structured_findings": true,
     "route_writer_to_existing_reviewer": true,
-    "auto_create_next_generation": false,
-    "new_session_budget_safe": false,
-    "closure_assurance": "ON_CLOSURE_CANDIDATE_OR_RISK_TRIGGER",
+    "current_authority_required_for_new_generation": true,
+    "dynamic_governed_lineages_allowed": true,
     "structured_handoff_required_for_new_generations": true,
     "workstreams": {
       "HOME": {
-        "writer": {
-          "pr_number": 82,
-          "starting_branch": "remediation/gs-ipa-home-deep-r1-a-hero-s02",
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Continue the existing HOME Writer logical lineage as the next provider-session generation only after the prior session is proven non-continuable. Preserve HOME scope and current candidate SHA {current_sha}; do not alter unrelated pages."
-        },
-        "reviewer": {
-          "pr_number": 82,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review HOME at exact current candidate SHA {current_sha}. Read-only review only; no code or PR mutation."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation of the same logical lineage only when current governed authority proves replacement necessary. Preserve exact current candidate SHA {current_sha}."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       },
       "START": {
-        "writer": {
-          "pr_number": 83,
-          "starting_branch": "remediation/gs-ipa-start-deep-r1",
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Continue the existing START Writer logical lineage as the next provider-session generation only after the prior session is proven non-continuable. Preserve START scope and current candidate SHA {current_sha}."
-        },
-        "reviewer": {
-          "pr_number": 83,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review START at exact current candidate SHA {current_sha}. Read-only review only."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation of the same logical lineage only when current governed authority proves replacement necessary. Preserve exact current candidate SHA {current_sha}."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       },
       "SOLUTIONS": {
-        "writer": {
-          "pr_number": 85,
-          "starting_branch": "remediation/gs-ipa-solutions-deep-r1",
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Continue the existing SOLUTIONS Writer logical lineage as the next provider-session generation only after the prior session is proven non-continuable. Preserve SOLUTIONS scope and current candidate SHA {current_sha}."
-        },
-        "reviewer": {
-          "pr_number": 85,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review SOLUTIONS at exact current candidate SHA {current_sha}. Read-only review only."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation of the same logical lineage only when current governed authority proves replacement necessary. Preserve exact current candidate SHA {current_sha}."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       },
       "REFERENCE_PROJECTS": {
-        "writer": {
-          "pr_number": 79,
-          "starting_branch": "remediation/gs-ipa-rp-deep-r1",
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Continue the existing REFERENCE PROJECTS Writer logical lineage as the next provider-session generation only after the prior session is proven non-continuable. Preserve the page scope and current candidate SHA {current_sha}."
-        },
-        "reviewer": {
-          "pr_number": 79,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review REFERENCE PROJECTS at exact current candidate SHA {current_sha}. Read-only review only."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation of the same logical lineage only when current governed authority proves replacement necessary. Preserve exact current candidate SHA {current_sha}."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       },
       "HOW_WE_WORK": {
-        "writer": {
-          "pr_number": 80,
-          "starting_branch": "remediation/gs-ipa-hww-deep-r1",
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Continue the existing HOW WE WORK Writer logical lineage as the next provider-session generation only after the prior session is proven non-continuable. Preserve the page scope and current candidate SHA {current_sha}."
-        },
-        "reviewer": {
-          "pr_number": 80,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review HOW WE WORK at exact current candidate SHA {current_sha}. Read-only review only."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation of the same logical lineage only when current governed authority proves replacement necessary. Preserve exact current candidate SHA {current_sha}."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       }
-    }
+    },
+    "unbound_never_implies_replacement": true,
+    "replacement_requires_governed_cause": true
   },
   "task_budget": {
-    "ceiling": 30,
-    "reserve_target": null,
-    "reserve_status": "NOT_DEFINED_BY_CURRENT_GS_AUTHORITY",
     "new_task_authority": "PARENT_ONLY",
     "unknown_lifetime_capacity": "DENY",
-    "automatic_new_task_creation": false
+    "automatic_new_task_creation": false,
+    "current_ceiling_must_be_resolved_at_runtime": true,
+    "runtime_budget_preflight_required": true
   },
   "evidence_profiles": {
     "core_ci": {
       "profile_id": "GS_CORE_CI_V1",
       "requirements": [
-        {
-          "provider": "GITHUB_ACTIONS",
-          "workflow": "CI",
-          "job": "validate",
-          "exact_candidate_sha": true,
-          "required": true
-        }
+        {"provider": "GITHUB_ACTIONS", "workflow": "CI", "job": "validate", "exact_candidate_sha": true, "required": true}
       ]
     },
     "visual_assurance": {
       "profile_id": "GS_VISUAL_EVIDENCE_V1",
       "requirements": [
-        {
-          "provider": "GITHUB_ACTIONS",
-          "workflow": "Visual Evidence",
-          "exact_candidate_sha": true,
-          "artifact_attempt_bound": true,
-          "required": true
-        }
+        {"provider": "GITHUB_ACTIONS", "workflow": "Visual Evidence", "exact_candidate_sha": true, "artifact_attempt_bound": true, "required": true}
       ]
     }
   },
@@ -151,25 +99,22 @@
     "generic_blocker_is_stop_gate": false,
     "root_cause_required_before_stop": true,
     "exhaust_controller_resolvable_actions": true,
-    "same_session_continuation_preferred": true
+    "same_session_continuation_preferred": true,
+    "reuse_must_not_become_critical_path_drag": true,
+    "new_generation_allowed_when_reuse_proven_nonviable": true,
+    "independent_lanes_continue_while_blocked": true
   },
-  "stop_gates": [
-    "PARENT_AUTHORITY_REQUIRED",
-    "OWNER_AUTHORITY_REQUIRED",
-    "SHARED_CONTRACT_REQUIRED",
-    "UNCLASSIFIED_WAITING",
-    "EVIDENCE_INCOMPLETE_AFTER_ROOT_CAUSE_REMEDIATION",
-    "BINDING_DRIFT_RECONCILIATION_REQUIRED"
-  ],
-  "prohibitions": [
-    "MERGE",
-    "RELEASE",
-    "DEPLOY",
-    "PRODUCT_PUBLICATION",
-    "FORCE_PUSH",
-    "TEST_WEAKENING",
-    "GUESSED_SESSION_OWNERSHIP",
-    "BLIND_WRITE_RETRY",
-    "AUTOMATIC_NEW_JULES_TASK"
-  ]
+  "stop_gates": ["PARENT_AUTHORITY_REQUIRED", "OWNER_AUTHORITY_REQUIRED", "SHARED_CONTRACT_REQUIRED", "UNCLASSIFIED_WAITING", "EVIDENCE_INCOMPLETE_AFTER_ROOT_CAUSE_REMEDIATION", "BINDING_DRIFT_RECONCILIATION_REQUIRED"],
+  "prohibitions": ["MERGE", "RELEASE", "DEPLOY", "PRODUCT_PUBLICATION", "FORCE_PUSH", "TEST_WEAKENING", "GUESSED_SESSION_OWNERSHIP", "BLIND_WRITE_RETRY", "UNGUARDED_AUTOMATIC_NEW_JULES_TASK"],
+  "watchdog_policy": {
+    "thresholds": {
+      "waiting_unresolved_seconds": 600,
+      "completed_review_unrouted_seconds": 600,
+      "unclassified_failure_seconds": 300,
+      "heartbeat_seconds": 900,
+      "correction_rereview_stalled_seconds": 600,
+      "evidence_drift_unresolved_seconds": 600,
+      "reuse_critical_path_drag_seconds": 600
+    }
+  }
 }

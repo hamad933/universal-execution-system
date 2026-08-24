@@ -17,32 +17,14 @@ def _shadow_budget(
     policy = policy if isinstance(policy, Mapping) else {}
     ceiling = policy.get("ceiling")
     reserve = policy.get("reserve_target")
+    reserve_status = str(policy.get("reserve_status") or "").upper()
     lifetime_known = bool(observed.get("lifetime_consumption_known"))
     proven_used = observed.get("proven_lifetime_used")
     current_count = observed.get("current_enumerated_tasks")
 
-    # Lifetime uncertainty is itself sufficient to fail closed. Do not invent a
-    # missing reserve merely to call the arithmetic helper.
-    if not lifetime_known or proven_used is None:
+    if not isinstance(ceiling, int):
         return {
-            "schema_version": "2.0",
-            "project": adapter.project,
-            "state": "UNKNOWN_LIFETIME_CONSUMPTION",
-            "ceiling": ceiling,
-            "reserve": reserve,
-            "proven_lifetime_used": None,
-            "current_enumerated_tasks": current_count,
-            "safe_remaining": None,
-            "budget_allows_new_task": False,
-            "new_task_creation_authority": "PARENT_ONLY",
-            "automatic_new_task_creation": False,
-            "fail_closed": True,
-            "current_enumeration_proves_lifetime_consumption": False,
-        }
-
-    if not isinstance(ceiling, int) or not isinstance(reserve, int):
-        return {
-            "schema_version": "2.0",
+            "schema_version": "2.1",
             "project": adapter.project,
             "state": "TASK_BUDGET_POLICY_INCOMPLETE",
             "ceiling": ceiling,
@@ -57,13 +39,54 @@ def _shadow_budget(
             "current_enumeration_proves_lifetime_consumption": False,
         }
 
+    if isinstance(reserve, int):
+        effective_reserve = reserve
+    elif reserve is None and reserve_status == "NOT_DEFINED_BY_CURRENT_GS_AUTHORITY":
+        # Arithmetic representation of the governed absence of a reserve target;
+        # this does not invent a new reserve policy.
+        effective_reserve = 0
+    else:
+        return {
+            "schema_version": "2.1",
+            "project": adapter.project,
+            "state": "TASK_BUDGET_POLICY_INCOMPLETE",
+            "ceiling": ceiling,
+            "reserve": reserve,
+            "proven_lifetime_used": proven_used,
+            "current_enumerated_tasks": current_count,
+            "safe_remaining": None,
+            "budget_allows_new_task": False,
+            "new_task_creation_authority": "PARENT_ONLY",
+            "automatic_new_task_creation": False,
+            "fail_closed": True,
+            "current_enumeration_proves_lifetime_consumption": False,
+        }
+
+    if lifetime_known and proven_used is None:
+        return {
+            "schema_version": "2.1",
+            "project": adapter.project,
+            "state": "TASK_BUDGET_EVIDENCE_INCOMPLETE",
+            "ceiling": ceiling,
+            "reserve": effective_reserve,
+            "proven_lifetime_used": None,
+            "current_enumerated_tasks": current_count,
+            "safe_remaining": None,
+            "budget_allows_new_task": False,
+            "new_task_creation_authority": "PARENT_ONLY",
+            "automatic_new_task_creation": False,
+            "fail_closed": True,
+            "current_enumeration_proves_lifetime_consumption": False,
+        }
+
     return evaluate_task_budget(
         project=adapter.project,
         ceiling=ceiling,
-        reserve=reserve,
-        lifetime_consumption_known=True,
-        proven_lifetime_used=int(proven_used),
+        reserve=effective_reserve,
+        lifetime_consumption_known=lifetime_known,
+        proven_lifetime_used=(int(proven_used) if proven_used is not None else None),
         current_enumerated_tasks=(int(current_count) if current_count is not None else None),
+        unknown_lifetime_policy=adapter.unknown_lifetime_capacity,
     )
 
 
@@ -138,7 +161,7 @@ def evaluate_project_shadow(
         )
 
     return {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "project": adapter.project,
         "route": adapter.route,
         "repository": adapter.repository,

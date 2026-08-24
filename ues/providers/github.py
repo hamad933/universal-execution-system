@@ -5,13 +5,14 @@ from typing import Callable
 
 from .base import HttpTransport, RetryPolicy, UrllibTransport
 from ._github_ci import GitHubCIMixin
+from ._github_dispatch import GitHubDispatchMixin
 from ._github_evidence import GitHubEvidenceMixin
 from ._github_reads import GitHubReadMixin
 
 GITHUB_API_ENDPOINT = "https://api.github.com"
 
 
-class GitHubClient(GitHubCIMixin, GitHubEvidenceMixin, GitHubReadMixin):
+class GitHubClient(GitHubDispatchMixin, GitHubCIMixin, GitHubEvidenceMixin, GitHubReadMixin):
         def __init__(
             self,
             token: str,
@@ -33,4 +34,3 @@ class GitHubClient(GitHubCIMixin, GitHubEvidenceMixin, GitHubReadMixin):
 
         def __repr__(self) -> str:
             return f"GitHubClient(endpoint={self._endpoint!r}, token=<redacted>)"
-

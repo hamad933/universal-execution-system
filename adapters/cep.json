@@ -1,7 +1,7 @@
 {
-  "schema_version": "3.0",
+  "schema_version": "4.0",
   "adapter_kind": "portfolio-project-control",
-  "adapter_id": "CEP_LINEAGE_RUNTIME_V4",
+  "adapter_id": "CEP_STABLE_CONTROL_TOPOLOGY_V1",
   "project": "CEP",
   "route": "PERSONAL:CEP",
   "repository": "hamad933/Cybersecurity-Education-Platform",
@@ -14,6 +14,12 @@
     "governed_state": "DRIVE",
     "technical_state": "GITHUB",
     "provider_state": "PROVIDER"
+  },
+  "authority_transport": {
+    "canonical_source": "DRIVE_CURRENT_STATE",
+    "controller_actor_allowlist": ["hamad933"],
+    "bounded_expiry_required": true,
+    "transport_is_truth_owner": false
   },
   "canonical_lane": {
     "components": ["project", "route", "workstream"],
@@ -28,136 +34,77 @@
   "project_auto_safe_actions": [],
   "lineage_runtime": {
     "enabled": true,
-    "authority_event_id": "OWNER_2026_08_24_LOGICAL_LINEAGE_LIFECYCLE_V1",
-    "model": "ONE_PERSISTENT_WRITER_PLUS_ONE_PERSISTENT_REVIEWER_LINEAGE_PER_WORKSTREAM",
+    "model": "PERSISTENT_LOGICAL_LINEAGE_WITH_STATESTORE_PHYSICAL_GENERATIONS",
     "reuse_same_session_first": true,
     "replacement_creates_new_logical_lineage": false,
     "replacement_is_next_generation_only": true,
     "execute_safe_transitions": true,
     "route_structured_findings": true,
     "route_writer_to_existing_reviewer": true,
-    "auto_create_next_generation": false,
-    "new_session_budget_safe": false,
-    "closure_assurance": "ON_CLOSURE_CANDIDATE_OR_RISK_TRIGGER",
+    "current_authority_required_for_new_generation": true,
     "structured_handoff_required_for_new_generations": true,
     "workstreams": {
       "W01": {
-        "writer": {
-          "pr_number": 36,
-          "starting_branch": "work/cep-w01-parent-reconciliation-r01-9154763130522080034",
-          "known_session_fingerprints": ["a14cb7089465ef8dd928302eee2fc4e82591329f0ed6a35f657f860ae8389c0b"],
-          "replacement_prompt": "Continue {workstream} as the next Writer session generation only because the prior provider session cannot continue. Preserve the same governed workstream scope and existing branch/PR when still valid. Reconstruct exact current authority and candidate SHA {current_sha}; correct only W01-owned findings and return exact evidence."
-        },
-        "reviewer": {
-          "pr_number": 36,
-          "known_session_fingerprints": ["8cb5219bf1af8a03a951f47c44d60ab83995feb49a3c24659b045bacf2d9c4ae"],
-          "replacement_prompt": "Independently re-review {workstream} at exact current candidate SHA {current_sha}. Read-only review only: do not modify code, branches, PRs, tests, or repository state."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation of the same logical lineage. Reconstruct the exact current candidate SHA {current_sha}, preserve governed scope and return exact evidence."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       },
       "W02": {
-        "writer": {
-          "pr_number": 31,
-          "starting_branch": "work/cep-w02-parent-reconciliation-r01",
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Continue {workstream} as the next Writer session generation after exact lineage reconciliation proves the old session cannot continue. Preserve the same governed scope, branch/PR, and current candidate SHA {current_sha}; resolve only W02-owned findings."
-        },
-        "reviewer": {
-          "pr_number": 31,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation of the same logical lineage. Preserve current governed scope and exact candidate SHA {current_sha}; resolve only current W02-owned findings."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       },
       "W03": {
-        "writer": {
-          "pr_number": 35,
-          "starting_branch": "work/cep-w03-parent-reconciliation-r01-13880329436073387601",
-          "known_session_fingerprints": ["d61c264ff62d813698f1f66b1117171f4b25c5a1fc60df207af8841aa595d555"],
-          "replacement_prompt": "Continue {workstream} as the next Writer session generation only after the prior exact-bound session is proven non-continuable. Preserve the same governed W03 scope, branch/PR, and current candidate SHA {current_sha}."
-        },
-        "reviewer": {
-          "pr_number": 35,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation only after current authority proves reuse nonviable. Preserve current governed scope and exact candidate SHA {current_sha}."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       },
       "W04": {
-        "writer": {
-          "pr_number": 30,
-          "starting_branch": "work/cep-w04-parent-reconciliation-r02",
-          "known_session_fingerprints": ["632e54a055d015d73e8510fc38cbd06c0747f1378929c5f3280b2981a3a2c248"],
-          "replacement_prompt": "Continue {workstream} as the next Writer session generation only after the prior exact-bound session is proven non-continuable. Preserve the same governed W04 scope, branch/PR, and current candidate SHA {current_sha}; never weaken shared ModuleBoundaryTest or architecture governance."
-        },
-        "reviewer": {
-          "pr_number": 30,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation only after current authority proves reuse nonviable. Preserve current governed W04 scope and exact candidate SHA {current_sha}; never weaken shared architecture governance."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only."}
       },
       "W05": {
-        "writer": {
-          "pr_number": 34,
-          "starting_branch": "work/cep-w05-parent-reconciliation-r01-8203175519000699108",
-          "known_session_fingerprints": ["2365c3014afe442adec064f7ffdebd611e56f2067c475f8d8f94e4ca574bcf7f"],
-          "replacement_prompt": "Continue {workstream} as the next Writer session generation only after authority for the shared-contract correction is established and the prior session is proven non-continuable. Preserve current candidate SHA {current_sha}; do not weaken architecture tests."
-        },
-        "reviewer": {
-          "pr_number": 34,
-          "known_session_fingerprints": [],
-          "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only, including route-specific system assurance when applicable."
-        }
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation only when current governed authority requires Writer work. Preserve exact candidate SHA {current_sha}; do not weaken architecture tests."},
+        "reviewer": {"known_session_fingerprints": [], "replacement_prompt": "Independently review {workstream} at exact current candidate SHA {current_sha}. Read-only review only, including route-specific assurance when applicable."}
+      },
+      "CEP-AUTO-001": {
+        "writer": {"known_session_fingerprints": [], "replacement_prompt": "Continue {workstream} as the next Writer physical generation of the same logical lineage after current authority proves the prior generation ineffective. Preserve exact candidate SHA {current_sha} and automation-only governed scope."}
       }
     }
   },
   "bounded_existing_session_runtime": {
     "enabled": true,
-    "authority_event_id": "OWNER_2026_08_24_BOUNDED_EXISTING_SESSION_CONTINUATION",
-    "policy_evidence_id": "UES_BOUNDED_EXISTING_SESSION_CONTINUATION_V1",
     "new_task_creation": false,
     "merge_release_deploy": false,
-    "waiting_continuations": [
-      {
-        "workstream": "W03",
-        "starting_branch": "work/cep-w03-parent-reconciliation-r01-13880329436073387601",
-        "response": "Continue the existing W03 correction on this same session, branch, and PR. You are authorized to proceed within the already-governed W03 scope and resolve W03-owned exact-head failures. Do not weaken shared tests/contracts or edit unrelated workstreams. If a blocker is owned by a shared contract or another workstream, do not guess or widen scope: report the exact blocker and required owner. Otherwise complete the correction, push to the same branch, and return the exact new SHA, changed paths, validation/CI evidence, and any remaining blocker."
-      },
-      {
-        "workstream": "W04",
-        "starting_branch": "work/cep-w04-parent-reconciliation-r02",
-        "response": "Continue the existing W04 correction on this same session, branch, and PR. The existing Handoff Receipt remains valid for continuation within W04 scope. Resolve W04-owned failures only. Do not edit or weaken shared ModuleBoundaryTest, architecture governance, or unrelated workstreams merely to make CI green. If a shared-contract blocker remains, report the exact owner/boundary required; otherwise complete the correction, push the same branch, and return the exact new SHA, changed paths, validation/CI evidence, and any remaining blocker."
-      }
-    ]
+    "waiting_continuations": []
   },
   "task_budget": {
-    "ceiling": 70,
-    "reserve_target": 15,
     "new_task_authority": "PARENT_ONLY",
     "unknown_lifetime_capacity": "DENY",
     "automatic_new_task_creation": false,
+    "current_ceiling_must_be_resolved_at_runtime": true,
     "existing_session_continuation_consumes_budget": false
+  },
+  "workflow_dispatch_policy": {
+    "enabled": true,
+    "allow_arbitrary_workflow": false,
+    "workflows": {
+      "release_browser": {
+        "workflow": ".github/workflows/release-verification.yml",
+        "allowed_inputs": {
+          "route_profiles": ["BASELINE", "LEGACY", "W01", "W05"]
+        }
+      }
+    }
   },
   "evidence_profiles": {
     "core_ci": {
       "profile_id": "CEP_CORE_CI_V1",
       "requirements": [
-        {
-          "provider": "GITHUB_ACTIONS",
-          "workflow": "Core CI",
-          "exact_candidate_sha": true,
-          "required": true
-        }
+        {"provider": "GITHUB_ACTIONS", "workflow": "Core CI", "exact_candidate_sha": true, "required": true}
       ]
     },
     "release_browser": {
       "profile_id": "CEP_RELEASE_BROWSER_V1",
       "requirements": [
-        {
-          "provider": "GITHUB_ACTIONS",
-          "workflow": "Release and Browser Verification",
-          "exact_candidate_sha": true,
-          "artifact_attempt_bound": true,
-          "route_profile_required_when_applicable": true,
-          "required": true
-        }
+        {"provider": "GITHUB_ACTIONS", "workflow": "Release and Browser Verification", "exact_candidate_sha": true, "artifact_attempt_bound": true, "route_profile_required_when_applicable": true, "required": true}
       ]
     }
   },
@@ -165,12 +112,7 @@
     "rules": [
       {
         "waiting_class": "POLICY_RESOLVABLE",
-        "match": {
-          "provider_state": "AWAITING_USER_FEEDBACK",
-          "question_scope": "CONTROLLER_RESOLVABLE",
-          "continuation_scope": "SAME_SESSION",
-          "scope_expansion": false
-        },
+        "match": {"provider_state": "AWAITING_USER_FEEDBACK", "question_scope": "CONTROLLER_RESOLVABLE", "continuation_scope": "SAME_SESSION", "scope_expansion": false},
         "evidence": "cep-structured-same-session-controller-input-v1"
       }
     ],
@@ -181,25 +123,10 @@
     "generic_blocker_is_stop_gate": false,
     "root_cause_required_before_stop": true,
     "exhaust_controller_resolvable_actions": true,
-    "same_session_continuation_preferred": true
+    "same_session_continuation_preferred": true,
+    "reuse_must_not_become_critical_path_drag": true,
+    "independent_lanes_continue_while_blocked": true
   },
-  "stop_gates": [
-    "PARENT_AUTHORITY_REQUIRED",
-    "OWNER_AUTHORITY_REQUIRED",
-    "SHARED_CONTRACT_REQUIRED",
-    "UNCLASSIFIED_WAITING",
-    "EVIDENCE_INCOMPLETE_AFTER_ROOT_CAUSE_REMEDIATION",
-    "BINDING_DRIFT_RECONCILIATION_REQUIRED"
-  ],
-  "prohibitions": [
-    "MERGE",
-    "RELEASE",
-    "DEPLOY",
-    "PRODUCT_PUBLICATION",
-    "FORCE_PUSH",
-    "TEST_WEAKENING",
-    "GUESSED_SESSION_OWNERSHIP",
-    "BLIND_WRITE_RETRY",
-    "AUTOMATIC_NEW_JULES_TASK"
-  ]
+  "stop_gates": ["PARENT_AUTHORITY_REQUIRED", "OWNER_AUTHORITY_REQUIRED", "SHARED_CONTRACT_REQUIRED", "UNCLASSIFIED_WAITING", "EVIDENCE_INCOMPLETE_AFTER_ROOT_CAUSE_REMEDIATION", "BINDING_DRIFT_RECONCILIATION_REQUIRED"],
+  "prohibitions": ["MERGE", "RELEASE", "DEPLOY", "PRODUCT_PUBLICATION", "FORCE_PUSH", "TEST_WEAKENING", "GUESSED_SESSION_OWNERSHIP", "BLIND_WRITE_RETRY", "UNGUARDED_AUTOMATIC_NEW_JULES_TASK"]
 }

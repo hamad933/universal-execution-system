@@ -2,17 +2,47 @@ name: UES Portfolio Lineage Lifecycle
 
 on:
   workflow_dispatch:
+    inputs:
+      project:
+        description: Project to reconcile
+        required: true
+        type: choice
+        default: ALL
+        options:
+          - ALL
+          - CEP
+          - GS
+      current_authority_json:
+        description: Bounded controller-attested current authority envelope
+        required: false
+        type: string
+      wakeup_type:
+        description: Allowlisted lifecycle wakeup type
+        required: false
+        type: string
+        default: EXTERNAL_RECONCILIATION_REQUEST
+      wakeup_event_id:
+        description: Stable upstream event id for coalescing
+        required: false
+        type: string
+  repository_dispatch:
+    types: [ues-lifecycle-wakeup]
   push:
     branches:
       - main
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
 
 jobs:
   project-lineage-cycle:
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.project == 'ALL' || inputs.project == matrix.project)) ||
+      (github.event_name == 'repository_dispatch' && github.event.client_payload.project == matrix.project)
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -24,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout governed UES main runtime
+      - name: Checkout governed UES runtime
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -35,10 +65,18 @@ jobs:
       - name: Install UES
         run: python -m pip install -e .
 
-      - name: Run logical Writer Reviewer lifecycle
+      - name: Run integrated current-authority logical lineage lifecycle
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-        run: python -m ues.lifecycle_runtime ${{ matrix.project }}
+          UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.actor }}
+          UES_CURRENT_AUTHORITY_JSON: ${{ github.event_name == 'repository_dispatch' && toJSON(github.event.client_payload.current_authority) || inputs.current_authority_json || '' }}
+          UES_WAKEUP_EVENT_ID: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.event_id || inputs.wakeup_event_id || '' }}
+          UES_WAKEUP_EVENT_TYPE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.event_type || (github.event_name == 'workflow_dispatch' && inputs.wakeup_type) || '' }}
+          UES_WAKEUP_EVENT_SOURCE: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.source || github.event_name }}
+          UES_WAKEUP_REPOSITORY: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.repository || '' }}
+          UES_WAKEUP_WORKSTREAM: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.workstream || '' }}
+          UES_WAKEUP_SHA: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || '' }}
+        run: python -m ues.lifecycle_runtime_current ${{ matrix.project }}
