@@ -6,6 +6,7 @@ from .generation_pending import clear_pending_generation_transition
 from .lineage_generation import persist_created_generation_binding
 from .lineage_registry import lineage_lane_id, session_fingerprint
 from .state_store import StateUnavailable, record_authoritative_readback, record_unknown_write
+from .task_budget_accounting import record_confirmed_generation
 
 
 def _pending_generation_state(
@@ -71,8 +72,8 @@ def reconcile_unknown_generation(
 
     Zero matches remain UNKNOWN because provider enumeration may be eventually
     consistent. Multiple matches remain UNKNOWN and are classified as a
-    duplicate/collision. Exactly one marker/repository/branch match is adopted
-    and bound to the same logical lineage without issuing another create.
+    duplicate/collision. Exactly one marker/repository/branch match is adopted,
+    accounted once, and bound to the same logical lineage without another create.
     """
 
     lane_id, pending, operation_key = _pending_generation_state(
@@ -159,6 +160,13 @@ def reconcile_unknown_generation(
             candidate_sha=candidate_sha,
             policy_provenance=policy_provenance or {},
         )
+        accounting = record_confirmed_generation(
+            store,
+            project=project,
+            route=route,
+            operation_key=operation_key,
+            generation_transition_key=transition_key,
+        )
         clear_pending_generation_transition(
             store,
             project=project,
@@ -173,8 +181,9 @@ def reconcile_unknown_generation(
             lane_id=lane_id,
             operation_key=operation_key,
             result={
-                "category": "RECONCILED_PROVIDER_SESSION_STATESTORE_BINDING_FAILED",
+                "category": "RECONCILED_PROVIDER_SESSION_STATESTORE_HANDOFF_FAILED",
                 "error_type": type(exc).__name__,
+                "generation_transition_key": transition_key,
                 "safe_to_blind_retry": False,
             },
         )
@@ -196,5 +205,6 @@ def reconcile_unknown_generation(
         "generation": generation,
         "session_fingerprint": fp,
         "generation_binding": binding,
+        "budget_accounting": accounting,
         "safe_to_blind_retry": False,
     }
