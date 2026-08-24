@@ -23,9 +23,20 @@ class RecoveryCatalogTests(unittest.TestCase):
         result = plan_recovery({
             "binding_status": "PROVEN", "provider_state": "FAILED", "role": "WRITER",
             "work_remaining": True, "new_session_budget_safe": False, "replacement_prompt_ready": True,
+            "active_duplicate_absent": True,
         })
         self.assertEqual(result["action"], "PREPARE_SAME_LINEAGE_REPLACEMENT")
         self.assertIn("TASK_BUDGET", result["stop_gate"])
+
+    def test_terminal_replacement_requires_explicit_duplicate_free_proof(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "FAILED", "role": "WRITER",
+            "work_remaining": True, "new_session_budget_safe": True,
+            "replacement_prompt_ready": True,
+        })
+        self.assertEqual(result["action"], "PREPARE_SAME_LINEAGE_REPLACEMENT")
+        self.assertIn("ACTIVE_DUPLICATE_CHECK_REQUIRED", result["stop_gate"])
+        self.assertFalse(result["external_effect"])
 
     def test_unbound_does_not_create_merely_because_budget_and_prompt_exist(self):
         result = plan_recovery({
@@ -51,6 +62,7 @@ class RecoveryCatalogTests(unittest.TestCase):
             "binding_status": "PROVEN", "provider_state": "FAILED", "role": "WRITER",
             "work_remaining": True, "new_session_budget_safe": True,
             "replacement_prompt_ready": True, "unknown_write_state": True,
+            "active_duplicate_absent": True,
         })
         self.assertEqual(result["action"], "AUTHORITATIVE_POST_WRITE_RECONCILIATION")
 
@@ -60,7 +72,7 @@ class RecoveryCatalogTests(unittest.TestCase):
             "current_sha": "c"*40,
             "handoff": {"reviewed_sha": "d"*40, "verdict": "PASS"},
             "work_remaining": True, "new_session_budget_safe": True,
-            "replacement_prompt_ready": True,
+            "replacement_prompt_ready": True, "active_duplicate_absent": True,
         })
         self.assertEqual(result["action"], "CREATE_NEXT_SESSION_GENERATION_SAME_LINEAGE")
         self.assertEqual(result["root_cause"], "STALE_REVIEW_REQUIRES_CURRENT_SHA_REREVIEW")
