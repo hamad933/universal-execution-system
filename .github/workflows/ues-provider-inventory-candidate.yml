@@ -56,3 +56,8 @@ jobs:
         env:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: python -m ues.provider_inventory
+
+      - name: Live waiting-session Activities reconciliation read-only
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: python -m ues.provider_waiting
