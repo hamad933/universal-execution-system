@@ -1,12 +1,12 @@
 # UES-AUTO-V2 — Parent Controller Operator Manual
 
-Status: candidate operator contract for frictionless Parent Controller operation.
+Status: CURRENT operator contract for low-friction Parent Controller operation.
 
 ## 1. Operating goal
 
 UES should feel like a transparent execution substrate between a Parent Controller and Jules, not a second bureaucracy layer.
 
-The Parent Controller remains the project authority, planner, primary reviewer, adjudicator, and integration coordinator. Jules remains an execution provider behind UES. UES owns the repetitive mechanics that should not be pushed onto the Owner:
+The Parent Controller remains the project authority, planner, primary reviewer, adjudicator, and integration coordinator. Jules remains an execution provider behind UES. UES owns repetitive mechanics that should not be pushed onto the Owner:
 
 - exact repository/ref/SHA binding;
 - current-authority transport;
@@ -20,21 +20,32 @@ The Parent Controller remains the project authority, planner, primary reviewer, 
 - StateStore binding/accounting;
 - lifecycle/watchdog receipts.
 
-The Owner should normally speak in project terms such as `continue`, `review`, `fix`, `use Jules`, or `complete the authorized wave`. The Parent Controller translates that governed project intent into UES mechanics internally.
+The Owner should normally speak in project terms such as `continue`, `review`, `fix`, `use Jules`, or `complete the authorized wave`. The Parent Controller translates governed project intent into UES mechanics internally.
 
 ## 2. Truth and authority do not move into UES
 
-The control queue is transport only. It is never the truth owner and never grants project authority.
+The Parent Controller ingress is transport only. It is never the truth owner and never grants project authority.
 
-Before a live effect, the Parent Controller must reconstruct the project from the canonical portfolio bootstrap chain and fresh project Current Authority. GitHub remains technical truth. Provider state remains provider truth. UES validates the transported authority but cannot invent missing project authority.
+Before a live effect, reconstruct the project from the canonical portfolio bootstrap chain and fresh Project Current Authority. GitHub remains technical truth. Provider state remains provider truth. UES validates transported authority but cannot invent missing project authority.
 
-A valid queue request therefore contains a fresh `current_authority` object sourced from `DRIVE_CURRENT_STATE`. The Parent Controller constructs it from direct governed sources; the Owner should not be asked to hand-build it.
+The semantic request therefore contains a fresh `current_authority` object sourced from `DRIVE_CURRENT_STATE`. The Parent Controller constructs it from direct governed sources; the Owner should not be asked to hand-build it.
 
-## 3. Preferred low-friction ingress
+## 3. Single preferred low-friction ingress
 
-When the ChatGPT GitHub connector cannot call `workflow_dispatch` directly, use the dedicated persistent same-repository `ues-parent-control` branch / control PR as the preferred Parent Controller ingress.
+The canonical Parent Controller path is now:
 
-This branch is intentionally separate from legacy `ues-control`, which remains owned by the v1 format-fix queue. Separating them prevents one semantic request from waking unrelated workflows.
+```text
+fresh project Current Authority
+→ update only .ues/parent-controller-request.json on ues-parent-control
+→ Validate Universal Core exact-head core PASS
+→ secretless trusted dispatch relay
+→ default-branch UES Parent Controller Trusted Dispatch
+→ revalidate control PR/head/Owner/validation/current UES main
+→ existing authority-gated lifecycle + guarded initial-lineage runtime
+→ durable sanitized receipt + StateStore/provider readback
+```
+
+There is intentionally **one automatic Parent Controller transport path**. Legacy Parent Controller `pull_request_target` / comment submission triggers are retired. `ues-control` remains a separate v1 format-fix mechanism and is not Parent Controller lifecycle ingress.
 
 The Parent Controller performs one semantic operation:
 
@@ -42,26 +53,28 @@ The Parent Controller performs one semantic operation:
 SUBMIT_AUTHORIZED_PROJECT_CYCLE
 ```
 
-Internally that means:
+Internally:
 
 1. Re-read live UES `main` and capture the full 40-hex SHA.
 2. Reconstruct fresh project Current Authority.
 3. Build one `UES_PARENT_CONTROLLER_REQUEST_V1` payload.
-4. Create or replace `.ues/parent-controller-request.json` on `ues-parent-control`.
-5. Change no other path in that queue commit.
-6. Let trusted default-branch workflow code validate and execute the request.
-7. Read the resulting lifecycle/provider/StateStore evidence and continue project adjudication.
+4. Replace only `.ues/parent-controller-request.json` on `ues-parent-control`.
+5. Do not manually post a wakeup comment and do not manually invoke Jules.
+6. Exact-head `Validate Universal Core` verifies the request commit/repository candidate.
+7. Only after the core validation job succeeds, a secretless relay with `actions: write` dispatches the trusted default-branch receiver.
+8. The receiver independently revalidates the request and live runtime before any provider secret is available.
+9. Read the durable receipt, StateStore, provider, project GitHub/CI/artifacts, then continue project adjudication.
 
 Do not ask the Owner to open GitHub Actions and paste `current_authority_json`.
 
 ## 4. Request contract
 
-The queue request is intentionally small at the transport layer:
+The transport request is intentionally small:
 
 ```json
 {
   "schema_version": "UES_PARENT_CONTROLLER_REQUEST_V1",
-  "request_id": "RP02-IPA-CYCLE-20260824-001",
+  "request_id": "RP02-IPA-CYCLE-<fresh-id>",
   "project": "RP02",
   "runtime_sha": "<exact-current-UES-main-40hex>",
   "current_authority": {
@@ -73,12 +86,15 @@ The queue request is intentionally small at the transport layer:
     "authority_event_id": "<fresh-bounded-authority-event>",
     "expires_at": "<bounded-ISO8601-expiry>",
     "lineages": {},
-    "generation_policy": {}
+    "generation_policy": {
+      "authorized_initial_lineages": {},
+      "authorized_lineages": {}
+    }
   },
   "wakeup": {
     "event_type": "EXTERNAL_RECONCILIATION_REQUEST",
-    "event_id": "RP02-IPA-CYCLE-20260824-001",
-    "repository": "hamad933/Enterprise-Operations-Control",
+    "event_id": "<fresh-event-id>",
+    "repository": "<project-repository>",
     "workstream": "<optional-current-workstream>",
     "sha": "<optional-exact-project-sha>"
   }
@@ -87,38 +103,51 @@ The queue request is intentionally small at the transport layer:
 
 The example is structural only. Never copy stale project state, IDs, branches, workstreams, or SHAs from documentation. Reconstruct them directly for each cycle.
 
-`wakeup` may be omitted when no extra routing metadata is useful; UES supplies the safe default `EXTERNAL_RECONCILIATION_REQUEST` and uses `request_id` as the wakeup event ID.
+`wakeup` may be omitted when no extra routing metadata is useful; UES supplies the safe default `EXTERNAL_RECONCILIATION_REQUEST` and uses `request_id` as the event ID.
 
 ### Public-Git transport boundary
 
-`ues-parent-control` is Git history in the UES repository. Therefore the request payload must contain only non-secret, non-sensitive governed control data that is appropriate to persist in that repository. The validator rejects common secret-bearing key names, and the Parent Controller must never place provider keys, passwords, private keys, tokens, credentials, sensitive production data, or other confidential payloads in the request.
+`ues-parent-control` is Git history in the UES repository. Persist only non-secret, non-sensitive governed control data appropriate to that repository. Never place provider keys, passwords, private keys, tokens, credentials, sensitive production data, or confidential payloads in the request.
 
-If a future project's authority envelope contains material that is not suitable for the UES repository history, do not use this queue for that payload. Select an authorized private transport instead while preserving the same UES Current Authority/runtime gates.
+If a future project's authority envelope contains material unsuitable for UES repository history, use an authorized private transport while preserving the same UES Current Authority/runtime gates.
 
-## 5. What the queue validates before secrets are available
+## 5. Validation and trust boundaries
 
-The trusted workflow fails closed unless all are true:
+### A. Exact-head validation relay
 
-- event is a `pull_request_target:synchronize` from the same repository;
-- head branch is exactly `ues-parent-control`;
-- control PR targets the repository default branch;
-- latest queue commit is authored and committed by the repository Owner identity;
-- that commit changes exactly one path: `.ues/parent-controller-request.json`;
-- the request file actually changed;
-- request schema is closed;
-- project is one of `GS`, `CEP`, `RP01`, `RP02`, `RP03`, `RP04`;
-- request is bound to the exact live UES default-branch SHA;
-- transported authority says `source=DRIVE_CURRENT_STATE`, `current=true`, and matches the governed project/route;
-- authority has source ID, authority event ID, and bounded expiry;
-- no secret-bearing keys are present in the request payload;
-- wakeup type is allowlisted;
-- optional repository/workstream routing metadata is restricted to safe single-line formats before it can cross a GitHub Actions job-output boundary.
+The relay runs only after the `core` job of `Validate Universal Core` succeeds and only for the exact same-repository `ues-parent-control` Draft PR. It verifies:
 
-The control branch is read as data through the GitHub API. It is never checked out or executed.
+- same repository;
+- head branch exactly `ues-parent-control`;
+- PR remains OPEN / DRAFT and targets default branch;
+- event sender is repository Owner;
+- PR contains exactly `.ues/parent-controller-request.json` as its changed path;
+- exact control head is Owner-authored and Owner-committed and changes exactly that path.
 
-## 6. What happens after preflight
+The relay has no `JULES_API_KEY`, no Current Authority payload, and no contents-write permission. Its only mutation capability is bounded `actions: write` to dispatch one named trusted workflow on the default branch.
 
-Only after preflight succeeds does the effect job receive `JULES_API_KEY` and `contents: write` for the UES StateStore.
+### B. Trusted default-branch receiver
+
+The receiver independently revalidates:
+
+- exactly one persistent OPEN / DRAFT `ues-parent-control` PR exists;
+- exact PR/head/repository/Owner identity;
+- one semantic request path only;
+- exact validation run belongs to that PR/head and Owner;
+- exactly one `core` validation job is `completed/success`;
+- exact live UES default-branch SHA;
+- semantic request schema and `runtime_sha` match that live SHA;
+- project/route/source/current/source_id/authority_event_id/expiry are present and coherent;
+- no secret-bearing request keys;
+- no existing durable receipt already confirms the same request ID + digest + runtime SHA.
+
+The control branch is always data. It is never checked out or executed.
+
+Immediately before the effect boundary, the receiver reads UES `main` again. If it moved, execution fails closed and a fresh request must be reconstructed rather than silently using stale runtime code.
+
+## 6. Effect boundary
+
+Only after all preflight checks succeed does the execute job receive `JULES_API_KEY` and `contents: write` for the UES StateStore.
 
 For `RP01–RP04`:
 
@@ -135,11 +164,31 @@ lifecycle_runtime_observed
 → initial_lineage_runtime
 ```
 
-These are the existing governed runtimes. The queue does not reimplement or weaken their checks.
+These are the existing governed runtimes. Ingress does not reimplement or weaken their Current Authority, task-budget, duplicate, UNKNOWN, idempotency, exact-binding, or provider-readback checks.
 
-## 7. Parent Controller task generation
+## 7. Durable receipt
 
-When a new Jules physical generation is genuinely required, build the complete task contract from governed project intent. The current runtime requires:
+Every executed request should produce `UES_PARENT_CONTROLLER_RECEIPT_V1` on the persistent control PR. It is sanitized and binds at minimum:
+
+- request ID and digest;
+- authority event ID;
+- project;
+- exact UES runtime SHA;
+- validation run ID;
+- execution outcome;
+- lifecycle result;
+- initial-lineage result;
+- external-effects count where directly available;
+- new task/session count where directly available;
+- `safe_to_blind_retry=false`;
+- `raw_session_ids_persisted=false`;
+- `secret_material_persisted=false`.
+
+Receipt suppression prevents an already-receipted identical request from executing again. A missing receipt is **not** proof that an effect failed; reconcile StateStore/provider/GitHub before deciding whether any fresh request is safe.
+
+## 8. Parent Controller task generation
+
+When a new Jules physical generation is genuinely required, build the complete task contract from governed project intent:
 
 - objective;
 - exact `branch@40hex-SHA` baseline;
@@ -154,17 +203,17 @@ Writer scope must be non-empty. Reviewer/Assurance/Final Assurance initial tasks
 
 Do not expose these fields to the Owner as a questionnaire when direct project authority already determines them.
 
-## 8. Reuse before create
+## 9. Reuse before create
 
 Default order:
 
-1. reuse the existing proven Jules logical lineage/session when valid;
+1. reuse an existing proven Jules logical lineage/session when valid;
 2. create an initial generation only when no valid lineage exists and fresh Current Authority explicitly authorizes it;
 3. create a successor generation only when replacement/continuation is authorized and reuse is no longer valid.
 
 Do not create sessions merely to exercise UES.
 
-## 9. UNKNOWN is recovery, not retry
+## 10. UNKNOWN is recovery, not retry
 
 If provider write outcome is UNKNOWN:
 
@@ -179,50 +228,59 @@ read StateStore pending transition
 
 Never blindly retry.
 
-## 10. Parallel execution
+## 11. Parallel execution
 
 Parallelize independent project lanes aggressively when authority, isolation, task budget, and write domains allow it. A blocked lane does not freeze unrelated authorized work.
 
 Use one writer per write domain. Reviewer/assurance lanes can run broadly in parallel when candidates are frozen and independent.
 
-## 11. Evidence and adjudication
+UES transport serialization does not mean the whole project must serialize; it only protects conflicting transport/effect boundaries.
 
-A queue trigger is not proof of a provider effect.
+## 12. Evidence and adjudication
+
+A request commit or dispatch is not proof of a provider effect.
 
 ```text
-QUEUE_COMMIT != WORKFLOW_SUCCESS != PROVIDER_ACK != SESSION_CREATED != PROJECT_ACCEPTANCE
+REQUEST_COMMIT
+!= VALIDATION_PASS
+!= DISPATCH_ACCEPTED
+!= PROVIDER_ACK
+!= SESSION_CREATED
+!= PROJECT_ACCEPTANCE
 ```
 
-Use direct evidence: exact workflow run/job, StateStore receipt, provider readback, exact project SHA/PR/CI/artifacts, and current project authority. Parent Controller remains the final project adjudicator.
+Use direct evidence: exact validation run/job, trusted dispatch receipt, StateStore receipt, provider readback, exact project SHA/PR/CI/artifacts, and fresh project authority. Parent Controller remains the final project adjudicator.
 
-## 12. First use of the persistent queue
+## 13. Persistent queue lifecycle
 
-After this workflow is integrated to UES `main`, initialize a dedicated control branch once:
+The dedicated branch/PR is initialized once:
 
 ```text
 ues-parent-control
 └── .ues/parent-controller-request.json
 ```
 
-Create a persistent Draft PR from `ues-parent-control` to `main`. Opening the PR does not execute a Parent Controller cycle because the workflow reacts only to later `synchronize` events. Each real request then replaces only `.ues/parent-controller-request.json` in one queue commit, producing a deterministic `synchronize` signal.
+The PR stays OPEN / DRAFT / DO_NOT_MERGE. Each new project cycle replaces only the request file in one Owner-authored queue commit. The resulting PR validation is the automatic signal; no manual comment is required.
 
-The legacy `ues-control` branch and `.ues/request.json` remain separate and must not be used or modified by Parent Controller lifecycle requests.
+Do not merge the persistent control PR. It is transport state, not an integration candidate.
 
-## 13. Failure handling
+## 14. Failure handling
 
-If the queue fails before the effect job:
+If failure occurs before the trusted execute job:
 
+- inspect the exact validation/relay/receiver preflight failure;
 - do not bypass UES;
-- inspect the exact preflight failure;
-- refresh live UES main / project authority if stale;
-- correct only the request file;
-- resubmit with a new request ID when the prior request did not execute.
+- refresh live UES main and project Current Authority if stale;
+- reconcile whether any prior receipt/effect exists;
+- submit a fresh request only after prior post-state is classified.
 
-If the effect job reaches provider/StateStore and fails or becomes UNKNOWN, use existing UES reconciliation. Do not create a fresh request merely to force a retry until authoritative post-state proves that is safe.
+If the execute job reaches provider/StateStore and fails or becomes UNKNOWN, use existing UES reconciliation. Never create a fresh request merely to force a retry.
 
-## 14. UX rule
+A blocked transport lane must not freeze unrelated authorized project work.
 
-The Parent Controller should hide routine UES mechanics from the Owner, not hide material project decisions.
+## 15. UX rule
+
+The Parent Controller hides routine UES mechanics from the Owner, not material project decisions.
 
 Escalate only for genuine unresolved authority, product direction, material architecture/security/privacy, integration/release/deploy/publication gates, or another governed Stop Gate.
 
@@ -231,6 +289,7 @@ Final operating principle:
 ```text
 AUTOMATE THE MECHANICS
 PRESERVE PROJECT AUTHORITY
+ONE DETERMINISTIC PARENT-CONTROLLER TRANSPORT
 KEEP EXACT-STATE SAFETY
 REUSE BEFORE CREATE
 RECOVER INSTEAD OF RETRY
