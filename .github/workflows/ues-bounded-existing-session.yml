@@ -31,10 +31,10 @@ jobs:
       - name: Install UES
         run: python -m pip install -e .
 
-      - name: Execute only policy-authorized existing-session CEP waiting continuations
+      - name: Execute and durably supervise policy-authorized CEP waiting continuations
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-        run: python -m ues.bounded_waiting_runtime CEP
+        run: python -m ues.bounded_waiting_supervisor CEP
