@@ -22,25 +22,38 @@ class GSControlAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter["truth_owners"]["governed_state"], "DRIVE")
         self.assertEqual(self.adapter["truth_owners"]["technical_state"], "GITHUB")
 
-    def test_adapter_is_shadow_only_and_cannot_auto_mutate(self):
+    def test_adapter_remains_shadow_by_default_but_bounded_lineage_replacement_is_authorized(self):
         activation = self.adapter["activation"]
         self.assertEqual(activation["default_mode"], "SHADOW")
         self.assertFalse(activation["mutation_allowed"])
         self.assertFalse(activation["runtime_mode_is_authority"])
         self.assertEqual(self.adapter["project_auto_safe_actions"], [])
-        self.assertFalse(self.adapter["task_budget"]["automatic_new_task_creation"])
-        self.assertEqual(self.adapter["task_budget"]["unknown_lifetime_capacity"], "DENY")
+        runtime = self.adapter["lineage_runtime"]
+        self.assertTrue(runtime["auto_create_next_generation"])
+        self.assertTrue(runtime["new_session_budget_safe"])
+        self.assertTrue(runtime["unbound_never_implies_replacement"])
+        self.assertTrue(runtime["replacement_requires_proven_terminal_or_context_exhausted"])
 
-    def test_task_budget_matches_governed_gs_boundary_without_inventing_reserve(self):
+    def test_task_budget_matches_g93_owner_boundary(self):
         budget = self.adapter["task_budget"]
-        self.assertEqual(budget["ceiling"], 30)
+        self.assertEqual(budget["ceiling"], 40)
         self.assertIsNone(budget["reserve_target"])
         self.assertEqual(
             budget["reserve_status"],
             "NOT_DEFINED_BY_CURRENT_GS_AUTHORITY",
         )
-        self.assertEqual(budget["new_task_authority"], "PARENT_ONLY")
-        self.assertEqual(budget["unknown_lifetime_capacity"], "DENY")
+        self.assertEqual(
+            budget["new_task_authority"],
+            "OWNER_AUTHORIZED_NECESSITY_BASED_NEW_GENERATION",
+        )
+        self.assertEqual(
+            budget["unknown_lifetime_capacity"],
+            "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+        )
+        self.assertTrue(budget["automatic_new_task_creation"])
+        self.assertEqual(budget["proven_used_floor"], 5)
+        self.assertFalse(budget["direct_ceiling_reached"])
+        self.assertFalse(budget["unknown_lifetime_alone_is_stop_gate"])
 
     def test_provider_effects_require_explicit_source_proof(self):
         binding = self.adapter["actor_binding"]
@@ -66,6 +79,25 @@ class GSControlAdapterTests(unittest.TestCase):
         self.assertEqual(classifier["rules"], [])
         self.assertEqual(classifier["unmatched"], "UNCLASSIFIED")
         self.assertFalse(classifier["keyword_shortcuts_allowed"])
+
+    def test_speed_policy_does_not_remove_safety_prohibitions(self):
+        prohibitions = set(self.adapter["prohibitions"])
+        for item in {
+            "MERGE",
+            "RELEASE",
+            "DEPLOY",
+            "PRODUCT_PUBLICATION",
+            "FORCE_PUSH",
+            "TEST_WEAKENING",
+            "GUESSED_SESSION_OWNERSHIP",
+            "BLIND_WRITE_RETRY",
+            "UNGUARDED_AUTOMATIC_NEW_JULES_TASK",
+        }:
+            self.assertIn(item, prohibitions)
+        self.assertEqual(
+            self.adapter["watchdog_policy"]["thresholds"]["reuse_critical_path_drag_seconds"],
+            600,
+        )
 
 
 if __name__ == "__main__":
