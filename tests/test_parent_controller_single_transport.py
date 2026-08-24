@@ -6,36 +6,35 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LEGACY = ROOT / ".github" / "workflows" / "ues-parent-controller-control-queue.yml"
+DISPATCH = ROOT / ".github" / "workflows" / "ues-parent-controller-dispatch.yml"
 VALIDATE = ROOT / ".github" / "workflows" / "validate.yml"
-RECEIVER = ROOT / ".github" / "workflows" / "ues-parent-controller-dispatch.yml"
 MANUAL = ROOT / "docs" / "PARENT_CONTROLLER_OPERATOR_MANUAL_V2.md"
 
 
 class ParentControllerSingleTransportTests(unittest.TestCase):
-    def test_legacy_parent_controller_trigger_workflow_is_retired(self):
+    def test_superseded_parent_controller_transport_workflows_are_retired(self):
         self.assertFalse(LEGACY.exists())
+        self.assertFalse(DISPATCH.exists())
 
-    def test_current_transport_is_validate_to_trusted_dispatch(self):
-        validate = VALIDATE.read_text(encoding="utf-8")
-        receiver = RECEIVER.read_text(encoding="utf-8")
-        self.assertIn("parent-controller-relay:", validate)
-        self.assertIn("github.rest.actions.createWorkflowDispatch", validate)
-        self.assertIn("workflow_id: 'ues-parent-controller-dispatch.yml'", validate)
-        self.assertIn("workflow_dispatch:", receiver)
-        trigger = receiver.split("permissions:", 1)[0]
-        self.assertNotIn("pull_request_target:", trigger)
-        self.assertNotIn("issue_comment:", trigger)
-        self.assertNotIn("workflow_run:", trigger)
+    def test_current_transport_is_one_inline_validated_pipeline(self):
+        text = VALIDATE.read_text(encoding="utf-8")
+        self.assertIn("parent-controller-preflight:", text)
+        self.assertIn("parent-controller-execute:", text)
+        self.assertNotIn("parent-controller-relay:", text)
+        self.assertNotIn("createWorkflowDispatch", text)
+        self.assertNotIn("workflow_dispatch", text)
+        self.assertIn("needs: parent-controller-preflight", text)
 
-    def test_current_manual_describes_one_path_and_no_manual_comment(self):
+    def test_current_manual_describes_one_path_and_no_manual_handoff(self):
         text = MANUAL.read_text(encoding="utf-8")
         self.assertIn("Status: CURRENT operator contract", text)
         self.assertIn("one automatic Parent Controller transport path", text)
         self.assertIn("Validate Universal Core exact-head core PASS", text)
-        self.assertIn("secretless trusted dispatch relay", text)
-        self.assertIn("default-branch UES Parent Controller Trusted Dispatch", text)
-        self.assertIn("no manual comment is required", text)
-        self.assertIn("OPEN / DRAFT / DO_NOT_MERGE", text)
+        self.assertIn("read-only Parent Controller preflight", text)
+        self.assertIn("authority-gated execute job", text)
+        self.assertIn("no manual comment", text)
+        self.assertIn("no workflow dispatch", text)
+        self.assertIn("OPEN / DRAFT / DO NOT MERGE", text)
 
 
 if __name__ == "__main__":
