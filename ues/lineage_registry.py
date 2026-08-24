@@ -51,8 +51,7 @@ def lineage_lane_id(project: str, route: str, workstream: str, role: str) -> str
 
 
 def _safe_time(value: Any) -> str:
-    text = str(value or "").strip()
-    return text
+    return str(value or "").strip()
 
 
 def _sort_key(session: Mapping[str, Any]) -> tuple[int, str]:
@@ -67,7 +66,11 @@ def match_lineage_session(
     *,
     repository: str,
 ) -> dict[str, Any]:
-    """Bind only from exact governed evidence; labels/titles are never authority."""
+    """Bind only from exact governed evidence; labels/titles are never authority.
+
+    When both a governed fingerprint and starting branch are present, both must
+    match. A fingerprint never silently overrides branch drift.
+    """
 
     expected_repo = str(repository or "").strip().casefold()
     expected_branch = str(policy.get("starting_branch") or "").strip()
@@ -87,7 +90,7 @@ def match_lineage_session(
         fingerprint_match = bool(fingerprints and fp in fingerprints)
         branch_match = bool(expected_branch and branch == expected_branch)
         if fingerprints:
-            if fingerprint_match:
+            if fingerprint_match and (not expected_branch or branch_match):
                 candidates.append(session)
         elif expected_branch and branch_match:
             candidates.append(session)
@@ -96,7 +99,7 @@ def match_lineage_session(
         return {
             "schema_version": SCHEMA_VERSION,
             "status": "UNBOUND",
-            "reason": "NO_EXACT_FINGERPRINT_OR_STARTING_BRANCH_MATCH",
+            "reason": "NO_EXACT_FINGERPRINT_AND_STARTING_BRANCH_MATCH",
             "session": None,
             "candidate_count": 0,
         }
