@@ -12,9 +12,11 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
     - an UNBOUND lineage is a reconciliation state, not proof that a replacement
       provider session should be created;
     - unknown writes are reconciled before any new external effect;
-    - terminal/context-exhausted replacement may proceed only when budget,
-      exact task spec, and explicit duplicate-safety checks are satisfied;
-    - Writer handoff SHA claims never override the authoritative current PR SHA.
+    - terminal/context-exhausted/repeated-no-op replacement may proceed only when
+      budget, exact task spec, and explicit duplicate-safety checks are satisfied;
+    - Writer handoff SHA claims never override the authoritative current PR SHA;
+    - repeated Writer no-op evidence must come from authoritative repository
+      comparisons, never provider prose alone.
     """
 
     binding = str(observation.get("binding_status") or "UNBOUND").upper()
@@ -33,6 +35,13 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
     budget_safe = bool(observation.get("new_session_budget_safe", False))
     replacement_prompt_ready = bool(observation.get("replacement_prompt_ready", False))
     replacement_required_proven = bool(observation.get("replacement_required_proven", False))
+
+    try:
+        consecutive_noop_writer_successors = max(
+            0, int(observation.get("consecutive_noop_writer_successors") or 0)
+        )
+    except (TypeError, ValueError):
+        consecutive_noop_writer_successors = 0
 
     # A proven binding identifies the intended lineage session, but does not by
     # itself prove that no other active provider session collides with a new
@@ -148,6 +157,13 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
                     budget_safe,
                     replacement_prompt_ready,
                     "CONTEXT_EXHAUSTED_REPORTED",
+                    duplicate_absent=active_duplicate_absent,
+                )
+            if work_remaining and consecutive_noop_writer_successors >= 2:
+                return _replacement_decision(
+                    budget_safe,
+                    replacement_prompt_ready,
+                    "REPEATED_WRITER_NOOP_SESSION_INEFFECTIVE",
                     duplicate_absent=active_duplicate_absent,
                 )
             if handoff_candidate_sha and current_sha and handoff_candidate_sha.lower() != current_sha.lower():
