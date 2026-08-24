@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from ues.provider_observer import ProjectTarget
+from ues.provider_targets import ProjectTarget
 from ues.provider_waiting import reconcile_waiting_sessions
 
 
