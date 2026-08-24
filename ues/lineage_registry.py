@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 from .identity import canonical_lane_id
 from .state_store import StateUnavailable, WorkstreamRuntimeRecord
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 VALID_ROLES = frozenset({"WRITER", "REVIEWER", "ASSURANCE"})
 TERMINAL_SESSION_STATES = frozenset({"COMPLETED", "FAILED"})
 DIRECT_CONTINUATION_STATES = frozenset({"AWAITING_USER_FEEDBACK", "IN_PROGRESS"})
@@ -46,18 +46,13 @@ def continuation_disposition(state: Any) -> str:
 
 def lineage_lane_id(project: str, route: str, workstream: str, role: str) -> str:
     normalized_role = normalize_role(role)
-    logical_workstream = f"LINEAGE::{str(workstream).strip()}::{normalized_role}"
-    return canonical_lane_id(project, route, logical_workstream)
-
-
-def _safe_time(value: Any) -> str:
-    return str(value or "").strip()
+    return canonical_lane_id(project, route, f"LINEAGE::{str(workstream).strip()}::{normalized_role}")
 
 
 def _sort_key(session: Mapping[str, Any]) -> tuple[int, str]:
     state = str(session.get("normalizedState") or session.get("state") or "UNKNOWN").upper()
     active_rank = 1 if state not in TERMINAL_SESSION_STATES else 0
-    return active_rank, _safe_time(session.get("updateTime") or session.get("createTime"))
+    return active_rank, str(session.get("updateTime") or session.get("createTime") or "").strip()
 
 
 def match_lineage_session(
@@ -66,14 +61,17 @@ def match_lineage_session(
     *,
     repository: str,
 ) -> dict[str, Any]:
-    """Bind only from exact governed evidence; labels/titles are never authority.
+    """Bind only from exact governed provider evidence.
 
-    When both a governed fingerprint and starting branch are present, both must
-    match. A fingerprint never silently overrides branch drift.
+    Provider `sourceStartingBranch` and GitHub PR head branch are distinct facts.
+    A governed session fingerprint plus exact repository proves the provider
+    session. `provider_starting_branch` is an optional additional provider-side
+    constraint. `pr_head_branch` is deliberately ignored here and is checked
+    separately against GitHub truth by the lifecycle runtime.
     """
 
     expected_repo = str(repository or "").strip().casefold()
-    expected_branch = str(policy.get("starting_branch") or "").strip()
+    provider_branch = str(policy.get("provider_starting_branch") or "").strip()
     fingerprints = {
         str(item).strip().lower()
         for item in policy.get("known_session_fingerprints") or []
@@ -86,30 +84,28 @@ def match_lineage_session(
         if repo != expected_repo:
             continue
         fp = str(session.get("_session_fingerprint") or "").strip().lower()
-        branch = str(session.get("sourceStartingBranch") or "").strip()
+        actual_provider_branch = str(session.get("sourceStartingBranch") or "").strip()
         fingerprint_match = bool(fingerprints and fp in fingerprints)
-        branch_match = bool(expected_branch and branch == expected_branch)
+        provider_branch_match = bool(provider_branch and actual_provider_branch == provider_branch)
         if fingerprints:
-            if fingerprint_match and (not expected_branch or branch_match):
+            if fingerprint_match and (not provider_branch or provider_branch_match):
                 candidates.append(session)
-        elif expected_branch and branch_match:
+        elif provider_branch and provider_branch_match:
             candidates.append(session)
 
     if not candidates:
         return {
             "schema_version": SCHEMA_VERSION,
             "status": "UNBOUND",
-            "reason": "NO_EXACT_FINGERPRINT_AND_STARTING_BRANCH_MATCH",
+            "reason": "NO_EXACT_PROVIDER_FINGERPRINT_OR_PROVIDER_STARTING_BRANCH_MATCH",
             "session": None,
             "candidate_count": 0,
         }
 
     if len(candidates) > 1:
         active = [
-            item
-            for item in candidates
-            if str(item.get("normalizedState") or item.get("state") or "").upper()
-            not in TERMINAL_SESSION_STATES
+            item for item in candidates
+            if str(item.get("normalizedState") or item.get("state") or "").upper() not in TERMINAL_SESSION_STATES
         ]
         if len(active) == 1:
             candidates = active
@@ -194,7 +190,7 @@ def upsert_lineage_observation(
                 "proof_status": "PROVEN_EXPLICIT_LINEAGE",
                 "session_fingerprint": current_fp,
                 "source_repository": session.get("_source_repository") if session else None,
-                "starting_branch": session.get("sourceStartingBranch") if session else None,
+                "provider_starting_branch": session.get("sourceStartingBranch") if session else None,
                 "raw_session_id_persisted": False,
             }
         }
@@ -208,6 +204,7 @@ def upsert_lineage_observation(
         "session_reuse_policy": "REUSE_SAME_SESSION_FIRST",
         "replacement_policy": "NEW_GENERATION_SAME_LOGICAL_LINEAGE_ONLY",
         "labels_or_titles_are_authority": False,
+        "provider_branch_and_pr_head_are_separate_facts": True,
     }
     record.evidence_bindings = {
         "schema_version": SCHEMA_VERSION,
@@ -219,10 +216,9 @@ def upsert_lineage_observation(
         "replacement_reason": replacement_reason,
         "binding_status": status,
         "binding_reason": binding.get("reason"),
-        "known_session_fingerprints": sorted(
-            str(item) for item in policy.get("known_session_fingerprints") or [] if str(item)
-        ),
-        "expected_starting_branch": policy.get("starting_branch"),
+        "known_session_fingerprints": sorted(str(item) for item in policy.get("known_session_fingerprints") or [] if str(item)),
+        "expected_provider_starting_branch": policy.get("provider_starting_branch"),
+        "expected_pr_head_branch": policy.get("pr_head_branch"),
         "current_pr_number": current_pr_number,
         "current_candidate_sha": current_candidate_sha,
         "raw_session_id_persisted": False,
