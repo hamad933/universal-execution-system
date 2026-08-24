@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from . import lifecycle_runtime as legacy
@@ -12,7 +13,14 @@ from .observation_backed_health import (
     observation_backed_no_effect_eligible,
     run_observation_backed_no_effect_health,
 )
+from .providers.base import NetworkError, RateLimitError, ServerError
 from .rp_readonly_runtime import RP_NAMES, _load_rp_adapter
+
+
+_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
+_PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
+_PROVIDER_READ_UNAVAILABLE_RESULT = "PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
+_PROVIDER_READ_UNAVAILABLE_EXIT = 75
 
 
 def _validated_authority(adapter: dict[str, Any]) -> dict[str, Any] | None:
@@ -26,6 +34,61 @@ def _validated_authority(adapter: dict[str, Any]) -> dict[str, Any] | None:
         os.environ.get("UES_CURRENT_AUTHORITY_JSON"),
         transport_actor=actor,
     )
+
+
+def _is_pre_effect_provider_read_failure(exc: BaseException) -> bool:
+    return isinstance(exc, _PRE_EFFECT_PROVIDER_READ_ERRORS) and str(
+        getattr(exc, "operation", "") or ""
+    ) in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
+
+
+def _provider_read_unavailable_result(
+    project: str,
+    *,
+    authority: dict[str, Any] | None,
+    exc: BaseException,
+) -> dict[str, Any]:
+    """Represent a proven pre-effect provider inventory outage without guessing state.
+
+    The RP live lifecycle performs `jules.sessions.list` before any provider mutation.
+    Only transient failures of that exact operation are converted here. Other provider
+    failures still propagate so a possible post-write condition can never be
+    mislabeled as zero-effect.
+    """
+
+    return {
+        "schema_version": "1.0",
+        "project": project,
+        "result": _PROVIDER_READ_UNAVAILABLE_RESULT,
+        "lifecycle_state": "WAITING",
+        "current_authority_loaded": authority is not None,
+        "current_authority_event_id": (authority or {}).get("authority_event_id"),
+        "provider_read_authoritative": False,
+        "provider_read_operation": getattr(exc, "operation", None),
+        "provider_read_error_category": getattr(exc, "category", "PROVIDER_READ_ERROR"),
+        "provider_write_attempted": False,
+        "external_effects_dispatched": 0,
+        "new_tasks_or_sessions_created": 0,
+        "retry_condition": "FRESH_AUTHORITATIVE_PROVIDER_READ_REQUIRED",
+        "safe_to_blind_retry": False,
+        "raw_session_ids_persisted": False,
+    }
+
+
+def _initial_lineage_blocked_result(lifecycle: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "project": lifecycle.get("project"),
+        "result": "INITIAL_LINEAGE_RUNTIME_BLOCKED_PROVIDER_READ_UNAVAILABLE",
+        "authority_event_id": lifecycle.get("current_authority_event_id"),
+        "blocked_by": _PROVIDER_READ_UNAVAILABLE_RESULT,
+        "provider_write_attempted": False,
+        "external_effects_dispatched": 0,
+        "new_tasks_or_sessions_created": 0,
+        "retry_condition": "FRESH_AUTHORITATIVE_PROVIDER_READ_REQUIRED",
+        "safe_to_blind_retry": False,
+        "raw_session_ids_persisted": False,
+    }
 
 
 def run(project: str) -> dict[str, Any]:
@@ -48,7 +111,16 @@ def run(project: str) -> dict[str, Any]:
         original_loader = legacy._load_adapter
         legacy._load_adapter = _load_rp_adapter
         try:
-            result = dict(observed.run(project_name))
+            try:
+                result = dict(observed.run(project_name))
+            except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
+                if not _is_pre_effect_provider_read_failure(exc):
+                    raise
+                result = _provider_read_unavailable_result(
+                    project_name,
+                    authority=authority,
+                    exc=exc,
+                )
         finally:
             legacy._load_adapter = original_loader
 
@@ -62,7 +134,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="UES RP current-authority lifecycle wrapper")
     parser.add_argument("project", choices=sorted(RP_NAMES))
     args = parser.parse_args(argv)
-    print(json.dumps(run(args.project), sort_keys=True))
+    result = run(args.project)
+    print(json.dumps(result, sort_keys=True))
+    if result.get("result") == _PROVIDER_READ_UNAVAILABLE_RESULT:
+        Path("initial-lineage-result.json").write_text(
+            json.dumps(_initial_lineage_blocked_result(result), sort_keys=True),
+            encoding="utf-8",
+        )
+        return _PROVIDER_READ_UNAVAILABLE_EXIT
     return 0
 
 
