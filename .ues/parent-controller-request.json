@@ -1,6 +1,6 @@
 {
   "schema_version": "UES_PARENT_CONTROLLER_REQUEST_V1",
-  "request_id": "RP02-IPA-PROVIDER-PREFLIGHT-20260825T0159P03",
+  "request_id": "RP02-IPA-PROVIDER-PREFLIGHT-R02-20260825T0207P03",
   "project": "RP02",
   "runtime_sha": "e780d2a0f8120b430539eb4de34324caef1c3f53",
   "current_authority": {
@@ -27,7 +27,8 @@
     }
   },
   "wakeup": {
-    "kind": "EXTERNAL_RECONCILIATION_REQUEST",
+    "event_type": "EXTERNAL_RECONCILIATION_REQUEST",
+    "event_id": "RP02-IPA-PROVIDER-PREFLIGHT-R02-20260825T0207P03",
     "repository": "hamad933/Enterprise-Operations-Control",
     "workstream": "RP02-IPA-PROVIDER-PREFLIGHT",
     "sha": "dc5cfe6f2d138c448561ff67f27e3c656b420229"
