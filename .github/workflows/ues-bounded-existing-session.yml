@@ -37,6 +37,33 @@ permissions:
   contents: write
 
 jobs:
+  provider-observer-fallback:
+    concurrency:
+      group: ues-provider-observer-fallback
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout governed UES runtime
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Recover stale provider observation read-only when needed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_PROVIDER_OBSERVER_FALLBACK_STALE_SECONDS: "1200"
+        run: python -m ues.provider_observer_recovery
+
   project-lineage-cycle:
     if: >-
       github.event_name == 'schedule' ||
