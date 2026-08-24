@@ -1,20 +1,35 @@
 {
   "schema_version": "UES_PARENT_CONTROLLER_REQUEST_V1",
-  "request_id": "RP01-U26-FINAL-ACTIVATION-PROOF-R10-20260825T0140P03",
-  "project": "RP01",
+  "request_id": "RP02-IPA-PROVIDER-PREFLIGHT-20260825T0159P03",
+  "project": "RP02",
   "runtime_sha": "e780d2a0f8120b430539eb4de34324caef1c3f53",
   "current_authority": {
     "source": "DRIVE_CURRENT_STATE",
-    "source_id": "1Q7c5wYcNlJ7GAbMMu7Fupcl2poKFMKAe8APKq1rQdx8",
-    "project": "RP01",
-    "route": "RP01",
+    "source_id": "1pIfAopiyt3mSsJ5srOKccr7DNhzoRlpr",
+    "project": "RP02",
+    "route": "RP02",
     "current": true,
-    "authority_event_id": "RP01-U26-FINAL-NO-EFFECT-ACTIVATION-PROOF-R10-20260825T0140P03",
+    "authority_event_id": "RP02-PORTFOLIO-POLISH-POSTMERGE-001",
     "expires_at": "2026-08-25T02:45:00+03:00",
-    "lineages": {},
+    "lineages": {
+      "RP02-IPA-S01-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
+      "RP02-IPA-S02-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
+      "RP02-IPA-S03-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
+      "RP02-IPA-S04-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
+      "RP02-IPA-S05-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
+      "RP02-IPA-S06-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
+      "RP02-IPA-S07-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
+      "RP02-IPA-S08-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}}
+    },
     "generation_policy": {
       "authorized_initial_lineages": {},
       "authorized_lineages": {}
     }
+  },
+  "wakeup": {
+    "kind": "EXTERNAL_RECONCILIATION_REQUEST",
+    "repository": "hamad933/Enterprise-Operations-Control",
+    "workstream": "RP02-IPA-PROVIDER-PREFLIGHT",
+    "sha": "dc5cfe6f2d138c448561ff67f27e3c656b420229"
   }
 }
