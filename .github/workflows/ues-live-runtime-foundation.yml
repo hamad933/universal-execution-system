@@ -6,6 +6,7 @@ on:
       - main
       - work/ues-auto-v2-k-live-runtime-foundation
       - work/ues-auto-v2-live-provider-observer-r1
+      - work/ues-auto-v2-provider-observer-recovery-r1
   workflow_dispatch:
   schedule:
     - cron: "*/15 * * * *"
@@ -72,14 +73,14 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: python -m ues.live_runtime jules-probe
 
-      - name: Jules GS/CEP live read-only provider observation
+      - name: Jules GS/CEP resilient live read-only provider observation
         if: steps.jules_secret.outputs.present == 'true' && steps.jules_probe.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-        run: python -m ues.provider_observer observe
+        run: python -m ues.provider_observer_runtime observe
 
       - name: Persist sanitized Jules probe success proof
         if: steps.jules_secret.outputs.present == 'true' && steps.jules_probe.outcome == 'success'
@@ -179,13 +180,13 @@ jobs:
       - name: Install UES
         run: python -m pip install -e .
 
-      - name: Observe Jules GS/CEP sessions and Activities read-only
+      - name: Observe Jules GS/CEP sessions read-only with durable health
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-        run: python -m ues.provider_observer observe
+        run: python -m ues.provider_observer_runtime observe
 
   scheduled-provider-audit:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
@@ -211,7 +212,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-        run: python -m ues.provider_observer audit
+        run: python -m ues.provider_observer_runtime audit
 
   scheduled-watchdog:
     if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
