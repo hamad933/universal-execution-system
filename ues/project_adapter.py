@@ -187,17 +187,11 @@ def parse_project_adapter(value: Mapping[str, Any]) -> ProjectAdapter:
             "unknown lifetime task capacity policy must be DENY or ALLOW_UNLESS_DIRECT_CEILING_REACHED"
         )
 
-    automatic_new_task_creation = bool(task_budget.get("automatic_new_task_creation"))
-    if automatic_new_task_creation:
-        owner_policy = str(task_budget.get("owner_new_task_policy") or "").strip()
-        if not owner_policy:
-            raise ProjectAdapterError(
-                "automatic task-creation policy requires an explicit owner_new_task_policy marker"
-            )
-        if not bool(task_budget.get("runtime_budget_preflight_required")):
-            raise ProjectAdapterError(
-                "automatic task-creation policy requires runtime budget preflight"
-            )
+    # Stable project policy may record that a Parent is authorized to create a
+    # necessary generation, but adapter parsing must never activate automatic
+    # creation. Runtime activation belongs to a separately proven effect gate.
+    if bool(task_budget.get("automatic_new_task_creation")):
+        raise ProjectAdapterError("automatic new task creation remains runtime-gated and disabled in adapter config")
 
     classifier = value.get("waiting_classifier")
     if not isinstance(classifier, Mapping):
@@ -222,7 +216,7 @@ def parse_project_adapter(value: Mapping[str, Any]) -> ProjectAdapter:
         project_auto_safe_actions=actions,
         new_task_authority=new_task_authority,
         unknown_lifetime_capacity=unknown_capacity,
-        automatic_new_task_creation=automatic_new_task_creation,
+        automatic_new_task_creation=False,
         waiting_classifier_rules={"rules": list(rules)},
         evidence_profiles=_parse_evidence_profiles(value.get("evidence_profiles")),
         raw=dict(value),
