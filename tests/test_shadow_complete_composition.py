@@ -34,20 +34,59 @@ class ShadowCompleteCompositionTests(unittest.TestCase):
             self.assertFalse(adapter.runtime_mode_is_authority)
             self.assertFalse(adapter.config_grants_mutation_authority)
             self.assertEqual(adapter.project_auto_safe_actions, ())
-            self.assertFalse(adapter.automatic_new_task_creation)
+        self.assertTrue(self.gs.automatic_new_task_creation)
+        self.assertFalse(self.cep.automatic_new_task_creation)
 
     def test_same_w01_in_gs_and_cep_cannot_collide(self):
         gs_lane = canonical_lane_id(self.gs.project, self.gs.route, "W01")
         cep_lane = canonical_lane_id(self.cep.project, self.cep.route, "W01")
         self.assertNotEqual(gs_lane, cep_lane)
 
-    def test_governed_task_budget_boundaries_are_present_and_fail_closed(self):
+    def test_governed_task_budget_boundaries_are_project_specific_and_runtime_safe(self):
         gs_budget = self.gs.raw["task_budget"]
         cep_budget = self.cep.raw["task_budget"]
-        self.assertEqual(gs_budget["ceiling"], 30)
+        self.assertEqual(gs_budget["ceiling"], 40)
         self.assertIsNone(gs_budget["reserve_target"])
+        self.assertEqual(
+            gs_budget["unknown_lifetime_capacity"],
+            "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+        )
+        self.assertTrue(gs_budget["runtime_budget_preflight_required"])
         self.assertEqual(cep_budget["ceiling"], 70)
         self.assertEqual(cep_budget["reserve_target"], 15)
+        self.assertEqual(cep_budget["unknown_lifetime_capacity"], "DENY")
+
+        gs_unknown = evaluate_task_budget(
+            project="GS",
+            ceiling=gs_budget["ceiling"],
+            reserve=0,
+            lifetime_consumption_known=False,
+            proven_lifetime_used=None,
+            current_enumerated_tasks=5,
+            unknown_lifetime_policy=gs_budget["unknown_lifetime_capacity"],
+        )
+        self.assertEqual(
+            gs_unknown["state"],
+            "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_LIFETIME",
+        )
+        self.assertTrue(gs_unknown["budget_allows_new_task"])
+        self.assertFalse(gs_unknown["fail_closed"])
+
+        gs_ceiling = evaluate_task_budget(
+            project="GS",
+            ceiling=gs_budget["ceiling"],
+            reserve=0,
+            lifetime_consumption_known=False,
+            proven_lifetime_used=None,
+            current_enumerated_tasks=40,
+            unknown_lifetime_policy=gs_budget["unknown_lifetime_capacity"],
+        )
+        self.assertEqual(
+            gs_ceiling["state"],
+            "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED",
+        )
+        self.assertFalse(gs_ceiling["budget_allows_new_task"])
+        self.assertTrue(gs_ceiling["fail_closed"])
 
         cep_unknown = evaluate_task_budget(
             project="CEP",
