@@ -32,7 +32,11 @@ def _pending_initial_state(
         raise StateUnavailable("UNKNOWN initial lineage state lacks operation/pending transition evidence")
     if str(pending.get("creation_kind") or "").strip().upper() != "INITIAL_LOGICAL_LINEAGE":
         raise StateUnavailable("pending transition is not an initial logical lineage create")
-    if int(pending.get("current_generation") or -1) != 0 or int(pending.get("next_generation") or 0) != 1:
+    current_generation = pending.get("current_generation")
+    next_generation = pending.get("next_generation")
+    if current_generation is None or next_generation is None:
+        raise StateUnavailable("pending initial lineage transition lacks generation boundary")
+    if int(current_generation) != 0 or int(next_generation) != 1:
         raise StateUnavailable("pending initial lineage transition has invalid generation boundary")
     provenance = record.authority_provenance or {}
     authority_event_id = str(
