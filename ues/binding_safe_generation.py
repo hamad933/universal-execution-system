@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .generation_pending import clear_pending_generation_transition, persist_pending_generation_transition
 from .generation_transition import assess_generation_transition
 from .lineage_effects import create_next_lineage_generation
 from .lineage_generation import persist_created_generation_binding
 from .lineage_registry import lineage_lane_id
 from .state_store import StateUnavailable, record_unknown_write
+from .task_budget_accounting import record_confirmed_generation
 
 
 def _state_snapshot(store: Any, lane_id: str) -> dict[str, Any]:
@@ -20,6 +22,7 @@ def _state_snapshot(store: Any, lane_id: str) -> dict[str, Any]:
         "session_fingerprint": evidence.get("session_fingerprint"),
         "candidate_sha": evidence.get("current_candidate_sha"),
         "generation_transition_key": evidence.get("generation_transition_key"),
+        "pending_generation_transition": evidence.get("pending_generation_transition"),
         "unknown_write_state": record.unknown_write_state,
         "action_in_flight": record.action_in_flight,
         "operation_state": (
@@ -52,20 +55,16 @@ def execute_binding_safe_generation(
     exact_repository_binding: bool,
     exact_starting_ref_binding: bool,
 ) -> dict[str, Any]:
-    """Create exactly one lawful physical generation and durably bind it.
+    """Create one lawful physical generation and durably bind/account it.
 
-    The lower-level provider effect remains reusable, but this is the runtime
-    entry point for automatic next-generation creation. It requires current
-    project policy, replacement proof, duplicate/UNKNOWN reconciliation and
-    StateStore handoff before the transition is considered complete.
+    The exact transition is persisted before the provider write. Any ambiguous
+    provider result therefore has a durable reconciliation key and title marker;
+    a subsequent runner must reconcile that UNKNOWN state instead of issuing a
+    blind retry.
     """
 
-    lane_id = lineage_lane_id(
-        project,
-        route,
-        workstream,
-        "ASSURANCE" if str(role).upper() == "FINAL_ASSURANCE" else role,
-    )
+    state_role = "ASSURANCE" if str(role).upper() == "FINAL_ASSURANCE" else role
+    lane_id = lineage_lane_id(project, route, workstream, state_role)
     before = _state_snapshot(store, lane_id)
     current_generation = int(before.get("generation") or 0)
     predecessor = str(before.get("session_fingerprint") or "").strip() or None
@@ -106,6 +105,20 @@ def execute_binding_safe_generation(
             "safe_to_blind_retry": False,
         }
 
+    pending = persist_pending_generation_transition(
+        store,
+        project=project,
+        route=route,
+        workstream=workstream,
+        role=role,
+        transition=assessment,
+        source_repository=repository,
+        source_name=source_name,
+        starting_branch=starting_branch,
+        candidate_sha=candidate_sha,
+        replacement_cause=replacement_cause,
+    )
+
     next_generation = int(assessment["next_generation"])
     effect = create_next_lineage_generation(
         store,
@@ -113,7 +126,7 @@ def execute_binding_safe_generation(
         project=project,
         route=route,
         workstream=workstream,
-        role="ASSURANCE" if str(role).upper() == "FINAL_ASSURANCE" else role,
+        role=state_role,
         predecessor_session_fingerprint=predecessor,
         next_generation=next_generation,
         prompt=prompt,
@@ -127,7 +140,7 @@ def execute_binding_safe_generation(
 
     decision = str(effect.get("decision") or "")
     if decision not in {"NEXT_SESSION_GENERATION_CONFIRMED", "IDEMPOTENT_REPLAY_CONFIRMED"}:
-        return {**effect, "transition": assessment}
+        return {**effect, "transition": assessment, "pending_transition": pending}
 
     new_fp = str(effect.get("session_fingerprint") or "").strip().lower()
     operation_key = str(effect.get("operation_key") or "").strip()
@@ -139,6 +152,7 @@ def execute_binding_safe_generation(
                 operation_key=operation_key,
                 result={
                     "category": "GENERATION_CONFIRMATION_MISSING_BINDING",
+                    "generation_transition_key": transition_key,
                     "safe_to_blind_retry": False,
                 },
             )
@@ -146,6 +160,7 @@ def execute_binding_safe_generation(
             **effect,
             "decision": "GENERATION_BINDING_RECONCILIATION_REQUIRED",
             "transition": assessment,
+            "pending_transition": pending,
             "safe_to_blind_retry": False,
         }
 
@@ -168,6 +183,21 @@ def execute_binding_safe_generation(
             candidate_sha=candidate_sha,
             policy_provenance=current_policy.get("provenance") if isinstance(current_policy.get("provenance"), Mapping) else {},
         )
+        accounting = record_confirmed_generation(
+            store,
+            project=project,
+            route=route,
+            operation_key=operation_key,
+            generation_transition_key=transition_key,
+        )
+        clear_pending_generation_transition(
+            store,
+            project=project,
+            route=route,
+            workstream=workstream,
+            role=role,
+            expected_transition_key=transition_key,
+        )
     except Exception as exc:
         try:
             record_unknown_write(
@@ -175,7 +205,8 @@ def execute_binding_safe_generation(
                 lane_id=lane_id,
                 operation_key=operation_key,
                 result={
-                    "category": "STATESTORE_GENERATION_BINDING_PERSISTENCE_FAILED",
+                    "category": "STATESTORE_GENERATION_HANDOFF_FAILED",
+                    "generation_transition_key": transition_key,
                     "error_type": type(exc).__name__,
                     "safe_to_blind_retry": False,
                 },
@@ -186,6 +217,7 @@ def execute_binding_safe_generation(
             **effect,
             "decision": "GENERATION_CREATED_STATESTORE_RECONCILIATION_REQUIRED",
             "transition": assessment,
+            "pending_transition": pending,
             "safe_to_blind_retry": False,
         }
 
@@ -194,6 +226,7 @@ def execute_binding_safe_generation(
         int(after.get("generation") or 0) != next_generation
         or str(after.get("session_fingerprint") or "").lower() != new_fp
         or str(after.get("generation_transition_key") or "") != transition_key
+        or after.get("pending_generation_transition") is not None
     ):
         raise StateUnavailable("created generation StateStore post-readback mismatch")
 
@@ -202,6 +235,7 @@ def execute_binding_safe_generation(
         "decision": "BINDING_SAFE_NEXT_GENERATION_CONFIRMED",
         "transition": assessment,
         "generation_binding": binding,
+        "budget_accounting": accounting,
         "generation": next_generation,
         "session_fingerprint": new_fp,
         "safe_to_blind_retry": False,
