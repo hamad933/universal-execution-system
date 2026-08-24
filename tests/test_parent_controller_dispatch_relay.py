@@ -31,6 +31,7 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         relay = self.validate.split("\n  parent-controller-relay:\n", 1)[1]
         self.assertIn("actions: write", relay)
         self.assertIn("contents: read", relay)
+        self.assertIn("issues: write", relay)
         self.assertNotIn("contents: write", relay)
         self.assertNotIn("JULES_API_KEY", relay)
         self.assertNotIn("UES_CURRENT_AUTHORITY_JSON", relay)
@@ -39,6 +40,21 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("control_head: exactHead", relay)
         self.assertIn("validation_run_id", relay)
         self.assertIn("control_pr_number: String(pr.number)", relay)
+
+    def test_relay_authoritatively_reads_back_receiver_run_and_publishes_identity(self):
+        relay = self.validate.split("\n  parent-controller-relay:\n", 1)[1]
+        self.assertIn("dispatchWindowStart", relay)
+        self.assertIn("github.rest.actions.listWorkflowRuns", relay)
+        self.assertIn("event: 'workflow_dispatch'", relay)
+        self.assertIn("branch: defaultBranch", relay)
+        self.assertIn("candidates.length > 1", relay)
+        self.assertIn("Trusted receiver dispatch readback is ambiguous", relay)
+        self.assertIn("Trusted receiver dispatch was not observed after bounded authoritative readback", relay)
+        self.assertIn("UES_PARENT_CONTROLLER_DISPATCH_ACCEPTED_V1", relay)
+        self.assertIn("receiver_run_id: Number(receiverRun.id)", relay)
+        self.assertIn("stage: 'DISPATCH_AUTHORITATIVELY_READ_BACK'", relay)
+        self.assertIn("effect_job_reached: false", relay)
+        self.assertIn("safe_to_blind_retry: false", relay)
 
     def test_receiver_is_trusted_workflow_dispatch_only(self):
         trigger = self.receiver.split("permissions:", 1)[0]
