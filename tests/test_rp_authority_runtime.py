@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from ues import lifecycle_runtime as legacy
-from ues.rp_authority_runtime import run
+from ues.providers.base import NetworkError
+from ues.rp_authority_runtime import (
+    _PROVIDER_READ_UNAVAILABLE_EXIT,
+    _PROVIDER_READ_UNAVAILABLE_RESULT,
+    main,
+    run,
+)
 
 
 class RPAuthorityRuntimeTests(unittest.TestCase):
@@ -84,6 +94,75 @@ class RPAuthorityRuntimeTests(unittest.TestCase):
 
         live.assert_called_once_with("RP01")
         health.assert_not_called()
+
+    def test_sessions_list_network_outage_is_structured_pre_effect_waiting(self):
+        authority = {
+            "source": "DRIVE_CURRENT_STATE",
+            "project": "RP01",
+            "route": "RP01",
+            "current": True,
+            "authority_event_id": "RP01-AUTH-OUTAGE",
+            "lineages": {"W01": {"reviewer": {"provider_starting_branch": "main"}}},
+        }
+        outage = NetworkError("provider network request failed", operation="jules.sessions.list")
+        with patch("ues.rp_authority_runtime._validated_authority", return_value=authority), patch(
+            "ues.rp_authority_runtime.observed.run", side_effect=outage
+        ):
+            result = run("RP01")
+
+        self.assertEqual(result["result"], _PROVIDER_READ_UNAVAILABLE_RESULT)
+        self.assertEqual(result["lifecycle_state"], "WAITING")
+        self.assertEqual(result["provider_read_operation"], "jules.sessions.list")
+        self.assertEqual(result["provider_read_error_category"], "NETWORK_ERROR")
+        self.assertFalse(result["provider_write_attempted"])
+        self.assertEqual(result["external_effects_dispatched"], 0)
+        self.assertEqual(result["new_tasks_or_sessions_created"], 0)
+        self.assertFalse(result["safe_to_blind_retry"])
+        self.assertEqual(result["retry_condition"], "FRESH_AUTHORITATIVE_PROVIDER_READ_REQUIRED")
+        self.assertEqual(result["current_authority_event_id"], "RP01-AUTH-OUTAGE")
+
+    def test_non_inventory_network_error_is_not_reclassified_as_zero_effect(self):
+        authority = {
+            "source": "DRIVE_CURRENT_STATE",
+            "project": "RP01",
+            "route": "RP01",
+            "current": True,
+            "authority_event_id": "RP01-AUTH",
+            "lineages": {"W01": {"reviewer": {"provider_starting_branch": "main"}}},
+        }
+        outage = NetworkError("provider network request failed", operation="jules.sessions.get")
+        with patch("ues.rp_authority_runtime._validated_authority", return_value=authority), patch(
+            "ues.rp_authority_runtime.observed.run", side_effect=outage
+        ):
+            with self.assertRaises(NetworkError):
+                run("RP01")
+
+    def test_cli_materializes_initial_lineage_zero_effect_receipt_then_fails_closed(self):
+        lifecycle = {
+            "project": "RP01",
+            "result": _PROVIDER_READ_UNAVAILABLE_RESULT,
+            "current_authority_event_id": "RP01-AUTH-OUTAGE",
+            "external_effects_dispatched": 0,
+            "new_tasks_or_sessions_created": 0,
+            "safe_to_blind_retry": False,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            previous = os.getcwd()
+            os.chdir(directory)
+            try:
+                with patch("ues.rp_authority_runtime.run", return_value=lifecycle):
+                    rc = main(["RP01"])
+                initial = json.loads(Path("initial-lineage-result.json").read_text(encoding="utf-8"))
+            finally:
+                os.chdir(previous)
+
+        self.assertEqual(rc, _PROVIDER_READ_UNAVAILABLE_EXIT)
+        self.assertEqual(initial["result"], "INITIAL_LINEAGE_RUNTIME_BLOCKED_PROVIDER_READ_UNAVAILABLE")
+        self.assertEqual(initial["external_effects_dispatched"], 0)
+        self.assertEqual(initial["new_tasks_or_sessions_created"], 0)
+        self.assertFalse(initial["provider_write_attempted"])
+        self.assertFalse(initial["safe_to_blind_retry"])
+        self.assertEqual(initial["authority_event_id"], "RP01-AUTH-OUTAGE")
 
     def test_non_rp_project_is_rejected(self):
         with self.assertRaises(ValueError):
