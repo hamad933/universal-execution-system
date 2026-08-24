@@ -111,6 +111,25 @@ def _persist_health_with_runtime_binding(
     return persist
 
 
+def _promote_effect_counts(result: dict[str, Any]) -> dict[str, Any]:
+    """Expose bounded effect counters at the runtime envelope boundary.
+
+    The counters already exist inside V2 summary. Promoting them makes durable
+    control-plane receipts able to prove zero/nonzero effects without parsing an
+    implementation-specific nested payload. Missing counters remain missing rather
+    than being guessed.
+    """
+
+    summary = result.get("summary")
+    if not isinstance(summary, Mapping):
+        return result
+    for key in ("external_effects_dispatched", "new_tasks_or_sessions_created"):
+        value = summary.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and key not in result:
+            result[key] = value
+    return result
+
+
 def run(project: str) -> dict[str, Any]:
     runtime_binding = runtime_binding_from_env()
     original = legacy._persist_health
@@ -119,6 +138,7 @@ def run(project: str) -> dict[str, Any]:
         result = dict(current.run(project))
     finally:
         legacy._persist_health = original
+    _promote_effect_counts(result)
     result["observed_runtime_binding"] = runtime_binding
     result["runtime_binding_grants_authority"] = False
     result["observability_schema_version"] = SCHEMA_VERSION
