@@ -4,7 +4,7 @@ import json
 import unittest
 
 from ues.provider_inventory import inventory_provider_sessions
-from ues.provider_observer import ProjectTarget
+from ues.provider_targets import ProjectTarget
 
 
 class FakeClient:
@@ -14,12 +14,14 @@ class FakeClient:
                 "name": "sessions/cep-secret-id",
                 "normalizedState": "AWAITING_USER_FEEDBACK",
                 "sourceIdentifier": "sources/cep",
+                "sourceStartingBranch": "work/cep-w04-parent-reconciliation-r02",
                 "title": "CEP-W04-R03: hidden title",
             },
             {
                 "name": "sessions/gs-secret-id",
                 "normalizedState": "COMPLETED",
                 "sourceIdentifier": "sources/gs",
+                "sourceStartingBranch": "review/gs-solutions",
                 "title": "GS hidden title",
             },
         ]
@@ -72,6 +74,8 @@ class ProviderInventoryTests(unittest.TestCase):
         self.assertEqual(result["attention_required_count"], 2)
         self.assertEqual(result["project_state_counts"]["CEP"], {"AWAITING_USER_FEEDBACK": 1})
         self.assertEqual(result["project_state_counts"]["GS"], {"COMPLETED": 1})
+        cep = next(item for item in result["observations"] if item["project"] == "CEP")
+        self.assertEqual(cep["starting_branch"], "work/cep-w04-parent-reconciliation-r02")
         serialized = json.dumps(result, sort_keys=True)
         self.assertNotIn("cep-secret-id", serialized)
         self.assertNotIn("gs-secret-id", serialized)
