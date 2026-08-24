@@ -5,7 +5,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PARENT = ROOT / ".github" / "workflows" / "ues-parent-controller-control-queue.yml"
+PARENT = ROOT / ".github" / "workflows" / "ues-parent-controller-dispatch.yml"
+VALIDATE = ROOT / ".github" / "workflows" / "validate.yml"
 RP_READONLY = ROOT / ".github" / "workflows" / "ues-rp-readonly-runtime.yml"
 RP_AUTHORITY = ROOT / ".github" / "workflows" / "ues-rp-authority-lifecycle.yml"
 PORTFOLIO = ROOT / ".github" / "workflows" / "ues-bounded-existing-session.yml"
@@ -15,6 +16,7 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.parent = PARENT.read_text(encoding="utf-8")
+        cls.validate = VALIDATE.read_text(encoding="utf-8")
         cls.rp_readonly = RP_READONLY.read_text(encoding="utf-8")
         cls.rp_authority = RP_AUTHORITY.read_text(encoding="utf-8")
         cls.portfolio = PORTFOLIO.read_text(encoding="utf-8")
@@ -33,11 +35,12 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
         self.assertNotIn("max-parallel: 4", self.rp_readonly)
         self.assertNotIn("max-parallel: 4", self.rp_authority)
 
-    def test_parent_queue_publishes_sanitized_durable_receipt(self):
+    def test_parent_dispatch_publishes_sanitized_durable_receipt(self):
         self.assertIn("issues: write", self.parent)
         self.assertIn("UES_PARENT_CONTROLLER_RECEIPT_V1", self.parent)
         self.assertIn("Publish durable Parent Controller receipt", self.parent)
-        self.assertIn("issue_number: Number('${{ needs.preflight.outputs.control_pr_number }}')", self.parent)
+        self.assertIn("CONTROL_PR_NUMBER: ${{ needs.preflight.outputs.control_pr_number }}", self.parent)
+        self.assertIn("issue_number: prNumber", self.parent)
         self.assertIn("external_effects_dispatched", self.parent)
         self.assertIn("new_tasks_or_sessions_created", self.parent)
         self.assertIn("effect_evidence_complete", self.parent)
@@ -51,16 +54,18 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
         self.assertNotIn("current_authority", receipt_section)
         self.assertNotIn("JULES_API_KEY", receipt_section)
 
-    def test_comment_trigger_is_only_exact_head_wakeup_not_authority(self):
-        self.assertIn("issue_comment:", self.parent)
-        self.assertIn("/^\\/ues-parent submit head=([0-9a-f]{40})$/i", self.parent)
-        self.assertIn("OWNER_COMMENT_HEAD_BINDING", self.parent)
-        self.assertNotIn("/ues-parent submit authority=", self.parent)
-        self.assertNotIn("/ues-parent submit task=", self.parent)
+    def test_validate_relay_is_secretless_wakeup_not_authority(self):
+        relay = self.validate.split("\n  parent-controller-relay:\n", 1)[1]
+        self.assertIn("actions: write", relay)
+        self.assertIn("github.rest.actions.createWorkflowDispatch", relay)
+        self.assertIn("workflow_id: 'ues-parent-controller-dispatch.yml'", relay)
+        self.assertNotIn("JULES_API_KEY", relay)
+        self.assertNotIn("UES_CURRENT_AUTHORITY_JSON", relay)
+        self.assertNotIn("contents: write", relay)
 
     def test_runtime_drift_check_still_precedes_secret_effect_step(self):
         drift = self.parent.index("Reverify validated runtime is still current before effects")
-        effect = self.parent.index("Run authority-gated project lifecycle and guarded initial-lineage runtime")
+        effect = self.parent.index("Run authority-gated lifecycle and guarded initial-lineage runtime")
         self.assertLess(drift, effect)
         pre_effect = self.parent[:effect]
         self.assertNotIn("JULES_API_KEY", pre_effect)
