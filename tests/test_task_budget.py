@@ -4,7 +4,7 @@ from ues.task_budget import evaluate_new_task_gate, evaluate_task_budget
 
 
 class TaskBudgetTests(unittest.TestCase):
-    def test_lifetime_uncertainty_fails_closed_even_with_small_enumeration(self):
+    def test_lifetime_uncertainty_fails_closed_by_default(self):
         budget = evaluate_task_budget(
             project="CEP",
             ceiling=20,
@@ -18,19 +18,44 @@ class TaskBudgetTests(unittest.TestCase):
         self.assertFalse(budget["budget_allows_new_task"])
         self.assertFalse(budget["current_enumeration_proves_lifetime_consumption"])
 
-    def test_lifetime_unknown_means_no_new_task_even_with_parent_gate(self):
+    def test_gs_style_owner_policy_does_not_freeze_on_unknown_history_alone(self):
         budget = evaluate_task_budget(
             project="GS",
-            ceiling=20,
-            reserve=3,
+            ceiling=40,
+            reserve=0,
             lifetime_consumption_known=False,
-            proven_lifetime_used=None,
-            current_enumerated_tasks=1,
+            proven_lifetime_used=5,
+            current_enumerated_tasks=5,
+            unknown_lifetime_policy="ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+            hard_ceiling_reached=False,
         )
-        gate = evaluate_new_task_gate(budget, parent_gate_satisfied=True)
-        self.assertFalse(gate["allowed"])
-        self.assertEqual(gate["authority"], "PARENT_ONLY")
-        self.assertFalse(gate["automatic_creation"])
+        self.assertEqual(
+            budget["state"],
+            "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_LIFETIME",
+        )
+        self.assertTrue(budget["budget_allows_new_task"])
+        self.assertIsNone(budget["safe_remaining"])
+        self.assertEqual(budget["proven_floor_remaining"], 35)
+        gate = evaluate_new_task_gate(
+            budget,
+            parent_gate_satisfied=True,
+            automatic_creation_authorized=True,
+        )
+        self.assertTrue(gate["allowed"])
+        self.assertTrue(gate["automatic_creation"])
+
+    def test_direct_hard_ceiling_always_stops_creation(self):
+        budget = evaluate_task_budget(
+            project="GS",
+            ceiling=40,
+            reserve=0,
+            lifetime_consumption_known=False,
+            proven_lifetime_used=40,
+            unknown_lifetime_policy="ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+            hard_ceiling_reached=True,
+        )
+        self.assertEqual(budget["state"], "DIRECT_HARD_CEILING_REACHED")
+        self.assertFalse(budget["budget_allows_new_task"])
 
     def test_proven_usage_respects_reserve(self):
         budget = evaluate_task_budget(
