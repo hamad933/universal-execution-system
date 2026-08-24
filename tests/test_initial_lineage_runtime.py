@@ -64,8 +64,9 @@ class InitialLineageRuntimeTests(unittest.TestCase):
         self.assertEqual(_dynamic_provider_starting_branch(role), "main")
         self.assertIsNone(_dynamic_role_config(authority, workstream="W12", role="WRITER"))
         self.assertIsNone(_dynamic_role_config(authority, workstream="W11", role="REVIEWER"))
-        with self.assertRaises(ValueError):
-            _dynamic_provider_starting_branch({})
+        for invalid in ({}, {"provider_starting_branch": 123}, {"provider_starting_branch": ""}):
+            with self.assertRaises(ValueError):
+                _dynamic_provider_starting_branch(invalid)
 
     def test_complete_writer_task_contract_is_required(self):
         task = self.writer_task()
@@ -91,6 +92,32 @@ class InitialLineageRuntimeTests(unittest.TestCase):
         empty_write["write_scope"] = []
         with self.assertRaises(ValueError):
             _validate_task_spec(empty_write, role="WRITER")
+
+    def test_task_contract_is_schema_closed_type_strict_and_unambiguous(self):
+        unknown = self.writer_task()
+        unknown["extra_instructions"] = "widen scope"
+        with self.assertRaises(ValueError):
+            _validate_task_spec(unknown, role="WRITER")
+
+        non_text_scope = self.writer_task()
+        non_text_scope["write_scope"] = [123]
+        with self.assertRaises(ValueError):
+            _validate_task_spec(non_text_scope, role="WRITER")
+
+        non_text_objective = self.writer_task()
+        non_text_objective["objective"] = 123
+        with self.assertRaises(ValueError):
+            _validate_task_spec(non_text_objective, role="WRITER")
+
+        conflicting_alias = self.writer_task()
+        conflicting_alias["writeScope"] = ["other/**"]
+        with self.assertRaises(ValueError):
+            _validate_task_spec(conflicting_alias, role="WRITER")
+
+        duplicate_validation = self.writer_task()
+        duplicate_validation["tests"] = ["another check"]
+        with self.assertRaises(ValueError):
+            _validate_task_spec(duplicate_validation, role="WRITER")
 
     def test_reviewer_and_assurance_contracts_are_explicitly_read_only(self):
         for role in ("REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"):
