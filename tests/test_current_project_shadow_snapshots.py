@@ -3,16 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
+from ues.policy_resolution import resolve_execution_policy
 from ues.project_adapter import load_project_adapter
 from ues.project_shadow import evaluate_project_shadow
 from ues.routing import route_reviewer_to_writer
 
 
 class CurrentProjectShadowSnapshotsTests(unittest.TestCase):
-    """Sanitized regression of directly reconstructed GS/CEP control facts.
+    """Regression of authority separation across stable adapters and current policy.
 
-    These inputs are snapshot evidence for decision comparison, not a replacement
-    for Drive/GitHub/provider truth and not a live-state cache.
+    Current governed facts are supplied explicitly to policy resolution. They are
+    not copied into the committed adapter and never make SHADOW mutation-capable.
     """
 
     @classmethod
@@ -20,45 +21,69 @@ class CurrentProjectShadowSnapshotsTests(unittest.TestCase):
         cls.gs = load_project_adapter(Path("adapters/gs.json"))
         cls.cep = load_project_adapter(Path("adapters/cep.json"))
 
-    def test_gs_current_shape_allows_unknown_history_policy_but_shadow_still_cannot_create(self):
-        result = evaluate_project_shadow(
+    @staticmethod
+    def gs_current_authority() -> dict:
+        return {
+            "current": True,
+            "authority_event_id": "GS-CURRENT-TEST",
+            "task_budget": {
+                "ceiling": 40,
+                "unknown_lifetime_capacity": "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+            },
+            "generation_policy": {"necessary_generation_authorized": False},
+        }
+
+    def test_gs_current_policy_allows_unknown_history_capacity_without_adapter_mutation_authority(self):
+        shadow = evaluate_project_shadow(
             self.gs,
             evidence_observations={"core_ci": {}},
-            task_budget_observation={
+        )
+        resolved = resolve_execution_policy(
+            adapter=self.gs.raw,
+            governed_authority=self.gs_current_authority(),
+            provider_observation={
                 "lifetime_consumption_known": False,
                 "current_enumerated_tasks": 5,
             },
-        )
-        self.assertEqual(result["activation_mode"], "SHADOW")
-        self.assertFalse(result["mutation_allowed"])
-        self.assertFalse(result["evidence"]["core_ci"]["complete"])
+        ).to_dict()
+
+        self.assertEqual(shadow["activation_mode"], "SHADOW")
+        self.assertFalse(shadow["mutation_allowed"])
+        self.assertFalse(shadow["evidence"]["core_ci"]["complete"])
         self.assertIn(
             "missing_required_evidence:GITHUB_ACTIONS:CI:validate",
-            result["evidence"]["core_ci"]["issues"],
+            shadow["evidence"]["core_ci"]["issues"],
         )
         self.assertEqual(
-            result["task_budget"]["state"],
+            resolved["budget"]["state"],
             "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_LIFETIME",
         )
-        self.assertTrue(result["task_budget"]["budget_allows_new_task"])
-        self.assertFalse(result["new_task_gate"]["allowed"])
-        self.assertEqual(result["external_effects_dispatched"], 0)
-        self.assertEqual(result["tasks_or_sessions_created"], 0)
+        self.assertTrue(resolved["budget"]["budget_allows_new_task"])
+        self.assertFalse(resolved["generation_allowed"])
+        self.assertEqual(resolved["ceiling"], 40)
+        self.assertEqual(
+            resolved["provenance"]["ceiling"],
+            "governed_authority.task_budget.ceiling",
+        )
+        self.assertFalse(resolved["provenance"]["adapter_mutable_snapshot_is_authority"])
+        self.assertEqual(shadow["external_effects_dispatched"], 0)
+        self.assertEqual(shadow["tasks_or_sessions_created"], 0)
 
-    def test_gs_direct_enumeration_at_ceiling_blocks_budget_even_under_owner_unknown_policy(self):
-        result = evaluate_project_shadow(
-            self.gs,
-            task_budget_observation={
+    def test_gs_direct_enumeration_at_current_ceiling_blocks_even_when_unknown_history_policy_allows(self):
+        resolved = resolve_execution_policy(
+            adapter=self.gs.raw,
+            governed_authority=self.gs_current_authority(),
+            provider_observation={
                 "lifetime_consumption_known": False,
                 "current_enumerated_tasks": 40,
             },
-        )
+        ).to_dict()
         self.assertEqual(
-            result["task_budget"]["state"],
+            resolved["budget"]["state"],
             "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED",
         )
-        self.assertFalse(result["task_budget"]["budget_allows_new_task"])
-        self.assertFalse(result["new_task_gate"]["allowed"])
+        self.assertFalse(resolved["budget"]["budget_allows_new_task"])
+        self.assertFalse(resolved["generation_allowed"])
 
     def test_gs_unproven_writer_binding_cannot_receive_correction(self):
         routed = route_reviewer_to_writer(
@@ -106,9 +131,6 @@ class CurrentProjectShadowSnapshotsTests(unittest.TestCase):
                     }
                 }
             },
-            task_budget_observation={
-                "lifetime_consumption_known": False,
-            },
             waiting_observations=[
                 {
                     "provider_state": "AWAITING_USER_FEEDBACK",
@@ -126,10 +148,7 @@ class CurrentProjectShadowSnapshotsTests(unittest.TestCase):
             ],
         )
         waiting = result["waiting"][0]
-        self.assertEqual(
-            waiting["classification"]["waiting_class"],
-            "POLICY_RESOLVABLE",
-        )
+        self.assertEqual(waiting["classification"]["waiting_class"], "POLICY_RESOLVABLE")
         self.assertFalse(waiting["classification"]["keyword_shortcut_used"])
         self.assertEqual(waiting["route"]["authority"], "PARENT_REQUIRED")
         self.assertEqual(waiting["route"]["action"], "ESCALATE_PARENT")
