@@ -23,27 +23,32 @@ class FakeClient:
                 "title": "GS hidden title",
             },
         ]
-        self.sources = {
-            "sources/cep": {
+        self.sources = [
+            {
+                "name": "sources/cep",
                 "explicitRepositoryIdentity": True,
                 "repository": "hamad933/Cybersecurity-Education-Platform",
             },
-            "sources/gs": {
+            {
+                "name": "sources/gs",
                 "explicitRepositoryIdentity": True,
                 "repository": "hamad933/GS-2",
             },
-        }
+        ]
+        self.session_page_size = None
+        self.source_page_size = None
 
     def list_sessions(self, *, page_size=100):
-        self.page_size = page_size
+        self.session_page_size = page_size
         return list(self.sessions)
 
-    def get_source(self, source):
-        return dict(self.sources[source])
+    def list_sources(self, *, page_size=100):
+        self.source_page_size = page_size
+        return list(self.sources)
 
 
 class ProviderInventoryTests(unittest.TestCase):
-    def test_inventory_is_read_only_sanitized_and_project_partitioned(self):
+    def test_inventory_is_read_only_sanitized_project_partitioned_and_batched(self):
         targets = (
             ProjectTarget("GS", "GS", "hamad933/GS-2", "GS_SHADOW_V2"),
             ProjectTarget(
@@ -55,8 +60,14 @@ class ProviderInventoryTests(unittest.TestCase):
         )
         client = FakeClient()
         result = inventory_provider_sessions(client=client, targets=targets)
-        self.assertEqual(client.page_size, 100)
+        self.assertEqual(client.session_page_size, 100)
+        self.assertEqual(client.source_page_size, 100)
+        self.assertEqual(
+            result["provider_read_shape"],
+            "ONE_PAGINATED_SESSION_LIST_PLUS_ONE_PAGINATED_SOURCE_LIST",
+        )
         self.assertEqual(result["account_session_count"], 2)
+        self.assertEqual(result["provider_source_count"], 2)
         self.assertEqual(result["monitored_session_count"], 2)
         self.assertEqual(result["attention_required_count"], 2)
         self.assertEqual(result["project_state_counts"]["CEP"], {"AWAITING_USER_FEEDBACK": 1})
