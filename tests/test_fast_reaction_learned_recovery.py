@@ -23,7 +23,7 @@ class RecoveryCatalogTests(unittest.TestCase):
         result = plan_recovery({
             "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
             "candidate_sha": "a"*40, "work_remaining": True,
-            "consecutive_noop_writer_successors": 2,
+            "consecutive_noop_writer_successors": 2, "noop_evidence_authoritative": True,
             "new_session_budget_safe": True, "replacement_prompt_ready": True,
             "active_duplicate_absent": True,
         })
@@ -35,7 +35,7 @@ class RecoveryCatalogTests(unittest.TestCase):
         result = plan_recovery({
             "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
             "candidate_sha": "a"*40, "work_remaining": True,
-            "consecutive_noop_writer_successors": 2,
+            "consecutive_noop_writer_successors": 2, "noop_evidence_authoritative": True,
             "new_session_budget_safe": False, "replacement_prompt_ready": True,
         })
         self.assertEqual(result["action"], "PREPARE_SAME_LINEAGE_REPLACEMENT")
@@ -44,11 +44,23 @@ class RecoveryCatalogTests(unittest.TestCase):
         self.assertIn("TASK_BUDGET_OR_NEW_SESSION_AUTHORITY", result["stop_gate"])
         self.assertFalse(result["external_effect"])
 
+    def test_repeated_writer_noop_claim_requires_authoritative_delta_evidence(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
+            "candidate_sha": "a"*40, "work_remaining": True,
+            "consecutive_noop_writer_successors": 2,
+            "new_session_budget_safe": True, "replacement_prompt_ready": True,
+            "active_duplicate_absent": True,
+        })
+        self.assertEqual(result["action"], "RECONCILE_AUTHORITATIVE_WRITER_DELTA_EVIDENCE")
+        self.assertEqual(result["root_cause"], "REPEATED_WRITER_NOOP_EVIDENCE_UNPROVEN")
+        self.assertFalse(result["external_effect"])
+
     def test_single_writer_noop_does_not_force_replacement(self):
         result = plan_recovery({
             "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
             "candidate_sha": "a"*40, "ci_verdict": "FAIL", "work_remaining": True,
-            "consecutive_noop_writer_successors": 1,
+            "consecutive_noop_writer_successors": 1, "noop_evidence_authoritative": True,
             "new_session_budget_safe": True, "replacement_prompt_ready": True,
             "active_duplicate_absent": True,
         })
