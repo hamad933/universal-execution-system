@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ues-parent-controller-control-queue-${{ github.repository }}
+  group: ues-parent-controller-control-queue-${{ inputs.control_head }}
   cancel-in-progress: false
 
 jobs:
