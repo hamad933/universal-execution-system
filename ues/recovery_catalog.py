@@ -42,6 +42,7 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
         )
     except (TypeError, ValueError):
         consecutive_noop_writer_successors = 0
+    noop_evidence_authoritative = observation.get("noop_evidence_authoritative") is True
 
     # A proven binding identifies the intended lineage session, but does not by
     # itself prove that no other active provider session collides with a new
@@ -160,6 +161,12 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
                     duplicate_absent=active_duplicate_absent,
                 )
             if work_remaining and consecutive_noop_writer_successors >= 2:
+                if not noop_evidence_authoritative:
+                    return _decision(
+                        "RECONCILE_AUTHORITATIVE_WRITER_DELTA_EVIDENCE",
+                        root_cause="REPEATED_WRITER_NOOP_EVIDENCE_UNPROVEN",
+                        executable=True,
+                    )
                 return _replacement_decision(
                     budget_safe,
                     replacement_prompt_ready,
