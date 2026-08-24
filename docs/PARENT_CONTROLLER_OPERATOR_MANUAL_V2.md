@@ -42,7 +42,7 @@ fresh Project Current Authority
 → exact live UES main + semantic Current Authority validation
 → separate authority-gated execute job
 → existing lifecycle + guarded initial-lineage runtime
-→ durable sanitized receipt
+→ required durable sanitized receipt artifact
 → StateStore/provider/project post-readback
 ```
 
@@ -65,7 +65,7 @@ Internally:
 7. After `core` succeeds, the read-only Parent Controller preflight independently verifies the persistent PR/head/Owner/path, resolves live UES `main`, checks semantic authority, and suppresses already-receipted requests.
 8. Only after that preflight does a separate execute job receive `contents:write` and `JULES_API_KEY`.
 9. The execute job re-reads UES `main` immediately before effects, then reuses the existing governed lifecycle and guarded initial-lineage runtimes.
-10. Read the durable receipt, StateStore, provider, project GitHub/CI/artifacts, then continue project adjudication.
+10. Consume the required result artifact containing the sanitized receipt plus compact runtime results, then verify StateStore, provider, project GitHub/CI/artifacts and continue project adjudication. A PR comment is only a best-effort UI projection and is never the canonical execution receipt.
 
 Do not ask the Owner to open GitHub Actions, paste `current_authority_json`, manage Jules IDs, or trigger a second workflow.
 
@@ -164,9 +164,16 @@ lifecycle_runtime_observed
 
 These are the existing governed runtimes. Ingress does not reimplement or weaken their Current Authority, task-budget, duplicate, UNKNOWN, idempotency, exact-binding, or provider-readback checks.
 
-## 7. Durable receipt
+## 7. Durable receipt and evidence
 
-Every executed request should produce `UES_PARENT_CONTROLLER_RECEIPT_V1` on the persistent control PR. It is sanitized and binds at minimum:
+Every executed request must render `UES_PARENT_CONTROLLER_RECEIPT_V1` and include it in the required result artifact together with:
+
+- `parent-request-metadata.json`;
+- `lifecycle-result.json`;
+- `initial-lineage-result.json`;
+- `parent-controller-receipt.md`.
+
+The receipt is sanitized and binds at minimum:
 
 - request ID and digest;
 - authority event ID;
@@ -182,7 +189,9 @@ Every executed request should produce `UES_PARENT_CONTROLLER_RECEIPT_V1` on the 
 - `raw_session_ids_persisted=false`;
 - `secret_material_persisted=false`.
 
-Receipt suppression prevents an already-receipted identical request from executing again. A missing receipt is **not** proof that an effect failed; reconcile StateStore/provider/GitHub before deciding whether any fresh request is safe.
+The result artifact is the canonical durable in-workflow receipt. A PR comment may project the same receipt for convenience, but that projection is best-effort and its failure must not convert a successful UES execution into a failed Parent Controller cycle.
+
+Receipt suppression prevents an already-receipted identical request from executing again when a matching receipt is observable through the configured receipt projection. Regardless of projection state, a missing PR comment is **not** proof that an effect failed; reconcile the result artifact, StateStore, provider, and GitHub before deciding whether any fresh request is safe.
 
 ## 8. Parent Controller task generation
 
@@ -241,13 +250,13 @@ A request commit or successful validation is not proof of a provider effect.
 ```text
 REQUEST_COMMIT
 != VALIDATION_PASS
-!= UES_EXECUTE_RECEIPT
+!= UES_EXECUTE_RECEIPT_ARTIFACT
 != PROVIDER_ACK
 != SESSION_CREATED
 != PROJECT_ACCEPTANCE
 ```
 
-Use direct evidence: exact validation run/job, UES durable receipt, StateStore receipt, provider readback, exact project SHA/PR/CI/artifacts, and fresh project authority. Parent Controller remains the final project adjudicator.
+Use direct evidence: exact validation run/job, UES durable receipt artifact, StateStore receipt, provider readback, exact project SHA/PR/CI/artifacts, and fresh project authority. Parent Controller remains the final project adjudicator.
 
 ## 13. Persistent queue lifecycle
 
@@ -266,13 +275,13 @@ Do not merge the persistent control PR. It is transport state, not an integratio
 
 If failure occurs before the authority-gated execute job:
 
-- read the exact `Validate Universal Core` core/preflight result and durable pre-effect receipt;
+- read the exact `Validate Universal Core` core/preflight result and available pre-effect evidence;
 - do not bypass UES;
 - refresh live UES main and Project Current Authority if stale;
 - reconcile whether any prior receipt/effect exists;
 - submit a fresh request only after prior post-state is classified.
 
-If the execute job reaches provider/StateStore and fails or becomes UNKNOWN, use existing UES reconciliation. Never create a fresh request merely to force a retry.
+If the execute job reaches provider/StateStore and fails or becomes UNKNOWN, use the required result artifact plus existing UES reconciliation. Never create a fresh request merely to force a retry.
 
 A blocked project transport/effect lane must not freeze unrelated authorized projects.
 
@@ -288,6 +297,7 @@ Final operating principle:
 AUTOMATE THE MECHANICS
 PRESERVE PROJECT AUTHORITY
 ONE INLINE VALIDATED PARENT-CONTROLLER PIPELINE
+DURABLE ARTIFACT RECEIPT / BEST-EFFORT UI PROJECTION
 NO MANUAL WAKEUP OR CROSS-WORKFLOW HANDOFF
 KEEP EXACT-STATE SAFETY
 REUSE BEFORE CREATE
