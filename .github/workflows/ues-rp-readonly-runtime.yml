@@ -2,6 +2,9 @@ name: UES RP Read-Only Runtime
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
   schedule:
     - cron: "7,22,37,52 * * * *"
 
@@ -73,7 +76,7 @@ jobs:
           UES_CURRENT_AUTHORITY_JSON: ""
           UES_WAKEUP_EVENT_ID: ""
           UES_WAKEUP_EVENT_TYPE: ""
-          UES_WAKEUP_EVENT_SOURCE: rp-readonly-schedule
+          UES_WAKEUP_EVENT_SOURCE: rp-readonly-${{ github.event_name }}
           UES_WAKEUP_REPOSITORY: ""
           UES_WAKEUP_WORKSTREAM: ""
           UES_WAKEUP_SHA: ""
