@@ -38,14 +38,14 @@ The canonical Parent Controller path is now:
 fresh project Current Authority
 → update only .ues/parent-controller-request.json on ues-parent-control
 → Validate Universal Core exact-head core PASS
-→ secretless trusted dispatch relay
-→ default-branch UES Parent Controller Trusted Dispatch
+→ secretless same-run relay verification
+→ trusted reusable receiver inside the same Validate run
 → revalidate control PR/head/Owner/validation/current UES main
 → existing authority-gated lifecycle + guarded initial-lineage runtime
 → durable sanitized receipt + StateStore/provider readback
 ```
 
-There is intentionally **one automatic Parent Controller transport path**. Legacy Parent Controller `pull_request_target` / comment submission triggers are retired. `ues-control` remains a separate v1 format-fix mechanism and is not Parent Controller lifecycle ingress.
+There is intentionally **one automatic Parent Controller transport path**. The Parent Controller path does not depend on a second GitHub event, a manual wakeup comment, `pull_request_target`, or connector-side `workflow_dispatch` delivery. `ues-control` remains a separate v1 format-fix mechanism and is not Parent Controller lifecycle ingress.
 
 The Parent Controller performs one semantic operation:
 
@@ -61,9 +61,10 @@ Internally:
 4. Replace only `.ues/parent-controller-request.json` on `ues-parent-control`.
 5. Do not manually post a wakeup comment and do not manually invoke Jules.
 6. Exact-head `Validate Universal Core` verifies the request commit/repository candidate.
-7. Only after the core validation job succeeds, a secretless relay with `actions: write` dispatches the trusted default-branch receiver.
-8. The receiver independently revalidates the request and live runtime before any provider secret is available.
-9. Read the durable receipt, StateStore, provider, project GitHub/CI/artifacts, then continue project adjudication.
+7. Only after the `core` job succeeds, a secretless relay verifies the exact Owner/Draft/same-repository/single-request-file boundary.
+8. A trusted reusable receiver is then called inside the same Validate run with the exact control head, validation run ID, and persistent control PR number.
+9. The receiver independently revalidates the request and live runtime before any provider secret is used.
+10. Read the durable receipt, StateStore, provider, project GitHub/CI/artifacts, then continue project adjudication.
 
 Do not ask the Owner to open GitHub Actions and paste `current_authority_json`.
 
@@ -113,7 +114,7 @@ If a future project's authority envelope contains material unsuitable for UES re
 
 ## 5. Validation and trust boundaries
 
-### A. Exact-head validation relay
+### A. Exact-head same-run relay
 
 The relay runs only after the `core` job of `Validate Universal Core` succeeds and only for the exact same-repository `ues-parent-control` Draft PR. It verifies:
 
@@ -124,9 +125,9 @@ The relay runs only after the `core` job of `Validate Universal Core` succeeds a
 - PR contains exactly `.ues/parent-controller-request.json` as its changed path;
 - exact control head is Owner-authored and Owner-committed and changes exactly that path.
 
-The relay has no `JULES_API_KEY`, no Current Authority payload, and no contents-write permission. Its only mutation capability is bounded `actions: write` to dispatch one named trusted workflow on the default branch.
+The relay has no `JULES_API_KEY`, no Current Authority payload, no contents-write permission, and no `actions: write`. It does not create a second event. Its only role is to establish the trusted same-run boundary for the reusable receiver.
 
-### B. Trusted default-branch receiver
+### B. Trusted same-run reusable receiver
 
 The receiver independently revalidates:
 
@@ -141,13 +142,13 @@ The receiver independently revalidates:
 - no secret-bearing request keys;
 - no existing durable receipt already confirms the same request ID + digest + runtime SHA.
 
-The control branch is always data. It is never checked out or executed.
+The receiver is invoked through `workflow_call` from the trusted Validate job and is serialized by exact `control_head`, while the effect-capable project lifecycle remains independently serialized by project. The control branch is always data; it is never checked out or executed.
 
 Immediately before the effect boundary, the receiver reads UES `main` again. If it moved, execution fails closed and a fresh request must be reconstructed rather than silently using stale runtime code.
 
 ## 6. Effect boundary
 
-Only after all preflight checks succeed does the execute job receive `JULES_API_KEY` and `contents: write` for the UES StateStore.
+Only after all preflight checks succeed does the execute job use `JULES_API_KEY` and `contents: write` for the UES StateStore. Declaring the reusable-workflow secret contract does not make the secret available to preflight logic; actual secret use remains in the execute job after runtime revalidation.
 
 For `RP01–RP04`:
 
@@ -166,15 +167,18 @@ lifecycle_runtime_observed
 
 These are the existing governed runtimes. Ingress does not reimplement or weaken their Current Authority, task-budget, duplicate, UNKNOWN, idempotency, exact-binding, or provider-readback checks.
 
-## 7. Durable receipt
+## 7. Durable receipts
 
-Every executed request should produce `UES_PARENT_CONTROLLER_RECEIPT_V1` on the persistent control PR. It is sanitized and binds at minimum:
+The reusable receiver publishes a pre-effect `UES_PARENT_CONTROLLER_RECEIVER_STARTED_V1` receipt before preflight, so receiver entry is directly visible in the same Validate run. A preflight failure publishes `UES_PARENT_CONTROLLER_PREFLIGHT_FAILURE_V1` with no claim of provider effect.
+
+Every executed request should then produce `UES_PARENT_CONTROLLER_RECEIPT_V1` on the persistent control PR. It is sanitized and binds at minimum:
 
 - request ID and digest;
 - authority event ID;
 - project;
 - exact UES runtime SHA;
 - validation run ID;
+- same-run receiver run ID;
 - execution outcome;
 - lifecycle result;
 - initial-lineage result;
@@ -234,22 +238,22 @@ Parallelize independent project lanes aggressively when authority, isolation, ta
 
 Use one writer per write domain. Reviewer/assurance lanes can run broadly in parallel when candidates are frozen and independent.
 
-UES transport serialization does not mean the whole project must serialize; it only protects conflicting transport/effect boundaries.
+The reusable receiver transport concurrency is scoped to exact control-head identity rather than one repository-global mutex; effect-capable lifecycle work remains serialized only where its project/write domain requires it.
 
 ## 12. Evidence and adjudication
 
-A request commit or dispatch is not proof of a provider effect.
+A request commit or validation result is not proof of a provider effect.
 
 ```text
 REQUEST_COMMIT
 != VALIDATION_PASS
-!= DISPATCH_ACCEPTED
+!= RECEIVER_STARTED
 != PROVIDER_ACK
 != SESSION_CREATED
 != PROJECT_ACCEPTANCE
 ```
 
-Use direct evidence: exact validation run/job, trusted dispatch receipt, StateStore receipt, provider readback, exact project SHA/PR/CI/artifacts, and fresh project authority. Parent Controller remains the final project adjudicator.
+Use direct evidence: exact validation run/job, same-run receiver receipt, final UES receipt, StateStore receipt, provider readback, exact project SHA/PR/CI/artifacts, and fresh project authority. Parent Controller remains the final project adjudicator.
 
 ## 13. Persistent queue lifecycle
 
