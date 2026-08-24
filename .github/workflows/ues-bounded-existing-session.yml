@@ -76,7 +76,7 @@ jobs:
       matrix:
         project: [CEP, GS]
     concurrency:
-      group: ues-lineage-lifecycle-${{ matrix.project }}
+      group: ues-project-lifecycle-${{ matrix.project }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
