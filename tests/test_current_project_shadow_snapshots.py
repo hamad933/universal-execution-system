@@ -20,7 +20,7 @@ class CurrentProjectShadowSnapshotsTests(unittest.TestCase):
         cls.gs = load_project_adapter(Path("adapters/gs.json"))
         cls.cep = load_project_adapter(Path("adapters/cep.json"))
 
-    def test_gs_current_shape_fails_closed_on_missing_ci_and_unknown_task_history(self):
+    def test_gs_current_shape_allows_unknown_history_policy_but_shadow_still_cannot_create(self):
         result = evaluate_project_shadow(
             self.gs,
             evidence_observations={"core_ci": {}},
@@ -38,11 +38,27 @@ class CurrentProjectShadowSnapshotsTests(unittest.TestCase):
         )
         self.assertEqual(
             result["task_budget"]["state"],
-            "UNKNOWN_LIFETIME_CONSUMPTION",
+            "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_LIFETIME",
         )
+        self.assertTrue(result["task_budget"]["budget_allows_new_task"])
         self.assertFalse(result["new_task_gate"]["allowed"])
         self.assertEqual(result["external_effects_dispatched"], 0)
         self.assertEqual(result["tasks_or_sessions_created"], 0)
+
+    def test_gs_direct_enumeration_at_ceiling_blocks_budget_even_under_owner_unknown_policy(self):
+        result = evaluate_project_shadow(
+            self.gs,
+            task_budget_observation={
+                "lifetime_consumption_known": False,
+                "current_enumerated_tasks": 40,
+            },
+        )
+        self.assertEqual(
+            result["task_budget"]["state"],
+            "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED",
+        )
+        self.assertFalse(result["task_budget"]["budget_allows_new_task"])
+        self.assertFalse(result["new_task_gate"]["allowed"])
 
     def test_gs_unproven_writer_binding_cannot_receive_correction(self):
         routed = route_reviewer_to_writer(
