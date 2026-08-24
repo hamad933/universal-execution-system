@@ -80,6 +80,8 @@ def _parse_exact_baseline(task_spec: Mapping[str, Any]) -> tuple[str, str]:
     sha = sha.strip().lower()
     if ref.startswith("refs/heads/"):
         ref = ref[len("refs/heads/") :]
+    elif ref.startswith("refs/"):
+        raise ValueError("task_spec.exact_baseline must reference a branch, not another Git ref namespace")
     if (
         not sep
         or not ref
