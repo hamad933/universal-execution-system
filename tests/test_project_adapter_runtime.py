@@ -108,9 +108,36 @@ class ProjectAdapterRuntimeTests(unittest.TestCase):
         with self.assertRaises(ProjectAdapterError):
             parse_project_adapter(raw)
 
-    def test_unknown_task_capacity_must_fail_closed(self):
+    def test_unknown_task_capacity_rejects_unrecognized_policy(self):
         raw = sample_adapter()
         raw["task_budget"]["unknown_lifetime_capacity"] = "ALLOW"
+        with self.assertRaises(ProjectAdapterError):
+            parse_project_adapter(raw)
+
+    def test_owner_unknown_history_policy_is_config_only_not_mutation_authority(self):
+        raw = sample_adapter()
+        raw["task_budget"].update({
+            "unknown_lifetime_capacity": "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+            "automatic_new_task_creation": True,
+            "owner_new_task_policy": "OWNER_AUTHORIZED_NECESSITY_BASED_NEW_GENERATION",
+            "runtime_budget_preflight_required": True,
+        })
+        adapter = parse_project_adapter(raw)
+        self.assertEqual(
+            adapter.unknown_lifetime_capacity,
+            "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
+        )
+        self.assertTrue(adapter.automatic_new_task_creation)
+        self.assertFalse(adapter.config_grants_mutation_authority)
+        self.assertFalse(adapter.mutation_allowed)
+        self.assertEqual(adapter.default_mode, "SHADOW")
+
+    def test_automatic_task_policy_requires_owner_marker_and_runtime_preflight(self):
+        raw = sample_adapter()
+        raw["task_budget"]["automatic_new_task_creation"] = True
+        with self.assertRaises(ProjectAdapterError):
+            parse_project_adapter(raw)
+        raw["task_budget"]["owner_new_task_policy"] = "OWNER_POLICY"
         with self.assertRaises(ProjectAdapterError):
             parse_project_adapter(raw)
 
