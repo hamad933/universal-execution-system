@@ -22,6 +22,8 @@ SUPPORTED_WAKEUP_TYPES = frozenset({"EXTERNAL_RECONCILIATION_REQUEST"})
 MAX_REQUEST_BYTES = 128 * 1024
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_WORKSTREAM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _ALLOWED_TOP_LEVEL = frozenset(
     {"schema_version", "request_id", "project", "runtime_sha", "current_authority", "wakeup"}
 )
@@ -77,7 +79,7 @@ def validate_parent_controller_request(
     *,
     expected_runtime_sha: str | None = None,
 ) -> dict[str, Any]:
-    """Validate a low-friction Parent Controller request transported by `ues-control`.
+    """Validate a low-friction Parent Controller request transported by `ues-parent-control`.
 
     The request file is transport/routing data only. It cannot grant project
     authority. `current_authority` is passed unchanged to the existing UES
@@ -153,7 +155,11 @@ def validate_parent_controller_request(
         raise ParentControllerRequestError("wakeup.event_id has invalid format")
 
     repository = str(wakeup_raw.get("repository") or "").strip()
+    if repository and not _REPOSITORY.fullmatch(repository):
+        raise ParentControllerRequestError("wakeup.repository has invalid format")
     workstream = str(wakeup_raw.get("workstream") or "").strip()
+    if workstream and not _WORKSTREAM.fullmatch(workstream):
+        raise ParentControllerRequestError("wakeup.workstream has invalid format")
     wakeup_sha = str(wakeup_raw.get("sha") or "").strip().lower()
     if wakeup_sha and not _SHA.fullmatch(wakeup_sha):
         raise ParentControllerRequestError("wakeup.sha must be empty or a full 40-hex commit SHA")
