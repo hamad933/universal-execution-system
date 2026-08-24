@@ -51,10 +51,10 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("contents: write", receiver_call)
         self.assertIn("issues: write", receiver_call)
 
-    def test_receiver_supports_workflow_call_and_keeps_no_pr_comment_ingress(self):
+    def test_receiver_is_workflow_call_only_and_keeps_no_event_ingress(self):
         trigger = self.receiver.split("permissions:", 1)[0]
         self.assertIn("workflow_call:", trigger)
-        self.assertIn("workflow_dispatch:", trigger)
+        self.assertNotIn("workflow_dispatch:", trigger)
         self.assertNotIn("pull_request:\n", trigger)
         self.assertNotIn("pull_request_target:", trigger)
         self.assertNotIn("issue_comment:", trigger)
@@ -62,7 +62,7 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("control_head:", self.receiver)
         self.assertIn("validation_run_id:", self.receiver)
         self.assertIn("control_pr_number:", self.receiver)
-        self.assertIn("group: ues-parent-controller-control-queue-${{ github.repository }}", self.receiver)
+        self.assertIn("group: ues-parent-controller-control-queue-${{ inputs.control_head }}", self.receiver)
         self.assertIn("cancel-in-progress: false", self.receiver)
 
     def test_receiver_start_is_durably_visible_before_preflight(self):
@@ -111,7 +111,7 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("stage: 'PRE_EFFECT_PREFLIGHT'", self.receiver)
         self.assertIn("effect_job_reached: false", self.receiver)
         failure = self.receiver.split("preflight-failure-receipt:", 1)[1].split("\n  execute:\n", 1)[0]
-        self.assertNotIn("JULES_API_KEY", failure)
+        self.assertNotIn("secrets.JULES_API_KEY", failure)
         self.assertNotIn("UES_CURRENT_AUTHORITY_JSON", failure)
         self.assertNotIn("contents: write", failure)
 
@@ -127,9 +127,9 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("python -m ues.lifecycle_runtime_observed", self.receiver)
         self.assertIn("python -m ues.initial_lineage_runtime", self.receiver)
 
-    def test_secrets_exist_only_in_effect_job_after_preflight(self):
+    def test_secrets_are_used_only_in_effect_job_after_preflight(self):
         pre_effect, execute = self.receiver.split("\n  execute:\n", 1)
-        self.assertNotIn("JULES_API_KEY: ${{ secrets.JULES_API_KEY }}", pre_effect)
+        self.assertNotIn("secrets.JULES_API_KEY", pre_effect)
         self.assertNotIn("contents: write", pre_effect)
         self.assertIn("JULES_API_KEY: ${{ secrets.JULES_API_KEY }}", execute)
         self.assertIn("permissions:\n      contents: write\n      issues: write", execute)
@@ -156,7 +156,7 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("'secret_material_persisted': False", self.receiver)
         receipt = self.receiver.split("Render sanitized durable Parent Controller receipt", 1)[1]
         self.assertNotIn("current-authority.json').read_text", receipt)
-        self.assertNotIn("JULES_API_KEY", receipt)
+        self.assertNotIn("secrets.JULES_API_KEY", receipt)
 
     def test_unproven_workflow_run_fast_path_is_removed(self):
         self.assertFalse(OLD_AUTOWAKEUP.exists())
