@@ -43,6 +43,14 @@ class ParentControllerControlQueueWorkflowTests(unittest.TestCase):
         self.assertIn("ref: ${{ steps.control.outputs.runtime_sha }}", self.text)
         self.assertIn("ref: ${{ needs.preflight.outputs.runtime_sha }}", self.text)
 
+    def test_runtime_is_reverified_current_again_immediately_before_effects(self):
+        self.assertIn("Reverify validated runtime is still current before effects", self.text)
+        self.assertIn("EXPECTED_RUNTIME_SHA", self.text)
+        self.assertIn("UES default branch moved after preflight", self.text)
+        reverify = self.text.index("Reverify validated runtime is still current before effects")
+        secret = self.text.index("JULES_API_KEY: ${{ secrets.JULES_API_KEY }}")
+        self.assertLess(reverify, secret)
+
     def test_untrusted_control_branch_is_never_checked_out_or_executed(self):
         self.assertNotIn("ref: ${{ github.event.pull_request.head.sha }}", self.text)
         self.assertNotIn("ref: ${{ github.event.pull_request.head.ref }}", self.text)
