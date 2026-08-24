@@ -18,7 +18,8 @@ class TaskBudgetTests(unittest.TestCase):
             proven_quota_window_used=None,
             current_window_enumerated_tasks=2,
         )
-        self.assertEqual(budget["state"], "UNKNOWN_QUOTA_WINDOW_CONSUMPTION")
+        self.assertEqual(budget["state_v3"], "UNKNOWN_QUOTA_WINDOW_CONSUMPTION")
+        self.assertEqual(budget["state"], "UNKNOWN_LIFETIME_CONSUMPTION")
         self.assertIsNone(budget["safe_remaining"])
         self.assertFalse(budget["budget_allows_new_task"])
         self.assertEqual(budget["budget_basis"], "CURRENT_QUOTA_WINDOW")
@@ -35,8 +36,12 @@ class TaskBudgetTests(unittest.TestCase):
             unknown_quota_window_policy="ALLOW_UNLESS_DIRECT_CEILING_REACHED",
         )
         self.assertEqual(
-            budget["state"],
+            budget["state_v3"],
             "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_QUOTA_WINDOW",
+        )
+        self.assertEqual(
+            budget["state"],
+            "OWNER_POLICY_CAPACITY_AVAILABLE_WITH_UNKNOWN_LIFETIME",
         )
         self.assertTrue(budget["budget_allows_new_task"])
         self.assertIsNone(budget["safe_remaining"])
@@ -132,6 +137,7 @@ class TaskBudgetTests(unittest.TestCase):
         )
         self.assertEqual(budget["safe_remaining"], 98)
         self.assertEqual(budget["observed_used_lower_bound"], 2)
+        self.assertEqual(budget["current_enumerated_tasks"], 2)
 
     def test_missing_provider_timestamp_makes_complete_window_unknown(self):
         now = datetime(2026, 8, 25, 0, 0, tzinfo=timezone.utc)
