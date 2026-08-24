@@ -89,9 +89,10 @@ jobs:
     permissions:
       actions: write
       contents: read
+      issues: write
       pull-requests: read
     steps:
-      - name: Verify exact Owner control request and dispatch trusted receiver
+      - name: Verify exact Owner control request, dispatch, and read back receiver run
         uses: actions/github-script@v7
         env:
           CONTROL_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -147,6 +148,7 @@ jobs:
               return;
             }
 
+            const dispatchWindowStart = Date.now() - 5000;
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -157,4 +159,58 @@ jobs:
                 validation_run_id: String(process.env.VALIDATION_RUN_ID || ''),
                 control_pr_number: String(pr.number),
               },
+            });
+
+            let receiverRun = null;
+            for (let attempt = 0; attempt < 12; attempt += 1) {
+              const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'ues-parent-controller-dispatch.yml',
+                event: 'workflow_dispatch',
+                branch: defaultBranch,
+                per_page: 100,
+              });
+              const candidates = (runs.workflow_runs || []).filter((run) => {
+                const created = Date.parse(run.created_at || '');
+                return Number.isFinite(created) && created >= dispatchWindowStart &&
+                  run.event === 'workflow_dispatch' &&
+                  run.head_branch === defaultBranch &&
+                  run.actor && run.actor.login === context.repo.owner;
+              });
+              if (candidates.length > 1) {
+                core.setFailed('Trusted receiver dispatch readback is ambiguous; multiple new workflow_dispatch runs observed');
+                return;
+              }
+              if (candidates.length === 1) {
+                receiverRun = candidates[0];
+                break;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+            }
+            if (!receiverRun) {
+              core.setFailed('Trusted receiver dispatch was not observed after bounded authoritative readback');
+              return;
+            }
+
+            const receipt = {
+              schema_version: 'UES_PARENT_CONTROLLER_DISPATCH_ACCEPTED_V1',
+              control_pr_number: Number(pr.number),
+              control_head: exactHead,
+              validation_run_id: Number(process.env.VALIDATION_RUN_ID || '0'),
+              receiver_run_id: Number(receiverRun.id),
+              receiver_status: receiverRun.status,
+              receiver_event: receiverRun.event,
+              receiver_head_branch: receiverRun.head_branch,
+              receiver_head_sha: receiverRun.head_sha,
+              stage: 'DISPATCH_AUTHORITATIVELY_READ_BACK',
+              effect_job_reached: false,
+              safe_to_blind_retry: false,
+              secret_material_persisted: false,
+            };
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: '<!-- UES_PARENT_CONTROLLER_DISPATCH_ACCEPTED_V1 -->\n### UES Parent Controller dispatch accepted\n\n```json\n' + JSON.stringify(receipt, null, 2) + '\n```',
             });
