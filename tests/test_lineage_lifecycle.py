@@ -57,7 +57,7 @@ class LineageRegistryTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "UNBOUND")
 
-    def test_exact_provider_starting_branch_binds_when_no_fingerprint_exists(self) -> None:
+    def test_provider_starting_branch_is_constraint_not_lineage_identity(self) -> None:
         sessions = [{
             "name": "sessions/1", "normalizedState": "AWAITING_USER_FEEDBACK", "_source_repository": "owner/repo",
             "_session_fingerprint": session_fingerprint("sessions/1"), "sourceStartingBranch": "provider/w03",
@@ -67,21 +67,109 @@ class LineageRegistryTests(unittest.TestCase):
             {"known_session_fingerprints": [], "provider_starting_branch": "provider/w03"},
             repository="owner/repo",
         )
-        self.assertEqual(result["status"], "PROVEN")
-        self.assertEqual(result["continuation_disposition"], "REUSE_SAME_SESSION")
+        self.assertEqual(result["status"], "UNBOUND")
+        self.assertEqual(result["reason"], "EXACT_SESSION_FINGERPRINT_REQUIRED")
 
-    def test_multiple_exact_active_provider_matches_are_ambiguous(self) -> None:
+    def test_two_lineages_sharing_branch_cannot_bind_same_session_without_fingerprint(self) -> None:
+        fp = session_fingerprint("sessions/shared")
         sessions = [{
-            "name": f"sessions/{index}", "normalizedState": "IN_PROGRESS", "_source_repository": "owner/repo",
-            "_session_fingerprint": session_fingerprint(f"sessions/{index}"), "sourceStartingBranch": "provider/shared",
-            "updateTime": "2026-08-24T00:00:00Z",
-        } for index in (1, 2)]
+            "name": "sessions/shared", "normalizedState": "IN_PROGRESS", "_source_repository": "owner/repo",
+            "_session_fingerprint": fp, "sourceStartingBranch": "provider/shared",
+        }]
+        for workstream in ("W01", "W02"):
+            with self.subTest(workstream=workstream):
+                result = match_lineage_session(
+                    sessions,
+                    {"provider_starting_branch": "provider/shared", "known_session_fingerprints": []},
+                    repository="owner/repo",
+                )
+                self.assertEqual(result["status"], "UNBOUND")
+                self.assertIsNone(result["session"])
+
+    def test_exact_known_fingerprint_can_bind_on_shared_branch(self) -> None:
+        fp1 = session_fingerprint("sessions/1")
+        fp2 = session_fingerprint("sessions/2")
+        sessions = [
+            {"name": "sessions/1", "normalizedState": "IN_PROGRESS", "_source_repository": "owner/repo", "_session_fingerprint": fp1, "sourceStartingBranch": "provider/shared"},
+            {"name": "sessions/2", "normalizedState": "IN_PROGRESS", "_source_repository": "owner/repo", "_session_fingerprint": fp2, "sourceStartingBranch": "provider/shared"},
+        ]
         result = match_lineage_session(
             sessions,
-            {"provider_starting_branch": "provider/shared", "known_session_fingerprints": []},
+            {"provider_starting_branch": "provider/shared", "known_session_fingerprints": [fp2]},
             repository="owner/repo",
         )
-        self.assertEqual(result["status"], "AMBIGUOUS")
+        self.assertEqual(result["status"], "PROVEN")
+        self.assertEqual(result["session_fingerprint"], fp2)
+
+    def test_legacy_branch_only_initial_adoption_is_revoked_locally_when_exact_identity_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = DeterministicFileStateStore(Path(directory) / "state.json")
+            store.initialize()
+            fp = session_fingerprint("sessions/legacy")
+            legacy_binding = {
+                "status": "PROVEN",
+                "reason": "EXACT_GOVERNED_LINEAGE_BINDING",
+                "session_fingerprint": fp,
+                "provider_state": "IN_PROGRESS",
+                "session": {"_source_repository": "owner/repo", "sourceStartingBranch": "provider/shared"},
+            }
+            first = upsert_lineage_observation(
+                store,
+                project="P",
+                route="P",
+                workstream="W01",
+                role="REVIEWER",
+                binding=legacy_binding,
+                policy={"known_session_fingerprints": [], "provider_starting_branch": "provider/shared"},
+            )
+            self.assertEqual(first["generation"], 1)
+            repaired = upsert_lineage_observation(
+                store,
+                project="P",
+                route="P",
+                workstream="W01",
+                role="REVIEWER",
+                binding={"status": "UNBOUND", "reason": "EXACT_SESSION_FINGERPRINT_REQUIRED"},
+                policy={"known_session_fingerprints": [], "provider_starting_branch": "provider/shared"},
+            )
+            self.assertEqual(repaired["generation"], 0)
+            self.assertEqual(repaired["binding_status"], "UNBOUND")
+            self.assertIsNone(repaired["session_fingerprint"])
+            self.assertTrue(repaired["legacy_branch_only_adoption_revoked"])
+            lane = store.read_workstream(repaired["lane_id"])
+            self.assertEqual(lane.status, "OK")
+            assert lane.record is not None
+            evidence = lane.record.evidence_bindings or {}
+            self.assertEqual(evidence["replacement_reason"], "LEGACY_BRANCH_ONLY_ADOPTION_REVOKED")
+            self.assertEqual(evidence["revoked_legacy_session_fingerprint"], fp)
+            self.assertIsNone(lane.record.unknown_write_state)
+            self.assertIsNone(lane.record.action_in_flight)
+
+    def test_legacy_branch_only_adoption_is_not_revoked_with_unknown_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = DeterministicFileStateStore(Path(directory) / "state.json")
+            store.initialize()
+            fp = session_fingerprint("sessions/legacy")
+            binding = {
+                "status": "PROVEN", "reason": "EXACT_GOVERNED_LINEAGE_BINDING", "session_fingerprint": fp,
+                "provider_state": "IN_PROGRESS", "session": {"_source_repository": "owner/repo", "sourceStartingBranch": "provider/shared"},
+            }
+            first = upsert_lineage_observation(
+                store, project="P", route="P", workstream="W01", role="REVIEWER", binding=binding,
+                policy={"known_session_fingerprints": [], "provider_starting_branch": "provider/shared"},
+            )
+            read = store.read_workstream(first["lane_id"])
+            assert read.record is not None
+            record = read.record
+            record.unknown_write_state = {"category": "WRITE_OUTCOME_UNKNOWN"}
+            store.compare_and_swap_workstream(first["lane_id"], read.version, record)
+            repaired = upsert_lineage_observation(
+                store, project="P", route="P", workstream="W01", role="REVIEWER",
+                binding={"status": "UNBOUND", "reason": "EXACT_SESSION_FINGERPRINT_REQUIRED"},
+                policy={"known_session_fingerprints": [], "provider_starting_branch": "provider/shared"},
+            )
+            self.assertEqual(repaired["generation"], 1)
+            self.assertFalse(repaired["legacy_branch_only_adoption_revoked"])
 
     def test_generation_changes_only_when_bound_provider_session_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
