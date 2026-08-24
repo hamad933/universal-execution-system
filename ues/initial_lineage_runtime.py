@@ -24,6 +24,22 @@ SUPPORTED_PROJECTS = frozenset({"GS", "CEP", "RP01", "RP02", "RP03", "RP04"})
 SUPPORTED_ROLES = frozenset({"WRITER", "REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"})
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+_ALLOWED_TASK_FIELDS = frozenset(
+    {
+        "objective",
+        "exact_baseline",
+        "write_scope",
+        "writeScope",
+        "prohibited_scope",
+        "prohibitedScope",
+        "validation",
+        "tests",
+        "evidence",
+        "handoff",
+        "stop_gate",
+        "stopGate",
+    }
+)
 
 
 def _load_adapter(project: str) -> dict[str, Any]:
@@ -72,62 +88,59 @@ def _dynamic_role_config(
     return role_config if isinstance(role_config, Mapping) else None
 
 
+def _single_task_key(task_spec: Mapping[str, Any], *keys: str) -> str:
+    present = [key for key in keys if key in task_spec]
+    if not present:
+        raise ValueError(f"task_spec.{keys[0]} is required")
+    if len(present) != 1:
+        raise ValueError(f"task_spec aliases are ambiguous: {', '.join(present)}")
+    return present[0]
+
+
 def _string_list(task_spec: Mapping[str, Any], *keys: str, required_nonempty: bool = False) -> list[str]:
-    value: Any = None
-    selected = keys[0]
-    for key in keys:
-        if key in task_spec:
-            value = task_spec.get(key)
-            selected = key
-            break
+    selected = _single_task_key(task_spec, *keys)
+    value = task_spec.get(selected)
     if not isinstance(value, list):
         raise ValueError(f"task_spec.{selected} must be a list")
-    items = [str(item).strip() for item in value]
-    if any(not item for item in items):
+    if any(not isinstance(item, str) or not item.strip() for item in value):
         raise ValueError(f"task_spec.{selected} must contain only non-empty strings")
+    items = [item.strip() for item in value]
     if required_nonempty and not items:
         raise ValueError(f"task_spec.{selected} must not be empty")
     return items
 
 
 def _required_text(task_spec: Mapping[str, Any], *keys: str) -> str:
-    selected = keys[0]
-    value: Any = None
-    for key in keys:
-        if key in task_spec:
-            value = task_spec.get(key)
-            selected = key
-            break
-    text = str(value or "").strip()
-    if not text:
+    selected = _single_task_key(task_spec, *keys)
+    value = task_spec.get(selected)
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"task_spec.{selected} must be a non-empty string")
-    return text
+    return value.strip()
 
 
 def _validate_task_spec(task_spec: Mapping[str, Any], *, role: str) -> dict[str, Any]:
     """Validate the complete bounded executor contract before any provider write.
 
     The Current Authority task specification is the sole scope source for the
-    first physical generation. Writers require an explicit non-empty write
-    domain; reviewer/assurance roles are read-only and must declare an empty
-    write scope. Every role carries explicit prohibitions, validation, evidence,
-    handoff, and Stop Gate fields so Jules cannot infer missing scope.
+    first physical generation. The schema is closed: unknown fields, conflicting
+    aliases, and non-string scope entries are rejected rather than being copied
+    into the provider prompt. Writers require a non-empty write domain;
+    reviewer/assurance roles are explicitly read-only.
     """
 
     role_name = str(role or "").strip().upper()
     if role_name not in SUPPORTED_ROLES:
         raise ValueError("task_spec role is not supported")
+    unknown = sorted(str(key) for key in task_spec if key not in _ALLOWED_TASK_FIELDS)
+    if unknown:
+        raise ValueError("task_spec contains unsupported fields: " + ", ".join(unknown))
+
     result = dict(task_spec)
     _required_text(task_spec, "objective")
     _required_text(task_spec, "exact_baseline")
     write_scope = _string_list(task_spec, "write_scope", "writeScope")
     _string_list(task_spec, "prohibited_scope", "prohibitedScope")
-    if "validation" in task_spec:
-        _string_list(task_spec, "validation", required_nonempty=True)
-    elif "tests" in task_spec:
-        _string_list(task_spec, "tests", required_nonempty=True)
-    else:
-        raise ValueError("task_spec.validation or task_spec.tests must be a non-empty list")
+    _string_list(task_spec, "validation", "tests", required_nonempty=True)
     _string_list(task_spec, "evidence", required_nonempty=True)
     _required_text(task_spec, "handoff")
     _required_text(task_spec, "stop_gate", "stopGate")
@@ -140,10 +153,10 @@ def _validate_task_spec(task_spec: Mapping[str, Any], *, role: str) -> dict[str,
 
 
 def _dynamic_provider_starting_branch(role_config: Mapping[str, Any]) -> str:
-    branch = str(role_config.get("provider_starting_branch") or "").strip()
-    if not branch:
+    branch = role_config.get("provider_starting_branch")
+    if not isinstance(branch, str) or not branch.strip():
         raise ValueError("dynamic lineage role must declare provider_starting_branch")
-    return branch
+    return branch.strip()
 
 
 def _parse_exact_baseline(task_spec: Mapping[str, Any]) -> tuple[str, str]:
@@ -246,7 +259,7 @@ def _marker_matches(
     return result
 
 
-def _authority_entries(authority: Mapping[str, Any]) -> Mapping[str, Any]:
+def _authority_entries(authority: Mapping[str, Any]) -> Mapping[str,Any]:
     generation = authority.get("generation_policy")
     generation = generation if isinstance(generation, Mapping) else {}
     value = generation.get("authorized_initial_lineages")
