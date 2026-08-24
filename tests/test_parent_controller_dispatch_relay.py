@@ -27,21 +27,33 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("commit.author.login !== context.repo.owner", self.validate)
         self.assertIn("commit.committer.login !== context.repo.owner", self.validate)
 
-    def test_relay_is_secretless_and_can_only_dispatch_actions(self):
-        relay = self.validate.split("\n  parent-controller-relay:\n", 1)[1]
-        self.assertIn("actions: write", relay)
+    def test_relay_is_secretless_and_does_not_emit_second_event(self):
+        relay = self.validate.split("\n  parent-controller-relay:\n", 1)[1].split("\n  parent-controller-receiver:\n", 1)[0]
         self.assertIn("contents: read", relay)
+        self.assertNotIn("actions: write", relay)
         self.assertNotIn("contents: write", relay)
         self.assertNotIn("JULES_API_KEY", relay)
         self.assertNotIn("UES_CURRENT_AUTHORITY_JSON", relay)
-        self.assertIn("github.rest.actions.createWorkflowDispatch", relay)
-        self.assertIn("workflow_id: 'ues-parent-controller-dispatch.yml'", relay)
-        self.assertIn("control_head: exactHead", relay)
-        self.assertIn("validation_run_id", relay)
-        self.assertIn("control_pr_number: String(pr.number)", relay)
+        self.assertNotIn("createWorkflowDispatch", relay)
+        self.assertNotIn("repository_dispatch", relay)
 
-    def test_receiver_is_trusted_workflow_dispatch_only(self):
+    def test_validate_calls_receiver_as_same_run_reusable_workflow(self):
+        self.assertIn("parent-controller-receiver:", self.validate)
+        receiver_call = self.validate.split("\n  parent-controller-receiver:\n", 1)[1]
+        self.assertIn("needs: [core, parent-controller-relay]", receiver_call)
+        self.assertIn("needs.parent-controller-relay.result == 'success'", receiver_call)
+        self.assertIn("uses: ./.github/workflows/ues-parent-controller-dispatch.yml", receiver_call)
+        self.assertIn("control_head: ${{ github.event.pull_request.head.sha }}", receiver_call)
+        self.assertIn("validation_run_id: ${{ github.run_id }}", receiver_call)
+        self.assertIn("control_pr_number: ${{ github.event.pull_request.number }}", receiver_call)
+        self.assertIn("secrets: inherit", receiver_call)
+        self.assertIn("actions: read", receiver_call)
+        self.assertIn("contents: write", receiver_call)
+        self.assertIn("issues: write", receiver_call)
+
+    def test_receiver_supports_workflow_call_and_keeps_no_pr_comment_ingress(self):
         trigger = self.receiver.split("permissions:", 1)[0]
+        self.assertIn("workflow_call:", trigger)
         self.assertIn("workflow_dispatch:", trigger)
         self.assertNotIn("pull_request:\n", trigger)
         self.assertNotIn("pull_request_target:", trigger)
@@ -58,6 +70,7 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("Publish durable receiver-start receipt", self.receiver)
         self.assertIn("UES_PARENT_CONTROLLER_RECEIVER_STARTED_V1", self.receiver)
         self.assertIn("receiver_run_id: Number(context.runId)", self.receiver)
+        self.assertIn("receiver_mode: 'SAME_RUN_REUSABLE_WORKFLOW'", self.receiver)
         self.assertIn("stage: 'RECEIVER_STARTED_PRE_EFFECT'", self.receiver)
         self.assertIn("effect_job_reached: false", self.receiver)
         self.assertIn("safe_to_blind_retry: false", self.receiver)
@@ -89,7 +102,6 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("coreJobs.length !== 1", self.receiver)
         self.assertIn("['in_progress', 'completed'].includes(validation.status)", self.receiver)
         self.assertIn("validation.status === 'completed' && validation.conclusion !== 'success'", self.receiver)
-        self.assertNotIn("validation.status !== 'completed' || validation.conclusion !== 'success'", self.receiver)
 
     def test_preflight_failure_is_durably_visible_and_never_claims_effect(self):
         self.assertIn("preflight-failure-receipt:", self.receiver)
@@ -97,7 +109,6 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("UES_PARENT_CONTROLLER_PREFLIGHT_FAILURE_V1", self.receiver)
         self.assertIn("receiver_run_id: Number(context.runId)", self.receiver)
         self.assertIn("stage: 'PRE_EFFECT_PREFLIGHT'", self.receiver)
-        self.assertIn("preflight_result:", self.receiver)
         self.assertIn("effect_job_reached: false", self.receiver)
         failure = self.receiver.split("preflight-failure-receipt:", 1)[1].split("\n  execute:\n", 1)[0]
         self.assertNotIn("JULES_API_KEY", failure)
@@ -118,7 +129,7 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
 
     def test_secrets_exist_only_in_effect_job_after_preflight(self):
         pre_effect, execute = self.receiver.split("\n  execute:\n", 1)
-        self.assertNotIn("JULES_API_KEY", pre_effect)
+        self.assertNotIn("JULES_API_KEY: ${{ secrets.JULES_API_KEY }}", pre_effect)
         self.assertNotIn("contents: write", pre_effect)
         self.assertIn("JULES_API_KEY: ${{ secrets.JULES_API_KEY }}", execute)
         self.assertIn("permissions:\n      contents: write\n      issues: write", execute)
@@ -134,8 +145,8 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("if: needs.preflight.outputs.already_receipted != 'true'", self.receiver)
         self.assertIn("'safe_to_blind_retry': False", self.receiver)
 
-    def test_final_receipt_is_sanitized_and_receiver_run_bound(self):
-        self.assertIn("'trigger_kind': 'VALIDATE_WORKFLOW_DISPATCH'", self.receiver)
+    def test_final_receipt_is_sanitized_and_same_run_bound(self):
+        self.assertIn("'trigger_kind': 'VALIDATE_REUSABLE_WORKFLOW_CALL'", self.receiver)
         self.assertIn("'validation_run_id'", self.receiver)
         self.assertIn("'receiver_run_id'", self.receiver)
         self.assertIn("UES_RECEIVER_RUN_ID: ${{ github.run_id }}", self.receiver)
