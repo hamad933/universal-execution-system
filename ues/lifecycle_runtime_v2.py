@@ -18,8 +18,10 @@ from .providers.github import GitHubClient
 from .recovery_catalog import plan_recovery
 from .state_store import StateUnavailable
 from .structured_handoff import find_latest_structured_handoff_runtime
+from .task_budget import observe_rolling_quota_window
 
 SCHEMA_VERSION = "2.0"
+JULES_TASK_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
 
 
 def _role_policy(config: Mapping[str, Any], role: str) -> Mapping[str, Any] | None:
@@ -258,9 +260,14 @@ def run(project: str) -> dict[str, Any]:
                 current_pr_number=int(raw_policy.get("pr_number") or 0) or None,
             )
 
+    # Jules currently meters tasks in a rolling 24-hour window. Keep the full
+    # inventory for lineage/reconciliation, but feed only current-window usage to
+    # the budget gate. No provider task-limit number is hard-coded here.
     provider_observation = {
-        "lifetime_consumption_known": False,
-        "current_enumerated_tasks": len(inventory),
+        **observe_rolling_quota_window(
+            inventory,
+            window_seconds=JULES_TASK_QUOTA_WINDOW_SECONDS,
+        ),
         "hard_provider_limit_reached": False,
     }
 
@@ -422,6 +429,7 @@ def run(project: str) -> dict[str, Any]:
         "runtime": "V2",
         "lineage_count": len(results),
         "provider_session_count": len(inventory),
+        "provider_quota_window": provider_observation,
         "binding_counts": dict(sorted(Counter(str(item.get("binding_status") or "UNKNOWN") for item in results).items())),
         "recovery_action_counts": dict(sorted(action_counts.items())),
         "effect_decision_counts": dict(sorted(effect_counts.items())),
