@@ -103,14 +103,12 @@ def normalize_handoff(
     }
 
 
-def find_latest_structured_handoff(
+def _find_latest(
     activities: Sequence[Mapping[str, Any]],
     *,
-    expected_workstream: str | None = None,
-    expected_role: str | None = None,
-) -> dict[str, Any] | None:
-    """Return the latest valid structured agent handoff without returning raw prose."""
-
+    expected_workstream: str | None,
+    expected_role: str | None,
+) -> tuple[dict[str, Any], Mapping[str, Any]] | None:
     for activity in reversed(list(activities)):
         message = _message_from_activity(activity)
         if not message:
@@ -130,8 +128,47 @@ def find_latest_structured_handoff(
         normalized["activity_fingerprint"] = sha256(
             str(activity.get("name") or activity.get("id") or "").encode("utf-8")
         ).hexdigest()
-        return normalized
+        return normalized, payload
     return None
+
+
+def find_latest_structured_handoff(
+    activities: Sequence[Mapping[str, Any]],
+    *,
+    expected_workstream: str | None = None,
+    expected_role: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the latest valid sanitized handoff. Raw provider prose is excluded."""
+
+    found = _find_latest(
+        activities,
+        expected_workstream=expected_workstream,
+        expected_role=expected_role,
+    )
+    return found[0] if found else None
+
+
+def find_latest_structured_handoff_runtime(
+    activities: Sequence[Mapping[str, Any]],
+    *,
+    expected_workstream: str | None = None,
+    expected_role: str | None = None,
+) -> dict[str, Any] | None:
+    """Return normalized handoff plus in-memory payload for immediate routing only.
+
+    `runtime_payload` MUST NOT be written to public StateStore, logs, artifacts,
+    or governed state. Persist only the sibling `sanitized` object.
+    """
+
+    found = _find_latest(
+        activities,
+        expected_workstream=expected_workstream,
+        expected_role=expected_role,
+    )
+    if not found:
+        return None
+    normalized, payload = found
+    return {"sanitized": normalized, "runtime_payload": dict(payload)}
 
 
 def build_required_handoff_instructions(role: str, workstream: str) -> str:
@@ -140,7 +177,8 @@ def build_required_handoff_instructions(role: str, workstream: str) -> str:
         raise ValueError("unsupported handoff role")
     return (
         "At every material stop, finish your response with exactly one machine-readable handoff block. "
-        "Do not omit it even when blocked or context is exhausted. Use this shape:\n"
+        "Do not omit it even when blocked or context is exhausted. Findings must contain concise actionable details "
+        "sufficient for the paired lineage to continue. Use this shape:\n"
         f"{START_MARKER}\n"
         "{\n"
         f'  "role": "{role}",\n'
@@ -150,7 +188,7 @@ def build_required_handoff_instructions(role: str, workstream: str) -> str:
         '  "candidate_sha": null,\n'
         '  "reviewed_sha": null,\n'
         '  "context_state": "OK|EXHAUSTED",\n'
-        '  "findings": []\n'
+        '  "findings": [{"id":"F-001","severity":"HIGH","path":"optional/path","detail":"actionable finding"}]\n'
         "}\n"
         f"{END_MARKER}"
     )
