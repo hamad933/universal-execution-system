@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ues.initial_lineage_effects import execute_initial_lineage_generation
@@ -40,6 +41,13 @@ class InitialLineageEffectTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = DeterministicFileStateStore(Path(self.temp.name) / "state.json")
         self.store.initialize()
+        self.now = datetime(2026, 8, 24, 18, 0, tzinfo=timezone.utc)
+        self.adapter = {
+            "project": "RP01",
+            "route": "RP01",
+            "repository": "hamad933/Bayt-Style",
+            "authority_transport": {"controller_actor_allowlist": ["hamad933"]},
+        }
         self.task_spec = {
             "objective": "Implement only the governed RP01 workstream",
             "exact_baseline": "main@" + "a" * 40,
@@ -57,6 +65,7 @@ class InitialLineageEffectTests(unittest.TestCase):
             "route": "RP01",
             "current": True,
             "authority_event_id": "RP01-AUTH-001",
+            "expires_at": "2026-08-24T22:00:00Z",
             "generation_policy": {
                 "authorized_initial_lineages": {
                     "W11:WRITER": {
@@ -83,7 +92,10 @@ class InitialLineageEffectTests(unittest.TestCase):
         values = dict(
             store=self.store,
             client=client,
+            adapter=self.adapter,
             authority=self.authority,
+            transport_actor="hamad933",
+            authority_now=self.now,
             current_policy=self.policy,
             project="RP01",
             route="RP01",
@@ -111,7 +123,7 @@ class InitialLineageEffectTests(unittest.TestCase):
         self.assertEqual(read.record.activation_mode, "SHADOW")
         self.assertFalse(bool((read.record.authority_provenance or {}).get("effect_scope_active")))
 
-    def test_exact_authority_creates_generation_one_once_and_accounts_it(self):
+    def test_exact_fresh_authority_creates_generation_one_once_and_accounts_it(self):
         def before_create():
             read = self.store.read_workstream(self.lane_id)
             self.assertEqual(read.status, "OK")
@@ -147,17 +159,48 @@ class InitialLineageEffectTests(unittest.TestCase):
         budget = read_budget_accounting(self.store, project="RP01", route="RP01")
         self.assertEqual(budget["ues_confirmed_generation_count"], 1)
 
-    def test_missing_or_mismatched_initial_authority_never_calls_provider(self):
+    def test_raw_stale_or_wrong_actor_authority_never_reaches_state_or_provider(self):
+        client = FakeInitialClient()
+        stale = execute_initial_lineage_generation(
+            **self.args(client, authority_now=datetime(2026, 8, 24, 23, 0, tzinfo=timezone.utc))
+        )
+        self.assertEqual(stale["decision"], "INITIAL_LINEAGE_CURRENT_AUTHORITY_OR_TASK_CONTRACT_REQUIRED")
+        wrong_actor = execute_initial_lineage_generation(**self.args(client, transport_actor="someone-else"))
+        self.assertEqual(wrong_actor["decision"], "INITIAL_LINEAGE_CURRENT_AUTHORITY_OR_TASK_CONTRACT_REQUIRED")
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(self.store.read_workstream(self.lane_id).status, "MISSING")
+
+    def test_missing_mismatched_or_incomplete_task_contract_never_calls_provider(self):
         client = FakeInitialClient()
         no_authority = execute_initial_lineage_generation(**self.args(client, authority=None))
-        self.assertEqual(no_authority["decision"], "INITIAL_LINEAGE_CURRENT_AUTHORITY_REQUIRED")
-        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(no_authority["decision"], "INITIAL_LINEAGE_CURRENT_AUTHORITY_OR_TASK_CONTRACT_REQUIRED")
 
         mismatched = execute_initial_lineage_generation(
             **self.args(client, task_spec={**self.task_spec, "objective": "different"})
         )
-        self.assertEqual(mismatched["decision"], "INITIAL_LINEAGE_TASK_SPEC_AUTHORITY_MISMATCH")
+        self.assertEqual(mismatched["decision"], "INITIAL_LINEAGE_CURRENT_AUTHORITY_OR_TASK_CONTRACT_REQUIRED")
+
+        incomplete = dict(self.task_spec)
+        incomplete.pop("stop_gate")
+        authority = {**self.authority, "generation_policy": {"authorized_initial_lineages": {
+            "W11:WRITER": {
+                "authorized": True,
+                "creation_kind": "INITIAL_LOGICAL_LINEAGE",
+                "task_spec": incomplete,
+            }
+        }}}
+        malformed = execute_initial_lineage_generation(**self.args(client, authority=authority, task_spec=incomplete))
+        self.assertEqual(malformed["decision"], "INITIAL_LINEAGE_CURRENT_AUTHORITY_OR_TASK_CONTRACT_REQUIRED")
         self.assertEqual(client.create_calls, 0)
+        self.assertEqual(self.store.read_workstream(self.lane_id).status, "MISSING")
+
+    def test_adapter_identity_or_repository_mismatch_fails_before_provider(self):
+        client = FakeInitialClient()
+        wrong_repo_adapter = {**self.adapter, "repository": "other/repo"}
+        result = execute_initial_lineage_generation(**self.args(client, adapter=wrong_repo_adapter))
+        self.assertEqual(result["decision"], "INITIAL_LINEAGE_CURRENT_AUTHORITY_OR_TASK_CONTRACT_REQUIRED")
+        self.assertEqual(client.create_calls, 0)
+        self.assertEqual(self.store.read_workstream(self.lane_id).status, "MISSING")
 
     def test_duplicate_or_policy_denial_blocks_before_provider(self):
         client = FakeInitialClient()
