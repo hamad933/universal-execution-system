@@ -15,9 +15,9 @@ A lean, extensible execution-control framework for safe, fast, recoverable, and 
 
 ## Parent Controller / Jules automation
 
-UES-AUTO-V2 keeps the Parent Controller above the automation layer while Jules executes behind UES. The preferred low-friction path for ChatGPT Parent Controllers is the trusted persistent `ues-control` queue: the Controller reconstructs fresh project Current Authority, submits one structured request, and UES handles exact runtime binding, lifecycle reconciliation, guarded Jules generation, duplicate/UNKNOWN safety, StateStore accounting, and provider readback.
+UES-AUTO-V2 keeps the Parent Controller above the automation layer while Jules executes behind UES. The preferred low-friction path for ChatGPT Parent Controllers is the dedicated trusted persistent `ues-parent-control` queue: the Controller reconstructs fresh project Current Authority, submits one structured request, and UES handles exact runtime binding, lifecycle reconciliation, guarded Jules generation, duplicate/UNKNOWN safety, StateStore accounting, and provider readback.
 
-The queue is transport only. It cannot grant project authority, and it never bypasses the existing Current Authority, task-budget, exact source/ref/SHA, idempotency, provider-readback, or Stop-Gate controls.
+The queue is transport only. It cannot grant project authority, and it never bypasses the existing Current Authority, task-budget, exact source/ref/SHA, idempotency, provider-readback, or Stop-Gate controls. Its persisted request is non-secret control data only; legacy `ues-control` remains separate for v1 format-fix signaling.
 
 Start with [`docs/PARENT_CONTROLLER_OPERATOR_MANUAL_V2.md`](docs/PARENT_CONTROLLER_OPERATOR_MANUAL_V2.md) for GS/CEP/RP01–RP04 Parent Controller operation.
 
