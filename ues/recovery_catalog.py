@@ -13,7 +13,7 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
       provider session should be created;
     - unknown writes are reconciled before any new external effect;
     - terminal/context-exhausted replacement may proceed only when budget,
-      exact task spec, and duplicate-safety checks are satisfied.
+      exact task spec, and explicit duplicate-safety checks are satisfied.
     """
 
     binding = str(observation.get("binding_status") or "UNBOUND").upper()
@@ -32,8 +32,10 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
     replacement_prompt_ready = bool(observation.get("replacement_prompt_ready", False))
     replacement_required_proven = bool(observation.get("replacement_required_proven", False))
 
-    duplicate_signal = observation.get("active_duplicate_absent")
-    active_duplicate_absent = bool(duplicate_signal) if duplicate_signal is not None else binding == "PROVEN"
+    # A proven binding identifies the intended lineage session, but does not by
+    # itself prove that no other active provider session collides with a new
+    # generation. Creation therefore requires an explicit duplicate-free signal.
+    active_duplicate_absent = observation.get("active_duplicate_absent") is True
 
     if observation.get("pr_branch_match") is False:
         return _decision(
