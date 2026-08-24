@@ -19,6 +19,26 @@ class RecoveryCatalogTests(unittest.TestCase):
         })
         self.assertEqual(result["action"], "ROUTE_CURRENT_SHA_TO_REVIEWER_LINEAGE")
 
+    def test_stale_writer_handoff_is_reconciled_to_authoritative_current_sha(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
+            "current_sha": "b"*40, "candidate_sha": "b"*40, "ci_verdict": "PASS", "work_remaining": True,
+            "handoff": {"status": "COMPLETE", "verdict": "PASS", "candidate_sha": "a"*40},
+        })
+        self.assertEqual(result["action"], "ROUTE_CURRENT_SHA_TO_REVIEWER_LINEAGE")
+        self.assertEqual(result["root_cause"], "STALE_WRITER_HANDOFF_RECONCILED_TO_CURRENT_SHA")
+        self.assertFalse(result["external_effect"])
+
+    def test_stale_writer_handoff_never_substitutes_unvalidated_provider_sha(self):
+        result = plan_recovery({
+            "binding_status": "PROVEN", "provider_state": "COMPLETED", "role": "WRITER",
+            "current_sha": "b"*40, "candidate_sha": "b"*40, "ci_verdict": "FAIL", "work_remaining": True,
+            "handoff": {"status": "COMPLETE", "verdict": "PASS", "candidate_sha": "a"*40},
+        })
+        self.assertEqual(result["action"], "VALIDATE_EXACT_WRITER_CANDIDATE")
+        self.assertEqual(result["root_cause"], "STALE_WRITER_HANDOFF_REQUIRES_CURRENT_SHA_VALIDATION")
+        self.assertFalse(result["external_effect"])
+
     def test_failed_session_replacement_preserves_lineage_and_requires_budget(self):
         result = plan_recovery({
             "binding_status": "PROVEN", "provider_state": "FAILED", "role": "WRITER",

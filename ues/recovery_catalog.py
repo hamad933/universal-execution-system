@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 
 def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
@@ -13,7 +13,8 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
       provider session should be created;
     - unknown writes are reconciled before any new external effect;
     - terminal/context-exhausted replacement may proceed only when budget,
-      exact task spec, and explicit duplicate-safety checks are satisfied.
+      exact task spec, and explicit duplicate-safety checks are satisfied;
+    - Writer handoff SHA claims never override the authoritative current PR SHA.
     """
 
     binding = str(observation.get("binding_status") or "UNBOUND").upper()
@@ -22,7 +23,8 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
     handoff = observation.get("handoff") if isinstance(observation.get("handoff"), Mapping) else {}
     handoff_status = str(handoff.get("status") or "").upper()
     verdict = str(handoff.get("verdict") or "UNKNOWN").upper()
-    candidate_sha = str(observation.get("candidate_sha") or handoff.get("candidate_sha") or "")
+    handoff_candidate_sha = str(handoff.get("candidate_sha") or "")
+    candidate_sha = str(observation.get("candidate_sha") or handoff_candidate_sha or "")
     reviewed_sha = str(handoff.get("reviewed_sha") or "")
     current_sha = str(observation.get("current_sha") or "")
     ci_reason = str(observation.get("ci_reason") or "")
@@ -147,6 +149,24 @@ def plan_recovery(observation: Mapping[str, Any]) -> dict[str, Any]:
                     replacement_prompt_ready,
                     "CONTEXT_EXHAUSTED_REPORTED",
                     duplicate_absent=active_duplicate_absent,
+                )
+            if handoff_candidate_sha and current_sha and handoff_candidate_sha.lower() != current_sha.lower():
+                if ci_reason == "REQUIRED_CI_MISSING":
+                    return _decision(
+                        "DIAGNOSE_AND_REMEDIATE_CI_TRIGGER",
+                        root_cause="STALE_WRITER_HANDOFF_CURRENT_SHA_CI_MISSING",
+                        executable=True,
+                    )
+                if str(observation.get("ci_verdict") or "").upper() == "PASS":
+                    return _decision(
+                        "ROUTE_CURRENT_SHA_TO_REVIEWER_LINEAGE",
+                        root_cause="STALE_WRITER_HANDOFF_RECONCILED_TO_CURRENT_SHA",
+                        executable=True,
+                    )
+                return _decision(
+                    "VALIDATE_EXACT_WRITER_CANDIDATE",
+                    root_cause="STALE_WRITER_HANDOFF_REQUIRES_CURRENT_SHA_VALIDATION",
+                    executable=True,
                 )
             if candidate_sha:
                 if ci_reason == "REQUIRED_CI_MISSING":
