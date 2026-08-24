@@ -71,11 +71,14 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: python -m ues.live_runtime jules-probe
 
-      - name: Jules GS/CEP read-only provider observation preview
+      - name: Jules GS/CEP live read-only provider observation
         if: steps.jules_secret.outputs.present == 'true' && steps.jules_probe.outcome == 'success'
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
-        run: python -m ues.provider_observer preview
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: python -m ues.provider_observer observe
 
       - name: Persist sanitized Jules probe success proof
         if: steps.jules_secret.outputs.present == 'true' && steps.jules_probe.outcome == 'success'
