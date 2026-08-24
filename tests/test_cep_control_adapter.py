@@ -22,15 +22,12 @@ class CEPControlAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter["truth_owners"]["governed_state"], "DRIVE")
         self.assertEqual(self.adapter["truth_owners"]["technical_state"], "GITHUB")
 
-    def test_default_adapter_remains_shadow_but_owner_bounded_existing_session_action_is_declared(self):
+    def test_default_adapter_remains_shadow_and_bounded_runtime_is_separate(self):
         activation = self.adapter["activation"]
         self.assertEqual(activation["default_mode"], "SHADOW")
         self.assertFalse(activation["mutation_allowed"])
         self.assertFalse(activation["runtime_mode_is_authority"])
-        self.assertEqual(
-            self.adapter["project_auto_safe_actions"],
-            ["WAITING_SAME_SESSION_CONTINUATION"],
-        )
+        self.assertEqual(self.adapter["project_auto_safe_actions"], [])
         bounded = self.adapter["bounded_existing_session_runtime"]
         self.assertTrue(bounded["enabled"])
         self.assertFalse(bounded["new_task_creation"])
