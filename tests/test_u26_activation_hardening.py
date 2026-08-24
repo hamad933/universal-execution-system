@@ -36,10 +36,14 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
         self.assertNotIn("max-parallel: 4", self.rp_readonly)
         self.assertNotIn("max-parallel: 4", self.rp_authority)
 
-    def test_parent_pipeline_publishes_sanitized_durable_receipt(self):
+    def test_parent_pipeline_preserves_sanitized_durable_receipt_artifact(self):
         self.assertIn("issues: write", self.parent)
         self.assertIn("UES_PARENT_CONTROLLER_RECEIPT_V1", self.parent)
-        self.assertIn("Publish durable Parent Controller receipt", self.parent)
+        self.assertIn("Preserve durable Parent Controller receipt evidence", self.parent)
+        self.assertIn("parent-controller-receipt.md", self.parent)
+        self.assertIn("if-no-files-found: error", self.parent)
+        self.assertIn("Publish Parent Controller receipt comment (best effort)", self.parent)
+        self.assertIn("continue-on-error: true", self.parent)
         self.assertIn(
             "CONTROL_PR_NUMBER: ${{ needs.parent-controller-preflight.outputs.control_pr_number }}",
             self.parent,

@@ -418,18 +418,6 @@ jobs:
           fi
           python -m ues.initial_lineage_runtime "$PROJECT" | tee initial-lineage-result.json
 
-      - name: Preserve compact runtime evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ues-parent-inline-result-${{ needs.parent-controller-preflight.outputs.request_id }}
-          path: |
-            parent-request-metadata.json
-            lifecycle-result.json
-            initial-lineage-result.json
-          retention-days: 7
-          if-no-files-found: ignore
-
       - name: Render sanitized durable Parent Controller receipt
         if: always()
         env:
@@ -497,8 +485,22 @@ jobs:
           Path('parent-controller-receipt.md').write_text(body, encoding='utf-8')
           PY
 
-      - name: Publish durable Parent Controller receipt
+      - name: Preserve durable Parent Controller receipt evidence
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-parent-inline-result-${{ needs.parent-controller-preflight.outputs.request_id }}
+          path: |
+            parent-request-metadata.json
+            lifecycle-result.json
+            initial-lineage-result.json
+            parent-controller-receipt.md
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Publish Parent Controller receipt comment (best effort)
+        if: always()
+        continue-on-error: true
         uses: actions/github-script@v7
         env:
           CONTROL_PR_NUMBER: ${{ needs.parent-controller-preflight.outputs.control_pr_number }}
