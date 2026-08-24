@@ -127,6 +127,19 @@ class ParentControllerRequestTests(unittest.TestCase):
         with self.assertRaises(ParentControllerRequestError):
             validate_parent_controller_request(request, expected_runtime_sha=RUNTIME_SHA)
 
+    def test_routing_metadata_is_safe_for_actions_outputs(self):
+        for field, value in (
+            ("repository", "hamad933/Bayt-Style\nINJECTED=value"),
+            ("repository", "bad repository/name"),
+            ("workstream", "IPA-S01\nINJECTED=value"),
+            ("workstream", "IPA S01"),
+        ):
+            with self.subTest(field=field, value=value):
+                request = self.request()
+                request["wakeup"][field] = value
+                with self.assertRaises(ParentControllerRequestError):
+                    validate_parent_controller_request(request, expected_runtime_sha=RUNTIME_SHA)
+
     def test_defaults_keep_request_low_friction(self):
         request = self.request()
         request.pop("wakeup")
