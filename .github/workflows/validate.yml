@@ -78,7 +78,7 @@ jobs:
             --expected-sha "${{ steps.head.outputs.sha }}"
 
   parent-controller-relay:
-    name: Parent Controller trusted dispatch relay
+    name: Parent Controller trusted same-run relay
     needs: core
     if: >-
       github.event_name == 'pull_request' &&
@@ -87,15 +87,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: write
       contents: read
       pull-requests: read
     steps:
-      - name: Verify exact Owner control request and dispatch trusted receiver
+      - name: Verify exact Owner control request for trusted receiver
         uses: actions/github-script@v7
         env:
           CONTROL_HEAD: ${{ github.event.pull_request.head.sha }}
-          VALIDATION_RUN_ID: ${{ github.run_id }}
         with:
           script: |
             const pr = context.payload.pull_request;
@@ -147,14 +145,22 @@ jobs:
               return;
             }
 
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'ues-parent-controller-dispatch.yml',
-              ref: defaultBranch,
-              inputs: {
-                control_head: exactHead,
-                validation_run_id: String(process.env.VALIDATION_RUN_ID || ''),
-                control_pr_number: String(pr.number),
-              },
-            });
+  parent-controller-receiver:
+    name: Parent Controller trusted same-run receiver
+    needs: [core, parent-controller-relay]
+    if: >-
+      needs.parent-controller-relay.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.ref == 'ues-parent-control' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/ues-parent-controller-dispatch.yml
+    with:
+      control_head: ${{ github.event.pull_request.head.sha }}
+      validation_run_id: ${{ github.run_id }}
+      control_pr_number: ${{ github.event.pull_request.number }}
+    secrets: inherit
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+      pull-requests: read
