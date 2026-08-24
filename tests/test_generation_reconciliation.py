@@ -7,7 +7,7 @@ from pathlib import Path
 from ues.binding_safe_generation import execute_binding_safe_generation
 from ues.generation_reconciliation import reconcile_unknown_generation
 from ues.lineage_generation import recover_lineage_policy_from_state
-from ues.lineage_registry import match_lineage_session, upsert_lineage_observation
+from ues.lineage_registry import match_lineage_session, session_fingerprint, upsert_lineage_observation
 from ues.providers.base import WriteOutcomeUnknown
 from ues.state_store import DeterministicFileStateStore
 from ues.task_budget_accounting import read_budget_accounting, record_confirmed_generation
@@ -82,10 +82,12 @@ class GenerationReconciliationTests(unittest.TestCase):
         self.assertEqual(first["decision"], "CREATE_SESSION_OUTCOME_UNKNOWN_RECONCILIATION_REQUIRED")
         transition = first["transition"]
         marker = str(transition["transition_key"])[:12]
+        session_name = "sessions/reconciled-g1"
         inventory = [
             {
-                "name": "sessions/reconciled-g1",
+                "name": session_name,
                 "title": f"CEP W02 WRITER [{marker}]",
+                "_session_fingerprint": session_fingerprint(session_name),
                 "_source_repository": "hamad933/Cybersecurity-Education-Platform",
                 "sourceStartingBranch": "work/cep-w02-parent-reconciliation-r01",
                 "normalizedState": "IN_PROGRESS",
