@@ -12,8 +12,8 @@ env:
   PYTHONDONTWRITEBYTECODE: '1'
 
 concurrency:
-  group: validate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: validate-${{ github.workflow }}-${{ github.event.pull_request.head.ref == 'ues-parent-control' && github.event.pull_request.head.sha || (github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event.pull_request.head.ref != 'ues-parent-control' }}
 
 jobs:
   core:
