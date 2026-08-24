@@ -77,8 +77,8 @@ jobs:
             --operation-id "run-$GITHUB_RUN_ID-adapter" \
             --expected-sha "${{ steps.head.outputs.sha }}"
 
-  parent-controller-relay:
-    name: Parent Controller trusted dispatch relay
+  parent-controller-preflight:
+    name: Parent Controller trusted preflight
     needs: core
     if: >-
       github.event_name == 'pull_request' &&
@@ -87,41 +87,53 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: write
       contents: read
-      issues: write
+      issues: read
       pull-requests: read
+    outputs:
+      runtime_sha: ${{ steps.control.outputs.runtime_sha }}
+      request_file_sha: ${{ steps.control.outputs.request_file_sha }}
+      control_pr_number: ${{ steps.control.outputs.control_pr_number }}
+      project: ${{ steps.metadata.outputs.project }}
+      request_id: ${{ steps.metadata.outputs.request_id }}
+      request_digest: ${{ steps.metadata.outputs.request_digest }}
+      wakeup_type: ${{ steps.metadata.outputs.wakeup_type }}
+      wakeup_event_id: ${{ steps.metadata.outputs.wakeup_event_id }}
+      wakeup_repository: ${{ steps.metadata.outputs.wakeup_repository }}
+      wakeup_workstream: ${{ steps.metadata.outputs.wakeup_workstream }}
+      wakeup_sha: ${{ steps.metadata.outputs.wakeup_sha }}
+      already_receipted: ${{ steps.receipt.outputs.already_receipted }}
     steps:
-      - name: Verify exact Owner control request, dispatch, and read back receiver run
+      - name: Resolve exact Owner control request and live trusted runtime
+        id: control
         uses: actions/github-script@v7
         env:
           CONTROL_HEAD: ${{ github.event.pull_request.head.sha }}
-          VALIDATION_RUN_ID: ${{ github.run_id }}
         with:
           script: |
+            const fs = require('fs');
             const pr = context.payload.pull_request;
             const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
-            const requestPath = '.ues/parent-controller-request.json';
             const defaultBranch = context.payload.repository.default_branch;
+            const requestPath = '.ues/parent-controller-request.json';
+            const exactHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
 
             if (!pr || pr.state !== 'open' || pr.draft !== true) {
-              core.setFailed('Parent Controller relay requires the persistent OPEN/DRAFT control PR');
+              core.setFailed('Parent Controller preflight requires the persistent OPEN/DRAFT control PR');
               return;
             }
             if (!pr.head.repo || pr.head.repo.full_name !== expectedRepo || pr.head.ref !== 'ues-parent-control') {
-              core.setFailed('Parent Controller relay requires same-repository ues-parent-control');
+              core.setFailed('Parent Controller preflight requires same-repository ues-parent-control');
               return;
             }
             if (pr.base.ref !== defaultBranch || !context.payload.sender || context.payload.sender.login !== context.repo.owner) {
-              core.setFailed('Parent Controller relay requires Owner-triggered PR synchronization against default branch');
+              core.setFailed('Parent Controller preflight requires Owner-triggered synchronization against default branch');
               return;
             }
-            const exactHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
             if (!/^[0-9a-f]{40}$/.test(exactHead) || exactHead !== String(pr.head.sha || '').toLowerCase()) {
-              core.setFailed('Parent Controller relay requires exact live control head');
+              core.setFailed('Parent Controller preflight requires exact live control head');
               return;
             }
-
             const prFiles = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -129,88 +141,356 @@ jobs:
               per_page: 100,
             });
             if (prFiles.length !== 1 || prFiles[0].filename !== requestPath) {
-              core.setFailed('Persistent Parent Controller PR must contain only the semantic request file');
+              core.setFailed('Persistent Parent Controller PR must contain only .ues/parent-controller-request.json');
               return;
             }
-            const { data: commit } = await github.rest.repos.getCommit({
+            const { data: controlCommit } = await github.rest.repos.getCommit({
               owner: context.repo.owner,
               repo: context.repo.repo,
               ref: exactHead,
             });
-            if (!commit.author || commit.author.login !== context.repo.owner ||
-                !commit.committer || commit.committer.login !== context.repo.owner) {
-              core.setFailed('Parent Controller request commit must be Owner-authored and committed');
+            if (!controlCommit.author || controlCommit.author.login !== context.repo.owner ||
+                !controlCommit.committer || controlCommit.committer.login !== context.repo.owner) {
+              core.setFailed('Control request commit must be Owner-authored and committed');
               return;
             }
-            const changed = commit.files || [];
+            const changed = controlCommit.files || [];
             if (changed.length !== 1 || changed[0].filename !== requestPath) {
-              core.setFailed('Parent Controller request commit must change only the semantic request file');
+              core.setFailed('Control request commit must change only the semantic request file');
               return;
             }
 
-            const dispatchWindowStart = Date.now() - 5000;
-            await github.rest.actions.createWorkflowDispatch({
+            const { data: liveBase } = await github.rest.repos.getBranch({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: 'ues-parent-controller-dispatch.yml',
-              ref: defaultBranch,
-              inputs: {
-                control_head: exactHead,
-                validation_run_id: String(process.env.VALIDATION_RUN_ID || ''),
-                control_pr_number: String(pr.number),
-              },
+              branch: defaultBranch,
             });
-
-            let receiverRun = null;
-            for (let attempt = 0; attempt < 12; attempt += 1) {
-              const { data: runs } = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'ues-parent-controller-dispatch.yml',
-                event: 'workflow_dispatch',
-                branch: defaultBranch,
-                per_page: 100,
-              });
-              const candidates = (runs.workflow_runs || []).filter((run) => {
-                const created = Date.parse(run.created_at || '');
-                return Number.isFinite(created) && created >= dispatchWindowStart &&
-                  run.event === 'workflow_dispatch' &&
-                  run.head_branch === defaultBranch &&
-                  run.actor && run.actor.login === context.repo.owner;
-              });
-              if (candidates.length > 1) {
-                core.setFailed('Trusted receiver dispatch readback is ambiguous; multiple new workflow_dispatch runs observed');
-                return;
-              }
-              if (candidates.length === 1) {
-                receiverRun = candidates[0];
-                break;
-              }
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-            }
-            if (!receiverRun) {
-              core.setFailed('Trusted receiver dispatch was not observed after bounded authoritative readback');
+            const runtimeSha = String(liveBase.commit.sha || '').toLowerCase();
+            if (!/^[0-9a-f]{40}$/.test(runtimeSha)) {
+              core.setFailed('Unable to resolve exact live UES default-branch SHA');
               return;
             }
+            const { data: requestFile } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: requestPath,
+              ref: exactHead,
+            });
+            if (Array.isArray(requestFile) || requestFile.type !== 'file' || !requestFile.content) {
+              core.setFailed('Parent Controller request file is missing or invalid');
+              return;
+            }
+            fs.writeFileSync(
+              'parent-controller-request.json',
+              Buffer.from(requestFile.content, 'base64').toString('utf8'),
+              { encoding: 'utf8', mode: 0o600 },
+            );
+            core.setOutput('runtime_sha', runtimeSha);
+            core.setOutput('request_file_sha', String(requestFile.sha || ''));
+            core.setOutput('control_pr_number', String(pr.number));
 
+      - name: Checkout exact trusted UES runtime
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.control.outputs.runtime_sha }}
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install exact trusted UES runtime
+        run: python -m pip install -e .
+
+      - name: Validate semantic request against exact live runtime
+        run: |
+          python -m ues.parent_controller_request \
+            --input parent-controller-request.json \
+            --expected-runtime-sha '${{ steps.control.outputs.runtime_sha }}' \
+            --authority-output current-authority.json \
+            --metadata-output parent-request-metadata.json
+
+      - name: Export validated routing metadata
+        id: metadata
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          value = json.load(open('parent-request-metadata.json', encoding='utf-8'))
+          wakeup = value.get('wakeup') or {}
+          for key, item in (
+              ('project', value.get('project', '')),
+              ('request_id', value.get('request_id', '')),
+              ('request_digest', value.get('request_digest', '')),
+              ('wakeup_type', wakeup.get('event_type', '')),
+              ('wakeup_event_id', wakeup.get('event_id', '')),
+              ('wakeup_repository', wakeup.get('repository', '')),
+              ('wakeup_workstream', wakeup.get('workstream', '')),
+              ('wakeup_sha', wakeup.get('sha', '')),
+          ):
+              print(f'{key}={item}')
+          PY
+
+      - name: Suppress already-receipted request
+        id: receipt
+        uses: actions/github-script@v7
+        env:
+          CONTROL_PR_NUMBER: ${{ steps.control.outputs.control_pr_number }}
+          REQUEST_ID: ${{ steps.metadata.outputs.request_id }}
+          REQUEST_DIGEST: ${{ steps.metadata.outputs.request_digest }}
+          RUNTIME_SHA: ${{ steps.control.outputs.runtime_sha }}
+        with:
+          script: |
+            const prNumber = Number(process.env.CONTROL_PR_NUMBER || '0');
+            const requestId = String(process.env.REQUEST_ID || '');
+            const requestDigest = String(process.env.REQUEST_DIGEST || '');
+            const runtimeSha = String(process.env.RUNTIME_SHA || '');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const marker = '<!-- UES_PARENT_CONTROLLER_RECEIPT_V1 -->';
+            const duplicate = comments.some((comment) => {
+              const body = String(comment.body || '');
+              return body.includes(marker) &&
+                body.includes(`\"request_id\": \"${requestId}\"`) &&
+                body.includes(`\"request_digest\": \"${requestDigest}\"`) &&
+                body.includes(`\"runtime_sha\": \"${runtimeSha}\"`);
+            });
+            core.setOutput('already_receipted', duplicate ? 'true' : 'false');
+
+      - name: Preserve validated Parent Controller transport
+        if: steps.receipt.outputs.already_receipted != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-parent-inline-request-${{ steps.control.outputs.request_file_sha }}
+          path: |
+            current-authority.json
+            parent-request-metadata.json
+          retention-days: 1
+          if-no-files-found: error
+
+  parent-controller-preflight-failure:
+    name: Parent Controller preflight failure receipt
+    needs: [core, parent-controller-preflight]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.ref == 'ues-parent-control' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.parent-controller-preflight.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Publish durable pre-effect failure receipt
+        uses: actions/github-script@v7
+        env:
+          CONTROL_HEAD: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+            const exactHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
+            if (!pr || pr.state !== 'open' || pr.draft !== true ||
+                !pr.head.repo || pr.head.repo.full_name !== expectedRepo ||
+                pr.head.ref !== 'ues-parent-control' || String(pr.head.sha || '').toLowerCase() !== exactHead ||
+                !context.payload.sender || context.payload.sender.login !== context.repo.owner) {
+              core.setFailed('Cannot publish Parent Controller preflight receipt without exact control identity');
+              return;
+            }
             const receipt = {
-              schema_version: 'UES_PARENT_CONTROLLER_DISPATCH_ACCEPTED_V1',
+              schema_version: 'UES_PARENT_CONTROLLER_PREFLIGHT_FAILURE_V1',
               control_pr_number: Number(pr.number),
               control_head: exactHead,
-              validation_run_id: Number(process.env.VALIDATION_RUN_ID || '0'),
-              receiver_run_id: Number(receiverRun.id),
-              receiver_status: receiverRun.status,
-              receiver_event: receiverRun.event,
-              receiver_head_branch: receiverRun.head_branch,
-              receiver_head_sha: receiverRun.head_sha,
-              stage: 'DISPATCH_AUTHORITATIVELY_READ_BACK',
+              validation_run_id: Number(context.runId),
+              stage: 'PRE_EFFECT_PREFLIGHT',
               effect_job_reached: false,
               safe_to_blind_retry: false,
+              raw_session_ids_persisted: false,
               secret_material_persisted: false,
             };
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pr.number,
-              body: '<!-- UES_PARENT_CONTROLLER_DISPATCH_ACCEPTED_V1 -->\n### UES Parent Controller dispatch accepted\n\n```json\n' + JSON.stringify(receipt, null, 2) + '\n```',
+              body: '<!-- UES_PARENT_CONTROLLER_PREFLIGHT_FAILURE_V1 -->\n### UES Parent Controller preflight failure\n\n```json\n' + JSON.stringify(receipt, null, 2) + '\n```',
+            });
+
+  parent-controller-execute:
+    name: Parent Controller authority-gated execute
+    needs: parent-controller-preflight
+    if: needs.parent-controller-preflight.outputs.already_receipted != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      issues: write
+    concurrency:
+      group: ues-project-lifecycle-${{ needs.parent-controller-preflight.outputs.project }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout exact validated UES runtime
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.parent-controller-preflight.outputs.runtime_sha }}
+          persist-credentials: false
+
+      - name: Reverify validated runtime is still current before effects
+        uses: actions/github-script@v7
+        env:
+          EXPECTED_RUNTIME_SHA: ${{ needs.parent-controller-preflight.outputs.runtime_sha }}
+        with:
+          script: |
+            const { data: liveBase } = await github.rest.repos.getBranch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: context.payload.repository.default_branch,
+            });
+            const liveSha = String(liveBase.commit.sha || '').toLowerCase();
+            const expectedSha = String(process.env.EXPECTED_RUNTIME_SHA || '').toLowerCase();
+            if (liveSha !== expectedSha) {
+              core.setFailed('UES default branch moved after Parent Controller preflight; submit a fresh request bound to current runtime');
+            }
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install exact validated UES runtime
+        run: python -m pip install -e .
+
+      - name: Restore validated Parent Controller request
+        uses: actions/download-artifact@v4
+        with:
+          name: ues-parent-inline-request-${{ needs.parent-controller-preflight.outputs.request_file_sha }}
+          path: .
+
+      - name: Run authority-gated lifecycle and guarded initial-lineage runtime
+        id: runtime
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: 'true'
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.repository_owner }}
+          UES_WAKEUP_EVENT_ID: ${{ needs.parent-controller-preflight.outputs.wakeup_event_id }}
+          UES_WAKEUP_EVENT_TYPE: ${{ needs.parent-controller-preflight.outputs.wakeup_type }}
+          UES_WAKEUP_EVENT_SOURCE: PARENT_CONTROLLER_VALIDATED_INLINE
+          UES_WAKEUP_REPOSITORY: ${{ needs.parent-controller-preflight.outputs.wakeup_repository }}
+          UES_WAKEUP_WORKSTREAM: ${{ needs.parent-controller-preflight.outputs.wakeup_workstream }}
+          UES_WAKEUP_SHA: ${{ needs.parent-controller-preflight.outputs.wakeup_sha }}
+          PROJECT: ${{ needs.parent-controller-preflight.outputs.project }}
+        run: |
+          set -euo pipefail
+          export UES_CURRENT_AUTHORITY_JSON="$(cat current-authority.json)"
+          if [[ "$PROJECT" == RP01 || "$PROJECT" == RP02 || "$PROJECT" == RP03 || "$PROJECT" == RP04 ]]; then
+            python -m ues.rp_authority_runtime "$PROJECT" | tee lifecycle-result.json
+          else
+            python -m ues.lifecycle_runtime_observed "$PROJECT" | tee lifecycle-result.json
+          fi
+          python -m ues.initial_lineage_runtime "$PROJECT" | tee initial-lineage-result.json
+
+      - name: Preserve compact runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-parent-inline-result-${{ needs.parent-controller-preflight.outputs.request_id }}
+          path: |
+            parent-request-metadata.json
+            lifecycle-result.json
+            initial-lineage-result.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Render sanitized durable Parent Controller receipt
+        if: always()
+        env:
+          UES_RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
+          UES_VALIDATION_RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def load(path):
+              try:
+                  value = json.loads(Path(path).read_text(encoding='utf-8'))
+                  return value if isinstance(value, dict) else None
+              except (FileNotFoundError, json.JSONDecodeError):
+                  return None
+
+          metadata = load('parent-request-metadata.json') or {}
+          lifecycle = load('lifecycle-result.json')
+          initial = load('initial-lineage-result.json')
+
+          def integer(value, key):
+              item = value.get(key) if isinstance(value, dict) else None
+              return item if isinstance(item, int) and not isinstance(item, bool) else None
+
+          lifecycle_external = integer(lifecycle, 'external_effects_dispatched')
+          initial_external = integer(initial, 'external_effects_dispatched')
+          lifecycle_created = integer(lifecycle, 'new_tasks_or_sessions_created')
+          initial_created = integer(initial, 'new_tasks_or_sessions_created')
+          external = (
+              lifecycle_external + initial_external
+              if lifecycle_external is not None and initial_external is not None
+              else None
+          )
+          created = (
+              lifecycle_created + initial_created
+              if lifecycle_created is not None and initial_created is not None
+              else None
+          )
+          receipt = {
+              'schema_version': 'UES_PARENT_CONTROLLER_RECEIPT_V1',
+              'request_id': metadata.get('request_id'),
+              'request_digest': metadata.get('request_digest'),
+              'authority_event_id': metadata.get('authority_event_id'),
+              'project': metadata.get('project'),
+              'runtime_sha': metadata.get('runtime_sha'),
+              'trigger_kind': 'VALIDATE_INLINE_PARENT_PIPELINE',
+              'validation_run_id': os.environ.get('UES_VALIDATION_RUN_ID') or None,
+              'execution_outcome': os.environ.get('UES_RUNTIME_OUTCOME') or 'unknown',
+              'lifecycle_result': lifecycle.get('result') if isinstance(lifecycle, dict) else None,
+              'initial_lineage_result': initial.get('result') if isinstance(initial, dict) else None,
+              'external_effects_dispatched': external,
+              'new_tasks_or_sessions_created': created,
+              'effect_evidence_complete': external is not None and created is not None,
+              'safe_to_blind_retry': False,
+              'raw_session_ids_persisted': False,
+              'secret_material_persisted': False,
+          }
+          body = (
+              '<!-- UES_PARENT_CONTROLLER_RECEIPT_V1 -->\n'
+              '### UES Parent Controller receipt\n\n'
+              '```json\n' + json.dumps(receipt, sort_keys=True, indent=2) + '\n```\n'
+          )
+          Path('parent-controller-receipt.md').write_text(body, encoding='utf-8')
+          PY
+
+      - name: Publish durable Parent Controller receipt
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          CONTROL_PR_NUMBER: ${{ needs.parent-controller-preflight.outputs.control_pr_number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const prNumber = Number(process.env.CONTROL_PR_NUMBER || '0');
+            if (!Number.isInteger(prNumber) || prNumber <= 0) {
+              core.setFailed('Missing validated persistent control PR number');
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: fs.readFileSync('parent-controller-receipt.md', 'utf8'),
             });
