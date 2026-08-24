@@ -12,10 +12,12 @@ class ParentControllerControlQueueWorkflowTests(unittest.TestCase):
     def setUpClass(cls):
         cls.text = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_uses_trusted_pull_request_target_control_queue_only(self):
+    def test_uses_dedicated_trusted_pull_request_target_control_queue_only(self):
         self.assertIn("pull_request_target:", self.text)
         self.assertIn("types: [synchronize]", self.text)
-        self.assertIn("github.event.pull_request.head.ref == 'ues-control'", self.text)
+        self.assertIn("github.event.pull_request.head.ref == 'ues-parent-control'", self.text)
+        self.assertIn("control.head.ref !== 'ues-parent-control'", self.text)
+        self.assertNotIn("head.ref == 'ues-control'", self.text)
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", self.text)
         self.assertIn("github.event.pull_request.base.ref == github.event.repository.default_branch", self.text)
 
@@ -51,6 +53,13 @@ class ParentControllerControlQueueWorkflowTests(unittest.TestCase):
         self.assertIn("python -m ues.initial_lineage_runtime", self.text)
         self.assertIn("UES_CURRENT_AUTHORITY_JSON", self.text)
         self.assertIn("UES_AUTHORITY_TRANSPORT_ACTOR", self.text)
+
+    def test_only_validated_routing_metadata_crosses_job_outputs(self):
+        self.assertIn("('project', value.get('project', ''))", self.text)
+        self.assertIn("('request_id', value.get('request_id', ''))", self.text)
+        self.assertIn("('wakeup_repository', wakeup.get('repository', ''))", self.text)
+        self.assertNotIn("('authority_event_id'", self.text)
+        self.assertNotIn("authority_event_id: ${{ steps.metadata.outputs.authority_event_id }}", self.text)
 
     def test_queue_is_transport_not_raw_comment_effect_ingress(self):
         self.assertNotIn("issue_comment:", self.text)
