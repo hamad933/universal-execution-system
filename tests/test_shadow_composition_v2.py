@@ -19,13 +19,12 @@ class ShadowCompositionV2Tests(unittest.TestCase):
                 self.assertFalse(adapter.mutation_allowed)
                 self.assertFalse(adapter.config_grants_mutation_authority)
                 self.assertEqual(adapter.project_auto_safe_actions, ())
+                self.assertFalse(adapter.automatic_new_task_creation)
         self.assertEqual(
             self.gs.unknown_lifetime_capacity,
             "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
         )
-        self.assertTrue(self.gs.automatic_new_task_creation)
         self.assertEqual(self.cep.unknown_lifetime_capacity, "DENY")
-        self.assertFalse(self.cep.automatic_new_task_creation)
 
     def test_project_lane_identity_is_distinct(self):
         self.assertNotEqual(
