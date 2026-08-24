@@ -155,5 +155,6 @@ jobs:
               inputs: {
                 control_head: exactHead,
                 validation_run_id: String(process.env.VALIDATION_RUN_ID || ''),
+                control_pr_number: String(pr.number),
               },
             });

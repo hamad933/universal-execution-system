@@ -11,6 +11,10 @@ on:
         description: Validate Universal Core run id whose core job passed
         required: true
         type: string
+      control_pr_number:
+        description: Exact persistent Parent Controller control PR number
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,7 +24,64 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  announce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Publish durable receiver-start receipt
+        uses: actions/github-script@v7
+        env:
+          CONTROL_PR_NUMBER: ${{ inputs.control_pr_number }}
+          CONTROL_HEAD: ${{ inputs.control_head }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+        with:
+          script: |
+            const prNumber = Number(process.env.CONTROL_PR_NUMBER || '0');
+            const controlHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
+            const validationRunId = Number(process.env.VALIDATION_RUN_ID || '0');
+            if (!Number.isSafeInteger(prNumber) || prNumber <= 0 ||
+                !/^[0-9a-f]{40}$/.test(controlHead) ||
+                !Number.isSafeInteger(validationRunId) || validationRunId <= 0) {
+              core.setFailed('Receiver-start receipt requires exact PR/head/validation identities');
+              return;
+            }
+            const { data: control } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+            if (control.state !== 'open' || control.draft !== true ||
+                !control.head.repo || control.head.repo.full_name !== expectedRepo ||
+                control.head.ref !== 'ues-parent-control' ||
+                String(control.head.sha || '').toLowerCase() !== controlHead ||
+                !control.user || control.user.login !== context.repo.owner) {
+              core.setFailed('Receiver-start receipt target is not the exact persistent control PR');
+              return;
+            }
+            const receipt = {
+              schema_version: 'UES_PARENT_CONTROLLER_RECEIVER_STARTED_V1',
+              control_pr_number: prNumber,
+              control_head: controlHead,
+              validation_run_id: validationRunId,
+              receiver_run_id: Number(context.runId),
+              stage: 'RECEIVER_STARTED_PRE_EFFECT',
+              effect_job_reached: false,
+              safe_to_blind_retry: false,
+              secret_material_persisted: false,
+            };
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: '<!-- UES_PARENT_CONTROLLER_RECEIVER_STARTED_V1 -->\n### UES Parent Controller receiver started\n\n```json\n' + JSON.stringify(receipt, null, 2) + '\n```',
+            });
+
   preflight:
+    needs: announce
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -47,6 +108,7 @@ jobs:
         id: control
         uses: actions/github-script@v7
         env:
+          CONTROL_PR_NUMBER: ${{ inputs.control_pr_number }}
           CONTROL_HEAD: ${{ inputs.control_head }}
           VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
         with:
@@ -55,9 +117,14 @@ jobs:
             const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
             const defaultBranch = context.payload.repository.default_branch;
             const requestPath = '.ues/parent-controller-request.json';
+            const prNumber = Number(process.env.CONTROL_PR_NUMBER || '0');
             const controlHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
             const validationRunId = Number(process.env.VALIDATION_RUN_ID || '0');
 
+            if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+              core.setFailed('Trusted Parent Controller dispatch requires exact control PR number');
+              return;
+            }
             if (!/^[0-9a-f]{40}$/.test(controlHead)) {
               core.setFailed('Trusted Parent Controller dispatch requires exact 40-hex control head');
               return;
@@ -67,33 +134,25 @@ jobs:
               return;
             }
 
-            const pulls = await github.paginate(github.rest.pulls.list, {
+            const { data: control } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'open',
-              head: `${context.repo.owner}:ues-parent-control`,
-              base: defaultBranch,
-              per_page: 100,
+              pull_number: prNumber,
             });
-            if (pulls.length !== 1) {
-              core.setFailed('Exactly one persistent Parent Controller control PR must be open');
-              return;
-            }
-            const control = pulls[0];
-            if (control.draft !== true || !control.head.repo || control.head.repo.full_name !== expectedRepo ||
-                control.head.ref !== 'ues-parent-control' || String(control.head.sha || '').toLowerCase() !== controlHead) {
-              core.setFailed('Persistent control PR identity/head is not exact');
-              return;
-            }
-            if (!control.user || control.user.login !== context.repo.owner) {
-              core.setFailed('Persistent control PR must be owned by repository Owner');
+            if (control.state !== 'open' || control.draft !== true ||
+                !control.head.repo || control.head.repo.full_name !== expectedRepo ||
+                control.head.ref !== 'ues-parent-control' ||
+                String(control.head.sha || '').toLowerCase() !== controlHead ||
+                control.base.ref !== defaultBranch ||
+                !control.user || control.user.login !== context.repo.owner) {
+              core.setFailed('Persistent control PR identity/head/base/Owner is not exact');
               return;
             }
 
             const prFiles = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: control.number,
+              pull_number: prNumber,
               per_page: 100,
             });
             if (prFiles.length !== 1 || prFiles[0].filename !== requestPath) {
@@ -135,7 +194,7 @@ jobs:
               return;
             }
             const validationPrs = Array.isArray(validation.pull_requests) ? validation.pull_requests : [];
-            if (validationPrs.length !== 1 || Number(validationPrs[0].number) !== Number(control.number)) {
+            if (validationPrs.length !== 1 || Number(validationPrs[0].number) !== prNumber) {
               core.setFailed('Validation run must bind the exact persistent control PR');
               return;
             }
@@ -181,7 +240,7 @@ jobs:
             );
             core.setOutput('runtime_sha', runtimeSha);
             core.setOutput('request_file_sha', String(requestFile.sha || ''));
-            core.setOutput('control_pr_number', String(control.number));
+            core.setOutput('control_pr_number', String(prNumber));
             core.setOutput('validation_run_id', String(validationRunId));
 
       - name: Checkout exact trusted UES runtime
@@ -266,6 +325,65 @@ jobs:
             parent-request-metadata.json
           retention-days: 1
           if-no-files-found: error
+
+  preflight-failure-receipt:
+    needs: [announce, preflight]
+    if: always() && needs.preflight.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Publish durable preflight-failure receipt
+        uses: actions/github-script@v7
+        env:
+          CONTROL_PR_NUMBER: ${{ inputs.control_pr_number }}
+          CONTROL_HEAD: ${{ inputs.control_head }}
+          VALIDATION_RUN_ID: ${{ inputs.validation_run_id }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+        with:
+          script: |
+            const prNumber = Number(process.env.CONTROL_PR_NUMBER || '0');
+            const controlHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
+            const validationRunId = Number(process.env.VALIDATION_RUN_ID || '0');
+            if (!Number.isSafeInteger(prNumber) || prNumber <= 0 || !/^[0-9a-f]{40}$/.test(controlHead)) {
+              core.setFailed('Cannot publish preflight failure receipt without exact control identity');
+              return;
+            }
+            const { data: control } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
+            if (control.state !== 'open' || control.draft !== true ||
+                !control.head.repo || control.head.repo.full_name !== expectedRepo ||
+                control.head.ref !== 'ues-parent-control' ||
+                String(control.head.sha || '').toLowerCase() !== controlHead ||
+                !control.user || control.user.login !== context.repo.owner) {
+              core.setFailed('Preflight failure receipt target is not the exact persistent control PR');
+              return;
+            }
+            const receipt = {
+              schema_version: 'UES_PARENT_CONTROLLER_PREFLIGHT_FAILURE_V1',
+              control_pr_number: prNumber,
+              control_head: controlHead,
+              validation_run_id: validationRunId,
+              receiver_run_id: Number(context.runId),
+              stage: 'PRE_EFFECT_PREFLIGHT',
+              preflight_result: String(process.env.PREFLIGHT_RESULT || 'unknown'),
+              effect_job_reached: false,
+              safe_to_blind_retry: false,
+              raw_session_ids_persisted: false,
+              secret_material_persisted: false,
+            };
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: '<!-- UES_PARENT_CONTROLLER_PREFLIGHT_FAILURE_V1 -->\n### UES Parent Controller preflight failure\n\n```json\n' + JSON.stringify(receipt, null, 2) + '\n```',
+            });
 
   execute:
     needs: preflight
@@ -358,6 +476,7 @@ jobs:
         env:
           UES_RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
           UES_VALIDATION_RUN_ID: ${{ needs.preflight.outputs.validation_run_id }}
+          UES_RECEIVER_RUN_ID: ${{ github.run_id }}
         run: |
           python - <<'PY'
           import json
@@ -402,6 +521,7 @@ jobs:
               'runtime_sha': metadata.get('runtime_sha'),
               'trigger_kind': 'VALIDATE_WORKFLOW_DISPATCH',
               'validation_run_id': os.environ.get('UES_VALIDATION_RUN_ID') or None,
+              'receiver_run_id': os.environ.get('UES_RECEIVER_RUN_ID') or None,
               'execution_outcome': os.environ.get('UES_RUNTIME_OUTCOME') or 'unknown',
               'lifecycle_result': lifecycle.get('result') if isinstance(lifecycle, dict) else None,
               'initial_lineage_result': initial.get('result') if isinstance(initial, dict) else None,
