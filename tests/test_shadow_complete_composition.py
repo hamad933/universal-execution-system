@@ -34,8 +34,7 @@ class ShadowCompleteCompositionTests(unittest.TestCase):
             self.assertFalse(adapter.runtime_mode_is_authority)
             self.assertFalse(adapter.config_grants_mutation_authority)
             self.assertEqual(adapter.project_auto_safe_actions, ())
-        self.assertTrue(self.gs.automatic_new_task_creation)
-        self.assertFalse(self.cep.automatic_new_task_creation)
+            self.assertFalse(adapter.automatic_new_task_creation)
 
     def test_same_w01_in_gs_and_cep_cannot_collide(self):
         gs_lane = canonical_lane_id(self.gs.project, self.gs.route, "W01")
@@ -51,6 +50,8 @@ class ShadowCompleteCompositionTests(unittest.TestCase):
             gs_budget["unknown_lifetime_capacity"],
             "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
         )
+        self.assertTrue(gs_budget["necessity_based_new_generation_authorized"])
+        self.assertFalse(gs_budget["automatic_new_task_creation"])
         self.assertTrue(gs_budget["runtime_budget_preflight_required"])
         self.assertEqual(cep_budget["ceiling"], 70)
         self.assertEqual(cep_budget["reserve_target"], 15)
