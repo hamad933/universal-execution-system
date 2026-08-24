@@ -107,3 +107,13 @@ jobs:
           UES_WAKEUP_WORKSTREAM: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.workstream || '' }}
           UES_WAKEUP_SHA: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || '' }}
         run: python -m ues.lifecycle_runtime_observed ${{ matrix.project }}
+
+      - name: Run guarded initial logical lineage creation/reconciliation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.actor }}
+          UES_CURRENT_AUTHORITY_JSON: ${{ github.event_name == 'repository_dispatch' && toJSON(github.event.client_payload.current_authority) || inputs.current_authority_json || '' }}
+        run: python -m ues.initial_lineage_runtime ${{ matrix.project }}
