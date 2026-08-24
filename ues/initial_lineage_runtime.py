@@ -5,7 +5,6 @@ import json
 import os
 import re
 from collections import Counter
-from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -71,6 +70,80 @@ def _dynamic_role_config(
         return None
     role_config = config.get(_role_key(role))
     return role_config if isinstance(role_config, Mapping) else None
+
+
+def _string_list(task_spec: Mapping[str, Any], *keys: str, required_nonempty: bool = False) -> list[str]:
+    value: Any = None
+    selected = keys[0]
+    for key in keys:
+        if key in task_spec:
+            value = task_spec.get(key)
+            selected = key
+            break
+    if not isinstance(value, list):
+        raise ValueError(f"task_spec.{selected} must be a list")
+    items = [str(item).strip() for item in value]
+    if any(not item for item in items):
+        raise ValueError(f"task_spec.{selected} must contain only non-empty strings")
+    if required_nonempty and not items:
+        raise ValueError(f"task_spec.{selected} must not be empty")
+    return items
+
+
+def _required_text(task_spec: Mapping[str, Any], *keys: str) -> str:
+    selected = keys[0]
+    value: Any = None
+    for key in keys:
+        if key in task_spec:
+            value = task_spec.get(key)
+            selected = key
+            break
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"task_spec.{selected} must be a non-empty string")
+    return text
+
+
+def _validate_task_spec(task_spec: Mapping[str, Any], *, role: str) -> dict[str, Any]:
+    """Validate the complete bounded executor contract before any provider write.
+
+    The Current Authority task specification is the sole scope source for the
+    first physical generation. Writers require an explicit non-empty write
+    domain; reviewer/assurance roles are read-only and must declare an empty
+    write scope. Every role carries explicit prohibitions, validation, evidence,
+    handoff, and Stop Gate fields so Jules cannot infer missing scope.
+    """
+
+    role_name = str(role or "").strip().upper()
+    if role_name not in SUPPORTED_ROLES:
+        raise ValueError("task_spec role is not supported")
+    result = dict(task_spec)
+    _required_text(task_spec, "objective")
+    _required_text(task_spec, "exact_baseline")
+    write_scope = _string_list(task_spec, "write_scope", "writeScope")
+    _string_list(task_spec, "prohibited_scope", "prohibitedScope")
+    if "validation" in task_spec:
+        _string_list(task_spec, "validation", required_nonempty=True)
+    elif "tests" in task_spec:
+        _string_list(task_spec, "tests", required_nonempty=True)
+    else:
+        raise ValueError("task_spec.validation or task_spec.tests must be a non-empty list")
+    _string_list(task_spec, "evidence", required_nonempty=True)
+    _required_text(task_spec, "handoff")
+    _required_text(task_spec, "stop_gate", "stopGate")
+
+    if role_name == "WRITER" and not write_scope:
+        raise ValueError("Writer task_spec.write_scope must not be empty")
+    if role_name in {"REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"} and write_scope:
+        raise ValueError("Reviewer/Assurance task_spec.write_scope must be empty")
+    return result
+
+
+def _dynamic_provider_starting_branch(role_config: Mapping[str, Any]) -> str:
+    branch = str(role_config.get("provider_starting_branch") or "").strip()
+    if not branch:
+        raise ValueError("dynamic lineage role must declare provider_starting_branch")
+    return branch
 
 
 def _parse_exact_baseline(task_spec: Mapping[str, Any]) -> tuple[str, str]:
@@ -263,8 +336,8 @@ def run(project: str) -> dict[str, Any]:
             )
             continue
 
-        task_spec = raw_lane.get("task_spec")
-        if not isinstance(task_spec, Mapping):
+        raw_task_spec = raw_lane.get("task_spec")
+        if not isinstance(raw_task_spec, Mapping):
             results.append(
                 {
                     "workstream": workstream,
@@ -276,13 +349,17 @@ def run(project: str) -> dict[str, Any]:
             )
             continue
         try:
+            task_spec = _validate_task_spec(raw_task_spec, role=role)
             starting_branch, candidate_sha = _parse_exact_baseline(task_spec)
+            dynamic_branch = _dynamic_provider_starting_branch(dynamic_role)
+            if dynamic_branch != starting_branch:
+                raise ValueError("dynamic provider_starting_branch must match task_spec.exact_baseline branch")
         except ValueError as exc:
             results.append(
                 {
                     "workstream": workstream,
                     "role": role,
-                    "decision": "INITIAL_LINEAGE_EXACT_BASELINE_INVALID",
+                    "decision": "INITIAL_LINEAGE_TASK_CONTRACT_INVALID",
                     "reason": str(exc),
                     "provider_write_attempted": False,
                     "safe_to_blind_retry": False,
