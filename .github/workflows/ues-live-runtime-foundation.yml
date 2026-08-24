@@ -188,6 +188,48 @@ jobs:
           UES_STATE_REF_PREFIX: ues-runtime/v2
         run: python -m ues.provider_observer_runtime observe
 
+  scheduled-lifecycle-health-fallback:
+    if: github.event_name == 'schedule'
+    needs: scheduled-provider-observer
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        project: [CEP, GS]
+    concurrency:
+      group: ues-lineage-lifecycle-${{ matrix.project }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout governed default-branch runtime
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Run authority-neutral lifecycle health fallback
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_CURRENT_AUTHORITY_JSON: ""
+          UES_WAKEUP_EVENT_ID: ""
+          UES_WAKEUP_EVENT_TYPE: ""
+          UES_WAKEUP_EVENT_SOURCE: provider-observer-schedule-fallback
+          UES_WAKEUP_REPOSITORY: ""
+          UES_WAKEUP_WORKSTREAM: ""
+          UES_WAKEUP_SHA: ""
+        run: python -m ues.lifecycle_runtime_observed ${{ matrix.project }}
+
   scheduled-provider-audit:
     if: always() && (github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     needs: scheduled-provider-observer
