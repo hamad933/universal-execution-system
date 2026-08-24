@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       validation_run_id:
-        description: Exact successful Validate Universal Core run id
+        description: Validate Universal Core run id whose core job passed
         required: true
         type: string
 
@@ -122,10 +122,11 @@ jobs:
               run_id: validationRunId,
             });
             if (validation.name !== 'Validate Universal Core' || validation.event !== 'pull_request' ||
-                validation.status !== 'completed' || validation.conclusion !== 'success' ||
+                !['in_progress', 'completed'].includes(validation.status) ||
+                (validation.status === 'completed' && validation.conclusion !== 'success') ||
                 validation.head_branch !== 'ues-parent-control' ||
                 String(validation.head_sha || '').toLowerCase() !== controlHead) {
-              core.setFailed('Dispatch is not bound to a successful exact-head Validate Universal Core run');
+              core.setFailed('Dispatch is not bound to the exact Owner control validation run');
               return;
             }
             if (!validation.actor || validation.actor.login !== context.repo.owner ||
@@ -136,6 +137,19 @@ jobs:
             const validationPrs = Array.isArray(validation.pull_requests) ? validation.pull_requests : [];
             if (validationPrs.length !== 1 || Number(validationPrs[0].number) !== Number(control.number)) {
               core.setFailed('Validation run must bind the exact persistent control PR');
+              return;
+            }
+            const validationJobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: validationRunId,
+              per_page: 100,
+            });
+            const coreJobs = validationJobs.filter((job) =>
+              job.name === 'core' && job.status === 'completed' && job.conclusion === 'success'
+            );
+            if (coreJobs.length !== 1) {
+              core.setFailed('Dispatch requires exactly one completed/successful Validate Universal Core core job');
               return;
             }
 
