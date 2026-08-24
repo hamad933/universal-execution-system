@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from pathlib import Path
+import unittest
+
+
+class U22AuthorityWorkflowTests(unittest.TestCase):
+    def test_existing_gs_cep_ingress_runs_initial_lineage_runtime_under_same_authority_transport(self):
+        text = Path(".github/workflows/ues-bounded-existing-session.yml").read_text(encoding="utf-8")
+        self.assertIn("python -m ues.lifecycle_runtime_observed ${{ matrix.project }}", text)
+        self.assertIn("python -m ues.initial_lineage_runtime ${{ matrix.project }}", text)
+        self.assertIn("UES_CURRENT_AUTHORITY_JSON:", text)
+        self.assertIn("UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.actor }}", text)
+        self.assertIn("project: [CEP, GS]", text)
+
+    def test_rp_effect_ingress_is_explicit_current_authority_only(self):
+        text = Path(".github/workflows/ues-rp-authority-lifecycle.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", text)
+        self.assertIn("repository_dispatch:", text)
+        self.assertIn("types: [ues-rp-lifecycle-wakeup]", text)
+        self.assertIn("current_authority_json:", text)
+        self.assertIn("required: true", text)
+        self.assertIn("project: [RP01, RP02, RP03, RP04]", text)
+        self.assertIn("python -m ues.rp_authority_runtime ${{ matrix.project }}", text)
+        self.assertIn("python -m ues.initial_lineage_runtime ${{ matrix.project }}", text)
+        self.assertNotIn("\n  schedule:", text)
+        self.assertNotIn("\n  push:", text)
+        self.assertNotIn("pull_request_target", text)
+
+    def test_rp_readonly_runtime_runs_on_main_push_but_remains_authority_neutral(self):
+        text = Path(".github/workflows/ues-rp-readonly-runtime.yml").read_text(encoding="utf-8")
+        self.assertIn("\n  push:\n    branches:\n      - main", text)
+        self.assertIn("\n  schedule:", text)
+        self.assertIn('UES_CURRENT_AUTHORITY_JSON: ""', text)
+        self.assertIn("project: [RP01, RP02, RP03, RP04]", text)
+        self.assertNotIn("repository_dispatch", text)
+        self.assertNotIn("create-initial-lineage-session", text)
+        self.assertNotIn("create-session", text.lower())
+        self.assertNotIn("send-message", text.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()
