@@ -38,6 +38,7 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("workflow_id: 'ues-parent-controller-dispatch.yml'", relay)
         self.assertIn("control_head: exactHead", relay)
         self.assertIn("validation_run_id", relay)
+        self.assertIn("control_pr_number: String(pr.number)", relay)
 
     def test_receiver_is_trusted_workflow_dispatch_only(self):
         trigger = self.receiver.split("permissions:", 1)[0]
@@ -48,14 +49,26 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertNotIn("workflow_run:", trigger)
         self.assertIn("control_head:", self.receiver)
         self.assertIn("validation_run_id:", self.receiver)
+        self.assertIn("control_pr_number:", self.receiver)
         self.assertIn("group: ues-parent-controller-control-queue-${{ github.repository }}", self.receiver)
         self.assertIn("cancel-in-progress: false", self.receiver)
 
-    def test_receiver_revalidates_control_pr_commit_and_validation_run(self):
+    def test_receiver_start_is_durably_visible_before_preflight(self):
+        self.assertIn("announce:", self.receiver)
+        self.assertIn("Publish durable receiver-start receipt", self.receiver)
+        self.assertIn("UES_PARENT_CONTROLLER_RECEIVER_STARTED_V1", self.receiver)
+        self.assertIn("receiver_run_id: Number(context.runId)", self.receiver)
+        self.assertIn("stage: 'RECEIVER_STARTED_PRE_EFFECT'", self.receiver)
+        self.assertIn("effect_job_reached: false", self.receiver)
+        self.assertIn("safe_to_blind_retry: false", self.receiver)
+        self.assertIn("needs: announce", self.receiver)
+
+    def test_receiver_revalidates_exact_control_pr_commit_and_validation_run(self):
         for expected in (
-            "Exactly one persistent Parent Controller control PR must be open",
+            "github.rest.pulls.get",
             "control.draft !== true",
             "control.head.ref !== 'ues-parent-control'",
+            "control.base.ref !== defaultBranch",
             "prFiles.length !== 1",
             "controlCommit.author.login !== context.repo.owner",
             "controlCommit.committer.login !== context.repo.owner",
@@ -64,6 +77,7 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
             "validation.actor.login !== context.repo.owner",
             "validation.triggering_actor.login !== context.repo.owner",
             "validationPrs.length !== 1",
+            "Number(validationPrs[0].number) !== prNumber",
         ):
             self.assertIn(expected, self.receiver)
 
@@ -76,6 +90,19 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("['in_progress', 'completed'].includes(validation.status)", self.receiver)
         self.assertIn("validation.status === 'completed' && validation.conclusion !== 'success'", self.receiver)
         self.assertNotIn("validation.status !== 'completed' || validation.conclusion !== 'success'", self.receiver)
+
+    def test_preflight_failure_is_durably_visible_and_never_claims_effect(self):
+        self.assertIn("preflight-failure-receipt:", self.receiver)
+        self.assertIn("if: always() && needs.preflight.result != 'success'", self.receiver)
+        self.assertIn("UES_PARENT_CONTROLLER_PREFLIGHT_FAILURE_V1", self.receiver)
+        self.assertIn("receiver_run_id: Number(context.runId)", self.receiver)
+        self.assertIn("stage: 'PRE_EFFECT_PREFLIGHT'", self.receiver)
+        self.assertIn("preflight_result:", self.receiver)
+        self.assertIn("effect_job_reached: false", self.receiver)
+        failure = self.receiver.split("preflight-failure-receipt:", 1)[1].split("\n  execute:\n", 1)[0]
+        self.assertNotIn("JULES_API_KEY", failure)
+        self.assertNotIn("UES_CURRENT_AUTHORITY_JSON", failure)
+        self.assertNotIn("contents: write", failure)
 
     def test_receiver_executes_only_trusted_live_runtime_after_semantic_validation(self):
         self.assertIn("github.rest.repos.getBranch", self.receiver)
@@ -90,9 +117,9 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("python -m ues.initial_lineage_runtime", self.receiver)
 
     def test_secrets_exist_only_in_effect_job_after_preflight(self):
-        preflight, execute = self.receiver.split("\n  execute:\n", 1)
-        self.assertNotIn("JULES_API_KEY", preflight)
-        self.assertNotIn("contents: write", preflight)
+        pre_effect, execute = self.receiver.split("\n  execute:\n", 1)
+        self.assertNotIn("JULES_API_KEY", pre_effect)
+        self.assertNotIn("contents: write", pre_effect)
         self.assertIn("JULES_API_KEY: ${{ secrets.JULES_API_KEY }}", execute)
         self.assertIn("permissions:\n      contents: write\n      issues: write", execute)
         drift = execute.index("Reverify validated runtime is still current before effects")
@@ -107,9 +134,11 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("if: needs.preflight.outputs.already_receipted != 'true'", self.receiver)
         self.assertIn("'safe_to_blind_retry': False", self.receiver)
 
-    def test_receipt_is_sanitized_and_validation_bound(self):
+    def test_final_receipt_is_sanitized_and_receiver_run_bound(self):
         self.assertIn("'trigger_kind': 'VALIDATE_WORKFLOW_DISPATCH'", self.receiver)
         self.assertIn("'validation_run_id'", self.receiver)
+        self.assertIn("'receiver_run_id'", self.receiver)
+        self.assertIn("UES_RECEIVER_RUN_ID: ${{ github.run_id }}", self.receiver)
         self.assertIn("'external_effects_dispatched'", self.receiver)
         self.assertIn("'new_tasks_or_sessions_created'", self.receiver)
         self.assertIn("'raw_session_ids_persisted': False", self.receiver)
