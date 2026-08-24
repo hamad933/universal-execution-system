@@ -35,7 +35,7 @@ class GSControlAdapterTests(unittest.TestCase):
         self.assertTrue(runtime["unbound_never_implies_replacement"])
         self.assertTrue(runtime["replacement_requires_proven_terminal_or_context_exhausted"])
 
-    def test_task_budget_matches_g93_owner_policy_without_mutable_usage_snapshot(self):
+    def test_task_budget_matches_g93_owner_policy_without_activating_runtime_creation(self):
         budget = self.adapter["task_budget"]
         self.assertEqual(budget["ceiling"], 40)
         self.assertIsNone(budget["reserve_target"])
@@ -48,11 +48,12 @@ class GSControlAdapterTests(unittest.TestCase):
             budget["owner_new_task_policy"],
             "OWNER_AUTHORIZED_NECESSITY_BASED_NEW_GENERATION",
         )
+        self.assertTrue(budget["necessity_based_new_generation_authorized"])
         self.assertEqual(
             budget["unknown_lifetime_capacity"],
             "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
         )
-        self.assertTrue(budget["automatic_new_task_creation"])
+        self.assertFalse(budget["automatic_new_task_creation"])
         self.assertTrue(budget["runtime_budget_preflight_required"])
         self.assertFalse(budget["unknown_lifetime_alone_is_stop_gate"])
         self.assertNotIn("proven_used_floor", budget)
