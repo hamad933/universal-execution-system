@@ -12,7 +12,7 @@ class ShadowCompositionV2Tests(unittest.TestCase):
         cls.gs = load_project_adapter(Path("adapters/gs.json"))
         cls.cep = load_project_adapter(Path("adapters/cep.json"))
 
-    def test_project_configs_remain_shadow_only_even_when_project_budget_policy_differs(self):
+    def test_project_configs_remain_shadow_only_and_defer_mutable_budget_policy(self):
         for adapter in (self.gs, self.cep):
             with self.subTest(project=adapter.project):
                 self.assertEqual(adapter.default_mode, "SHADOW")
@@ -20,11 +20,11 @@ class ShadowCompositionV2Tests(unittest.TestCase):
                 self.assertFalse(adapter.config_grants_mutation_authority)
                 self.assertEqual(adapter.project_auto_safe_actions, ())
                 self.assertFalse(adapter.automatic_new_task_creation)
-        self.assertEqual(
-            self.gs.unknown_lifetime_capacity,
-            "ALLOW_UNLESS_DIRECT_CEILING_REACHED",
-        )
-        self.assertEqual(self.cep.unknown_lifetime_capacity, "DENY")
+                self.assertEqual(adapter.unknown_lifetime_capacity, "DENY")
+                budget = adapter.raw["task_budget"]
+                self.assertTrue(budget["current_ceiling_must_be_resolved_at_runtime"])
+                self.assertNotIn("ceiling", budget)
+                self.assertNotIn("reserve_target", budget)
 
     def test_project_lane_identity_is_distinct(self):
         self.assertNotEqual(
