@@ -1,16 +1,16 @@
 {
   "schema_version": "UES_PARENT_CONTROLLER_REQUEST_V1",
-  "request_id": "RP01-U26-FINAL-ACTIVATION-PROOF-20260825T0024P03",
+  "request_id": "RP01-U26-FINAL-ACTIVATION-PROOF-R2-20260825T0034P03",
   "project": "RP01",
-  "runtime_sha": "0dfcd87620e410f02ddf44fa46e496ce20cb22c4",
+  "runtime_sha": "a3c8d8c5cc207a678b4c35c8313a2123a9b8121f",
   "current_authority": {
     "source": "DRIVE_CURRENT_STATE",
     "source_id": "1Q7c5wYcNlJ7GAbMMu7Fupcl2poKFMKAe8APKq1rQdx8",
     "project": "RP01",
     "route": "RP01",
     "current": true,
-    "authority_event_id": "RP01-U26-FINAL-NO-EFFECT-ACTIVATION-PROOF-20260825T0024P03",
-    "expires_at": "2026-08-25T01:10:00+03:00",
+    "authority_event_id": "RP01-U26-FINAL-NO-EFFECT-ACTIVATION-PROOF-R2-20260825T0034P03",
+    "expires_at": "2026-08-25T01:20:00+03:00",
     "lineages": {},
     "generation_policy": {
       "authorized_initial_lineages": {},
