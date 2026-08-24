@@ -1,4 +1,4 @@
-name: UES Bounded Existing Session Continuation
+name: UES Portfolio Lineage Lifecycle
 
 on:
   workflow_dispatch:
@@ -6,19 +6,23 @@ on:
     branches:
       - main
   schedule:
-    - cron: "7,22,37,52 * * * *"
+    - cron: "*/10 * * * *"
 
 permissions:
   contents: write
 
-concurrency:
-  group: ues-bounded-existing-session-main
-  cancel-in-progress: false
-
 jobs:
-  cep-waiting-continuation:
+  project-lineage-cycle:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        project: [CEP, GS]
+    concurrency:
+      group: ues-lineage-lifecycle-${{ matrix.project }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout governed UES main runtime
         uses: actions/checkout@v4
@@ -31,10 +35,10 @@ jobs:
       - name: Install UES
         run: python -m pip install -e .
 
-      - name: Execute and durably supervise policy-authorized CEP waiting continuations
+      - name: Run logical Writer Reviewer lifecycle
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-        run: python -m ues.bounded_waiting_supervisor CEP
+        run: python -m ues.lifecycle_runtime ${{ matrix.project }}
