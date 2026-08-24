@@ -73,7 +73,7 @@ class JulesClient:
         return self._list("/v1alpha/sessions", "sessions", page_size, "jules.sessions.list", _normalize_session)
 
     def get_source(self, source: str) -> dict[str, Any]:
-        name = _resource_name(source, "sources")
+        name = _resource_name(source, "sources", allow_nested=True)
         payload = self._read_json(f"/v1alpha/{name}", operation="jules.sources.get")
         if not isinstance(payload, dict):
             raise ProtocolError("Jules source response must be an object", operation="jules.sources.get")
@@ -107,7 +107,7 @@ class JulesClient:
         binding = self._binding_from_session(pre_session, expected_repository, ())
         if not binding["proven"] or not binding["matches_expected_repository"]:
             raise ProtocolError("Jules session source/repository ownership is not proven", operation="jules.sendMessage")
-        if expected_source is not None and binding["source"] != _resource_name(expected_source, "sources"):
+        if expected_source is not None and binding["source"] != _resource_name(expected_source, "sources", allow_nested=True):
             raise ProtocolError("Jules session source identifier mismatch", operation="jules.sendMessage")
 
         pre = self.list_activities(name)
@@ -239,10 +239,17 @@ def _normalize_source(payload: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _resource_name(value: str, kind: str) -> str:
-    text = str(value or "").strip().strip("/"); prefix = f"{kind}/"; ident = text[len(prefix):] if text.startswith(prefix) else text
-    if not ident or "/" in ident: raise ValueError(f"resource must be an id or {kind}/{{id}}")
-    return f"{kind}/{quote(ident, safe='')}"
+def _resource_name(value: str, kind: str, *, allow_nested: bool = False) -> str:
+    text = str(value or "").strip().strip("/")
+    prefix = f"{kind}/"
+    ident = text[len(prefix):] if text.startswith(prefix) else text
+    parts = ident.split("/") if ident else []
+    if not parts or any(not part or part in {".", ".."} for part in parts):
+        raise ValueError(f"resource must be an id or {kind}/{{id}}")
+    if not allow_nested and len(parts) != 1:
+        raise ValueError(f"resource must be an id or {kind}/{{id}}")
+    encoded = "/".join(quote(part, safe="") for part in parts)
+    return f"{kind}/{encoded}"
 def _repo(value: str | tuple[str, str]) -> str:
     if isinstance(value, tuple): value = f"{value[0]}/{value[1]}"
     text = str(value or "").strip().strip("/")
