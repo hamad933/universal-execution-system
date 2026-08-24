@@ -1,6 +1,23 @@
-name: UES Parent Controller Trusted Dispatch
+name: UES Parent Controller Trusted Receiver
 
 on:
+  workflow_call:
+    inputs:
+      control_head:
+        description: Exact validated ues-parent-control head SHA
+        required: true
+        type: string
+      validation_run_id:
+        description: Validate Universal Core run id whose core job passed
+        required: true
+        type: string
+      control_pr_number:
+        description: Exact persistent Parent Controller control PR number
+        required: true
+        type: string
+    secrets:
+      JULES_API_KEY:
+        required: false
   workflow_dispatch:
     inputs:
       control_head:
@@ -68,6 +85,7 @@ jobs:
               control_head: controlHead,
               validation_run_id: validationRunId,
               receiver_run_id: Number(context.runId),
+              receiver_mode: 'SAME_RUN_REUSABLE_WORKFLOW',
               stage: 'RECEIVER_STARTED_PRE_EFFECT',
               effect_job_reached: false,
               safe_to_blind_retry: false,
@@ -122,15 +140,15 @@ jobs:
             const validationRunId = Number(process.env.VALIDATION_RUN_ID || '0');
 
             if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
-              core.setFailed('Trusted Parent Controller dispatch requires exact control PR number');
+              core.setFailed('Trusted Parent Controller receiver requires exact control PR number');
               return;
             }
             if (!/^[0-9a-f]{40}$/.test(controlHead)) {
-              core.setFailed('Trusted Parent Controller dispatch requires exact 40-hex control head');
+              core.setFailed('Trusted Parent Controller receiver requires exact 40-hex control head');
               return;
             }
             if (!Number.isSafeInteger(validationRunId) || validationRunId <= 0) {
-              core.setFailed('Trusted Parent Controller dispatch requires exact validation run id');
+              core.setFailed('Trusted Parent Controller receiver requires exact validation run id');
               return;
             }
 
@@ -185,7 +203,7 @@ jobs:
                 (validation.status === 'completed' && validation.conclusion !== 'success') ||
                 validation.head_branch !== 'ues-parent-control' ||
                 String(validation.head_sha || '').toLowerCase() !== controlHead) {
-              core.setFailed('Dispatch is not bound to the exact Owner control validation run');
+              core.setFailed('Receiver is not bound to the exact Owner control validation run');
               return;
             }
             if (!validation.actor || validation.actor.login !== context.repo.owner ||
@@ -208,7 +226,7 @@ jobs:
               job.name === 'core' && job.status === 'completed' && job.conclusion === 'success'
             );
             if (coreJobs.length !== 1) {
-              core.setFailed('Dispatch requires exactly one completed/successful Validate Universal Core core job');
+              core.setFailed('Receiver requires exactly one completed/successful Validate Universal Core core job');
               return;
             }
 
@@ -371,6 +389,7 @@ jobs:
               control_head: controlHead,
               validation_run_id: validationRunId,
               receiver_run_id: Number(context.runId),
+              receiver_mode: 'SAME_RUN_REUSABLE_WORKFLOW',
               stage: 'PRE_EFFECT_PREFLIGHT',
               preflight_result: String(process.env.PREFLIGHT_RESULT || 'unknown'),
               effect_job_reached: false,
@@ -444,7 +463,7 @@ jobs:
           UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.repository_owner }}
           UES_WAKEUP_EVENT_ID: ${{ needs.preflight.outputs.wakeup_event_id }}
           UES_WAKEUP_EVENT_TYPE: ${{ needs.preflight.outputs.wakeup_type }}
-          UES_WAKEUP_EVENT_SOURCE: PARENT_CONTROLLER_VALIDATED_DISPATCH
+          UES_WAKEUP_EVENT_SOURCE: PARENT_CONTROLLER_VALIDATED_SAME_RUN_RECEIVER
           UES_WAKEUP_REPOSITORY: ${{ needs.preflight.outputs.wakeup_repository }}
           UES_WAKEUP_WORKSTREAM: ${{ needs.preflight.outputs.wakeup_workstream }}
           UES_WAKEUP_SHA: ${{ needs.preflight.outputs.wakeup_sha }}
@@ -519,7 +538,7 @@ jobs:
               'authority_event_id': metadata.get('authority_event_id'),
               'project': metadata.get('project'),
               'runtime_sha': metadata.get('runtime_sha'),
-              'trigger_kind': 'VALIDATE_WORKFLOW_DISPATCH',
+              'trigger_kind': 'VALIDATE_REUSABLE_WORKFLOW_CALL',
               'validation_run_id': os.environ.get('UES_VALIDATION_RUN_ID') or None,
               'receiver_run_id': os.environ.get('UES_RECEIVER_RUN_ID') or None,
               'execution_outcome': os.environ.get('UES_RUNTIME_OUTCOME') or 'unknown',
