@@ -3,6 +3,8 @@ name: UES Parent Controller Control Queue
 on:
   pull_request_target:
     types: [synchronize]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -14,9 +16,14 @@ concurrency:
 jobs:
   preflight:
     if: >-
-      github.event.pull_request.head.ref == 'ues-parent-control' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.base.ref == github.event.repository.default_branch
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.head.ref == 'ues-parent-control' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.base.ref == github.event.repository.default_branch) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.action == 'created' &&
+       github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '/ues-parent submit head='))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -25,6 +32,9 @@ jobs:
     outputs:
       runtime_sha: ${{ steps.control.outputs.runtime_sha }}
       request_file_sha: ${{ steps.control.outputs.request_file_sha }}
+      control_pr_number: ${{ steps.control.outputs.control_pr_number }}
+      trigger_kind: ${{ steps.control.outputs.trigger_kind }}
+      trigger_comment_id: ${{ steps.control.outputs.trigger_comment_id }}
       project: ${{ steps.metadata.outputs.project }}
       request_id: ${{ steps.metadata.outputs.request_id }}
       wakeup_type: ${{ steps.metadata.outputs.wakeup_type }}
@@ -39,11 +49,72 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const control = context.payload.pull_request;
             const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
             const defaultBranch = context.payload.repository.default_branch;
             const requestPath = '.ues/parent-controller-request.json';
+            const isCommentTrigger = context.eventName === 'issue_comment';
+            let control;
+            let controlPrNumber;
+            let triggerCommentId = '';
 
+            if (isCommentTrigger) {
+              if (!context.payload.issue || !context.payload.issue.pull_request) {
+                core.setFailed('Parent Controller comment trigger must target a pull request');
+                return;
+              }
+              controlPrNumber = Number(context.payload.issue.number);
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: controlPrNumber,
+              });
+              control = pr;
+              if (!context.payload.sender || context.payload.sender.login !== context.repo.owner) {
+                core.setFailed('Parent Controller trigger comment must be authored by the repository Owner');
+                return;
+              }
+              const command = String(context.payload.comment?.body || '').trim();
+              const match = command.match(/^\/ues-parent submit head=([0-9a-f]{40})$/i);
+              if (!match || match[1].toLowerCase() !== String(control.head.sha || '').toLowerCase()) {
+                core.setFailed('Parent Controller trigger comment must bind the exact live control head SHA');
+                return;
+              }
+              const created = Date.parse(context.payload.comment?.created_at || '');
+              const ageMs = Date.now() - created;
+              if (!Number.isFinite(created) || ageMs < 0 || ageMs >= 14 * 60 * 1000) {
+                core.setFailed('Parent Controller trigger comment is expired or invalid');
+                return;
+              }
+              triggerCommentId = String(context.payload.comment?.id || '');
+            } else {
+              control = context.payload.pull_request;
+              controlPrNumber = Number(control?.number);
+              if (!context.payload.sender || context.payload.sender.login !== context.repo.owner) {
+                core.setFailed('Parent Controller queue synchronize event must be triggered by the repository Owner');
+                return;
+              }
+              const before = String(context.payload.before || '').toLowerCase();
+              if (!/^[0-9a-f]{40}$/.test(before)) {
+                core.setFailed('Parent Controller synchronize event is missing exact prior head');
+                return;
+              }
+              const { data: eventDelta } = await github.rest.repos.compareCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                base: before,
+                head: control.head.sha,
+              });
+              const eventFiles = eventDelta.files || [];
+              if (eventFiles.length !== 1 || eventFiles[0].filename !== requestPath) {
+                core.setFailed('Parent Controller synchronize delta must change only .ues/parent-controller-request.json');
+                return;
+              }
+            }
+
+            if (!Number.isInteger(controlPrNumber) || controlPrNumber <= 0 || control.state !== 'open') {
+              core.setFailed('Parent Controller control PR must be open');
+              return;
+            }
             if (!control.head.repo || control.head.repo.full_name !== expectedRepo || control.head.ref !== 'ues-parent-control') {
               core.setFailed('Parent Controller queue requires same-repository ues-parent-control branch');
               return;
@@ -52,25 +123,15 @@ jobs:
               core.setFailed('Parent Controller queue must target the repository default branch');
               return;
             }
-            if (!context.payload.sender || context.payload.sender.login !== context.repo.owner) {
-              core.setFailed('Parent Controller queue synchronize event must be triggered by the repository Owner');
-              return;
-            }
 
-            const before = String(context.payload.before || '').toLowerCase();
-            if (!/^[0-9a-f]{40}$/.test(before)) {
-              core.setFailed('Parent Controller synchronize event is missing exact prior head');
-              return;
-            }
-            const { data: eventDelta } = await github.rest.repos.compareCommits({
+            const prFiles = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              base: before,
-              head: control.head.sha,
+              pull_number: controlPrNumber,
+              per_page: 100,
             });
-            const eventFiles = eventDelta.files || [];
-            if (eventFiles.length !== 1 || eventFiles[0].filename !== requestPath) {
-              core.setFailed('Parent Controller synchronize delta must change only .ues/parent-controller-request.json');
+            if (prFiles.length !== 1 || prFiles[0].filename !== requestPath) {
+              core.setFailed('Persistent Parent Controller control PR must contain only .ues/parent-controller-request.json');
               return;
             }
 
@@ -112,23 +173,26 @@ jobs:
               return;
             }
 
-            let previousFileSha = null;
-            try {
-              const { data: previousFile } = await github.rest.repos.getContent({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                path: requestPath,
-                ref: before,
-              });
-              if (!Array.isArray(previousFile) && previousFile.type === 'file') {
-                previousFileSha = previousFile.sha;
+            if (!isCommentTrigger) {
+              const before = String(context.payload.before || '').toLowerCase();
+              let previousFileSha = null;
+              try {
+                const { data: previousFile } = await github.rest.repos.getContent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: requestPath,
+                  ref: before,
+                });
+                if (!Array.isArray(previousFile) && previousFile.type === 'file') {
+                  previousFileSha = previousFile.sha;
+                }
+              } catch (error) {
+                if (error.status !== 404) throw error;
               }
-            } catch (error) {
-              if (error.status !== 404) throw error;
-            }
-            if (previousFileSha && previousFileSha === requestFile.sha) {
-              core.setFailed('Parent Controller request file did not change');
-              return;
+              if (previousFileSha && previousFileSha === requestFile.sha) {
+                core.setFailed('Parent Controller request file did not change');
+                return;
+              }
             }
 
             fs.writeFileSync(
@@ -138,6 +202,9 @@ jobs:
             );
             core.setOutput('runtime_sha', runtimeSha);
             core.setOutput('request_file_sha', String(requestFile.sha || ''));
+            core.setOutput('control_pr_number', String(controlPrNumber));
+            core.setOutput('trigger_kind', isCommentTrigger ? 'OWNER_COMMENT_HEAD_BINDING' : 'PR_SYNCHRONIZE');
+            core.setOutput('trigger_comment_id', triggerCommentId);
 
       - name: Checkout exact trusted UES runtime
         uses: actions/checkout@v4
@@ -279,6 +346,8 @@ jobs:
         if: always()
         env:
           UES_RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
+          UES_TRIGGER_KIND: ${{ needs.preflight.outputs.trigger_kind }}
+          UES_TRIGGER_COMMENT_ID: ${{ needs.preflight.outputs.trigger_comment_id }}
         run: |
           python - <<'PY'
           import json
@@ -323,6 +392,8 @@ jobs:
               'authority_event_id': metadata.get('authority_event_id'),
               'project': metadata.get('project'),
               'runtime_sha': metadata.get('runtime_sha'),
+              'trigger_kind': os.environ.get('UES_TRIGGER_KIND') or None,
+              'trigger_comment_id': os.environ.get('UES_TRIGGER_COMMENT_ID') or None,
               'execution_outcome': os.environ.get('UES_RUNTIME_OUTCOME') or 'unknown',
               'lifecycle_result': lifecycle.get('result') if isinstance(lifecycle, dict) else None,
               'initial_lineage_result': initial.get('result') if isinstance(initial, dict) else None,
@@ -350,6 +421,6 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
+              issue_number: Number('${{ needs.preflight.outputs.control_pr_number }}'),
               body: fs.readFileSync('parent-controller-receipt.md', 'utf8'),
             });

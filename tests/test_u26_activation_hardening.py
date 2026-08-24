@@ -37,7 +37,7 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
         self.assertIn("issues: write", self.parent)
         self.assertIn("UES_PARENT_CONTROLLER_RECEIPT_V1", self.parent)
         self.assertIn("Publish durable Parent Controller receipt", self.parent)
-        self.assertIn("issue_number: context.payload.pull_request.number", self.parent)
+        self.assertIn("issue_number: Number('${{ needs.preflight.outputs.control_pr_number }}')", self.parent)
         self.assertIn("external_effects_dispatched", self.parent)
         self.assertIn("new_tasks_or_sessions_created", self.parent)
         self.assertIn("effect_evidence_complete", self.parent)
@@ -50,6 +50,13 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
         self.assertNotIn("current-authority.json').read_text", receipt_section)
         self.assertNotIn("current_authority", receipt_section)
         self.assertNotIn("JULES_API_KEY", receipt_section)
+
+    def test_comment_trigger_is_only_exact_head_wakeup_not_authority(self):
+        self.assertIn("issue_comment:", self.parent)
+        self.assertIn("/^\\/ues-parent submit head=([0-9a-f]{40})$/i", self.parent)
+        self.assertIn("OWNER_COMMENT_HEAD_BINDING", self.parent)
+        self.assertNotIn("/ues-parent submit authority=", self.parent)
+        self.assertNotIn("/ues-parent submit task=", self.parent)
 
     def test_runtime_drift_check_still_precedes_secret_effect_step(self):
         drift = self.parent.index("Reverify validated runtime is still current before effects")
