@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - work/ues-auto-v2-k-live-runtime-foundation
+      - work/ues-v2-live-provider-ingestion-r01
   workflow_dispatch:
   schedule:
     - cron: "*/15 * * * *"
@@ -149,6 +150,51 @@ jobs:
         run: |
           echo "Jules read-only authentication proof was not established; see sanitized durable status."
           exit 1
+
+  scheduled-provider-observation:
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout governed default-branch runtime without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Verify Jules secret is available without disclosure
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: test -n "$JULES_API_KEY"
+
+      - name: Inventory current Jules sessions read-only
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: python -m ues.provider_inventory | tee ues-provider-inventory.json
+
+      - name: Reconcile waiting-session Activities read-only
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: python -m ues.provider_waiting | tee ues-provider-waiting.json
+
+      - name: Publish sanitized provider observation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-provider-observation
+          path: |
+            ues-provider-inventory.json
+            ues-provider-waiting.json
+          if-no-files-found: error
+          retention-days: 7
 
   scheduled-watchdog:
     if: github.event_name == 'schedule'
