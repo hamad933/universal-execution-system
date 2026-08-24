@@ -4,6 +4,7 @@ import unittest
 from datetime import timezone
 
 from ues.bounded_waiting_runtime import _latest_message, _load_adapter, _policy_entries, run
+from ues.lifecycle_runtime_current import _waiting_response
 
 
 class BoundedWaitingRuntimeTests(unittest.TestCase):
@@ -12,16 +13,42 @@ class BoundedWaitingRuntimeTests(unittest.TestCase):
         self.assertEqual(result["result"], "NO_BOUNDED_WAITING_POLICY")
         self.assertFalse(result["provider_mutation_performed"])
 
-    def test_cep_policy_is_bounded_to_w03_w04_existing_branches(self) -> None:
+    def test_cep_adapter_does_not_embed_current_waiting_responses(self) -> None:
         adapter = _load_adapter("CEP")
-        entries = _policy_entries(adapter)
-        self.assertEqual([item["workstream"] for item in entries], ["W03", "W04"])
-        self.assertEqual(
-            entries[0]["starting_branch"],
-            "work/cep-w03-parent-reconciliation-r01-13880329436073387601",
-        )
-        self.assertEqual(entries[1]["starting_branch"], "work/cep-w04-parent-reconciliation-r02")
-        self.assertTrue(all(item["response"] for item in entries))
+        self.assertEqual(_policy_entries(adapter), [])
+        self.assertIsNone(_waiting_response(None, "W03", "WRITER"))
+
+        authority = {
+            "waiting_responses": {
+                "W03:WRITER": {
+                    "controller_resolvable": True,
+                    "scope_expansion": False,
+                    "response": "Continue W03 within the already governed scope.",
+                },
+                "W04:WRITER": {
+                    "controller_resolvable": True,
+                    "scope_expansion": False,
+                    "response": "Continue W04 within the already governed scope.",
+                },
+            }
+        }
+        w03 = _waiting_response(authority, "W03", "WRITER")
+        w04 = _waiting_response(authority, "W04", "WRITER")
+        self.assertIn("Continue W03", w03 or "")
+        self.assertIn("Continue W04", w04 or "")
+        self.assertIsNone(_waiting_response(authority, "W02", "WRITER"))
+
+    def test_scope_expanding_waiting_response_is_not_accepted(self) -> None:
+        authority = {
+            "waiting_responses": {
+                "W04:WRITER": {
+                    "controller_resolvable": True,
+                    "scope_expansion": True,
+                    "response": "Expand the work beyond the governed scope.",
+                }
+            }
+        }
+        self.assertIsNone(_waiting_response(authority, "W04", "WRITER"))
 
     def test_latest_message_uses_activity_create_time(self) -> None:
         activities = [
