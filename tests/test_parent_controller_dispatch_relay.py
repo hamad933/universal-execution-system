@@ -50,8 +50,21 @@ class ParentControllerValidatedDispatchRelayTests(unittest.TestCase):
         self.assertIn("control_head:", self.receiver)
         self.assertIn("validation_run_id:", self.receiver)
         self.assertIn("control_pr_number:", self.receiver)
-        self.assertIn("group: ues-parent-controller-control-queue-${{ github.repository }}", self.receiver)
         self.assertIn("cancel-in-progress: false", self.receiver)
+
+    def test_transport_concurrency_is_exact_request_scoped_not_global(self):
+        self.assertIn(
+            "group: ues-parent-controller-control-queue-${{ inputs.control_head }}",
+            self.receiver,
+        )
+        self.assertNotIn(
+            "group: ues-parent-controller-control-queue-${{ github.repository }}",
+            self.receiver,
+        )
+        self.assertIn(
+            "group: ues-project-lifecycle-${{ needs.preflight.outputs.project }}",
+            self.receiver,
+        )
 
     def test_receiver_start_is_durably_visible_before_preflight(self):
         self.assertIn("announce:", self.receiver)
