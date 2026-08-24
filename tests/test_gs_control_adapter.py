@@ -43,8 +43,9 @@ class GSControlAdapterTests(unittest.TestCase):
             budget["reserve_status"],
             "NOT_DEFINED_BY_CURRENT_GS_AUTHORITY",
         )
+        self.assertEqual(budget["new_task_authority"], "PARENT_ONLY")
         self.assertEqual(
-            budget["new_task_authority"],
+            budget["owner_new_task_policy"],
             "OWNER_AUTHORIZED_NECESSITY_BASED_NEW_GENERATION",
         )
         self.assertEqual(
