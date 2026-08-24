@@ -4,7 +4,7 @@ import json
 import os
 from typing import Any, Mapping
 
-from .provider_observer import ProjectTarget, _digest, load_project_targets
+from .provider_targets import ProjectTarget, digest, load_project_targets
 from .providers.jules import JulesClient
 
 SCHEMA_VERSION = "2.1"
@@ -38,8 +38,6 @@ def _activity_kind(activity: Mapping[str, Any]) -> tuple[str, str | None]:
 
 
 def _activity_summary(activities: list[dict[str, Any]]) -> dict[str, Any]:
-    user_positions: list[int] = []
-    agent_positions: list[int] = []
     user_messages: list[tuple[int, str, str | None]] = []
     agent_messages: list[tuple[int, str, str | None]] = []
     activity_kind_counts: dict[str, int] = {}
@@ -48,13 +46,11 @@ def _activity_summary(activities: list[dict[str, Any]]) -> dict[str, Any]:
         kind, message = _activity_kind(activity)
         activity_kind_counts[kind] = activity_kind_counts.get(kind, 0) + 1
         identity = str(activity.get("name") or activity.get("id") or "").strip()
-        identity_hash = _digest(identity) if identity else None
+        identity_hash = digest(identity) if identity else None
         if kind == "USER_MESSAGE" and message is not None:
-            user_positions.append(index)
-            user_messages.append((index, _digest(message), identity_hash))
+            user_messages.append((index, digest(message), identity_hash))
         elif kind == "AGENT_MESSAGE" and message is not None:
-            agent_positions.append(index)
-            agent_messages.append((index, _digest(message), identity_hash))
+            agent_messages.append((index, digest(message), identity_hash))
 
     latest_user = user_messages[-1] if user_messages else None
     latest_agent = agent_messages[-1] if agent_messages else None
@@ -69,9 +65,7 @@ def _activity_summary(activities: list[dict[str, Any]]) -> dict[str, Any]:
         "activity_count": len(activities),
         "activity_kind_counts": dict(sorted(activity_kind_counts.items())),
         "provider_order_used": True,
-        "latest_activity_kind": (
-            _activity_kind(activities[-1])[0] if activities else None
-        ),
+        "latest_activity_kind": _activity_kind(activities[-1])[0] if activities else None,
         "latest_user_message_digest": latest_user[1] if latest_user else None,
         "latest_user_activity_hash": latest_user[2] if latest_user else None,
         "latest_agent_question_digest": latest_agent[1] if latest_agent else None,
@@ -111,15 +105,14 @@ def reconcile_waiting_sessions(
         if not session_name:
             continue
         activities = client.list_activities(session_name, page_size=100)
-        summary = _activity_summary(activities)
         waiting.append(
             {
                 "project": target.project,
                 "route": target.route,
                 "repository": target.repository,
                 "starting_branch": session.get("sourceStartingBranch"),
-                "session_identity_hash": _digest(session_name),
-                **summary,
+                "session_identity_hash": digest(session_name),
+                **_activity_summary(activities),
             }
         )
 
