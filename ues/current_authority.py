@@ -109,6 +109,38 @@ def exact_lineage_authority(
     return dict(lane)
 
 
+def initial_lineage_authority(
+    authority: Mapping[str, Any] | None,
+    *,
+    workstream: str,
+    role: str,
+) -> dict[str, Any] | None:
+    """Return explicit Parent authority for the first physical generation.
+
+    Initial logical-lineage creation is deliberately separate from replacement
+    authority. A lane must be explicitly listed under authorized_initial_lineages
+    with creation_kind=INITIAL_LOGICAL_LINEAGE and a structured non-empty
+    task_spec. A replacement authorization cannot be silently reused here.
+    """
+
+    if not isinstance(authority, Mapping):
+        return None
+    policy = authority.get("generation_policy")
+    policy = policy if isinstance(policy, Mapping) else {}
+    lineages = policy.get("authorized_initial_lineages")
+    lineages = lineages if isinstance(lineages, Mapping) else {}
+    key = f"{workstream}:{str(role).upper()}"
+    lane = lineages.get(key)
+    if not isinstance(lane, Mapping) or lane.get("authorized") is not True:
+        return None
+    if str(lane.get("creation_kind") or "").strip().upper() != "INITIAL_LOGICAL_LINEAGE":
+        return None
+    task_spec = lane.get("task_spec")
+    if not isinstance(task_spec, Mapping) or not task_spec:
+        return None
+    return dict(lane)
+
+
 def dynamic_lineages(authority: Mapping[str, Any] | None) -> dict[str, Any]:
     if not isinstance(authority, Mapping):
         return {}
