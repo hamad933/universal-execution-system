@@ -16,7 +16,7 @@ from .providers.github import GitHubClient
 from .state_store import StateUnavailable
 from .workflow_dispatch import dispatch_workflow_once, reconcile_unknown_workflow_dispatch
 
-SCHEMA_VERSION = "2.1"
+SCHEMA_VERSION = "2.2"
 
 
 def _current_authority(adapter: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -25,6 +25,32 @@ def _current_authority(adapter: Mapping[str, Any]) -> dict[str, Any] | None:
         os.environ.get("UES_CURRENT_AUTHORITY_JSON"),
         transport_actor=os.environ.get("UES_AUTHORITY_TRANSPORT_ACTOR") or os.environ.get("GITHUB_ACTOR"),
     )
+
+
+def _legacy_recovery_with_current_authority(original: Any, authority: Mapping[str, Any] | None):
+    """Gate every legacy provider-routing effect on a current authority envelope.
+
+    Event/schedule/push wakeups are execution signals only. Without a validated
+    current authority event the V2 runtime may observe and plan, but it must not
+    send same-session Writer/Reviewer/waiting messages through the legacy effect
+    executor. Generation creation and workflow dispatch have their own stricter
+    current-authority gates.
+    """
+
+    event_id = str((authority or {}).get("authority_event_id") or "").strip()
+
+    def execute(**kwargs: Any) -> dict[str, Any]:
+        if not event_id:
+            return {
+                "decision": "CURRENT_AUTHORITY_REQUIRED_FOR_PROVIDER_EFFECT",
+                "provider_write_attempted": False,
+                "external_effects_dispatched": 0,
+                "safe_to_blind_retry": False,
+                "event_grants_mutation_authority": False,
+            }
+        return original(**kwargs)
+
+    return execute
 
 
 def _role_policies(config: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
@@ -297,17 +323,20 @@ def run(project: str) -> dict[str, Any]:
     original_pr_state = legacy._workstream_pr_state
     original_waiting_prompt = legacy._waiting_prompt
     original_lineage_runtime = legacy._lineage_runtime
+    original_execute_recovery = legacy._execute_recovery
     original_upsert = runtime_v2.upsert_lineage_observation
     try:
         legacy._workstream_pr_state = _workstream_pr_state_current
         legacy._waiting_prompt = lambda _adapter, workstream, role: _waiting_response(authority, workstream, role)
         legacy._lineage_runtime = _runtime_with_authority_event(original_lineage_runtime, authority)
+        legacy._execute_recovery = _legacy_recovery_with_current_authority(original_execute_recovery, authority)
         runtime_v2.upsert_lineage_observation = upsert_lineage_observation_preserving_effects
         lifecycle = runtime_v2.run(project)
     finally:
         legacy._workstream_pr_state = original_pr_state
         legacy._waiting_prompt = original_waiting_prompt
         legacy._lineage_runtime = original_lineage_runtime
+        legacy._execute_recovery = original_execute_recovery
         runtime_v2.upsert_lineage_observation = original_upsert
 
     dispatch_results = _handle_current_dispatches(
@@ -322,6 +351,7 @@ def run(project: str) -> dict[str, Any]:
     lifecycle["workflow_dispatch_results"] = dispatch_results
     lifecycle["current_authority_loaded"] = authority is not None
     lifecycle["current_authority_event_id"] = (authority or {}).get("authority_event_id")
+    lifecycle["provider_routing_requires_current_authority"] = True
     lifecycle["unknown_effects_blind_retried"] = False
     return lifecycle
 

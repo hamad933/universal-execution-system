@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ues.lifecycle_runtime_current import (
     _handle_current_dispatches,
+    _legacy_recovery_with_current_authority,
     _waiting_response,
     _workstream_pr_number,
     _workstream_pr_state_current,
@@ -79,6 +80,35 @@ class CurrentLifecycleIntegrationTests(unittest.TestCase):
         prompt = _waiting_response(authority, "W04", "WRITER")
         self.assertIn("Continue within the governed W04 scope.", prompt or "")
         self.assertIsNone(_waiting_response(authority, "W03", "WRITER"))
+
+    def test_wakeup_without_current_authority_cannot_route_provider_effect(self) -> None:
+        calls: list[dict] = []
+
+        def original(**kwargs):
+            calls.append(kwargs)
+            return {"decision": "PROVIDER_EFFECT_SENT", "provider_write_attempted": True}
+
+        guarded = _legacy_recovery_with_current_authority(original, None)
+        result = guarded(action="ROUTE_CURRENT_SHA_TO_REVIEWER_LINEAGE")
+        self.assertEqual(result["decision"], "CURRENT_AUTHORITY_REQUIRED_FOR_PROVIDER_EFFECT")
+        self.assertFalse(result["provider_write_attempted"])
+        self.assertFalse(result["event_grants_mutation_authority"])
+        self.assertEqual(calls, [])
+
+    def test_validated_current_authority_allows_existing_guarded_recovery_rules(self) -> None:
+        calls: list[dict] = []
+
+        def original(**kwargs):
+            calls.append(kwargs)
+            return {"decision": "EXISTING_GUARDED_RECOVERY", "provider_write_attempted": False}
+
+        guarded = _legacy_recovery_with_current_authority(
+            original,
+            {"authority_event_id": "CURRENT-GOVERNED-EVENT"},
+        )
+        result = guarded(action="ROUTE_CURRENT_SHA_TO_REVIEWER_LINEAGE")
+        self.assertEqual(result["decision"], "EXISTING_GUARDED_RECOVERY")
+        self.assertEqual(len(calls), 1)
 
     def test_cep_w05_route_profile_dispatch_is_resolved_from_current_authority(self) -> None:
         adapter = json.loads(Path("adapters/cep.json").read_text(encoding="utf-8"))
