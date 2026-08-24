@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -13,7 +14,12 @@ from .github_refs import (
     GitHubRefStateStore,
     GitHubRefTransportError,
 )
-from ..state_store import SCHEMA_VERSION, StateStoreCapabilities, StateUnavailable
+from ..state_store import (
+    SCHEMA_VERSION,
+    StateStoreCapabilities,
+    StateUnavailable,
+    StateVersionConflict,
+)
 
 OWNER_AUTHORIZED_PUBLIC_SAME_REPO_POLICY = "OWNER_AUTHORIZED_PUBLIC_SAME_REPOSITORY"
 
@@ -126,6 +132,8 @@ class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):
     """Git-ref CAS StateStore with explicit same-public-repository owner authority."""
 
     transport: OwnerAuthorizedSameRepoGitDataTransport
+    publish_readback_attempts = 7
+    publish_readback_delay_seconds = 0.5
 
     @property
     def capabilities(self) -> StateStoreCapabilities:
@@ -138,6 +146,54 @@ class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):
             durable_operation_records=True,
             authoritative_restart_reconciliation=True,
             conflict_detection=True,
+        )
+
+    def _resolve_publish(
+        self,
+        *,
+        ref: str,
+        previous_sha: str | None,
+        proposed_sha: str,
+        conflict: bool,
+    ) -> None:
+        """Boundedly reconcile post-write ref visibility without retrying the write.
+
+        GitHub may acknowledge a non-force ref update before a subsequent GET exposes
+        the new object. A single stale read must therefore not convert a committed
+        StateStore CAS into a false failure. Definite conflicts still fail immediately;
+        normal/uncertain writes only re-read the authoritative ref for a bounded period.
+        No create/update mutation is repeated here.
+        """
+
+        if conflict:
+            super()._resolve_publish(
+                ref=ref,
+                previous_sha=previous_sha,
+                proposed_sha=proposed_sha,
+                conflict=True,
+            )
+            return
+
+        attempts = max(1, int(self.publish_readback_attempts))
+        delay = max(0.0, float(self.publish_readback_delay_seconds))
+        for attempt in range(attempts):
+            try:
+                observed = self.transport.get_ref(ref)
+            except GitHubRefTransportError as exc:
+                raise StateUnavailable(
+                    "state write outcome requires authoritative ref readback"
+                ) from exc
+            if observed == proposed_sha:
+                return
+            if observed != previous_sha:
+                raise StateUnavailable(
+                    "state ref diverged after write attempt; authoritative reconciliation required"
+                )
+            if attempt + 1 < attempts and delay:
+                time.sleep(delay)
+
+        raise StateVersionConflict(
+            "state write was not observed after bounded authoritative readback; no overwrite performed"
         )
 
     def _discover_identities(self, kind: str) -> tuple[str, ...]:
