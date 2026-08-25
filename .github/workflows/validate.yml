@@ -270,29 +270,98 @@ jobs:
           echo "control_pr_number=$CONTROL_PR_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Verify Owner control commit identity
+        id: owner_identity
         if: steps.rate.outputs.deferred != 'true'
         uses: actions/github-script@v7
         env:
           CONTROL_HEAD: ${{ github.event.pull_request.head.sha }}
         with:
           script: |
+            const fs = require('fs');
+            const path = require('path');
             const exactHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
             const requestPath = '.ues/parent-controller-request.json';
-            const { data: controlCommit } = await github.rest.repos.getCommit({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: exactHead,
-            });
+            const diagnosticOut = path.join(process.env.RUNNER_TEMP, 'parent-controller-owner-identity-failure.json');
+            const writeDiagnostic = (decision, githubStatus = null) => {
+              const receipt = {
+                schema_version: 'UES_PARENT_CONTROLLER_OWNER_IDENTITY_FAILURE_V1',
+                control_head: exactHead,
+                validation_run_id: Number(context.runId),
+                stage: 'PRE_EFFECT_PREFLIGHT',
+                decision,
+                github_status: Number.isInteger(githubStatus) && githubStatus > 0 ? githubStatus : null,
+                effect_job_reached: false,
+                external_effects_dispatched: 0,
+                new_tasks_or_sessions_created: 0,
+                safe_to_blind_retry: false,
+                raw_session_ids_persisted: false,
+                secret_material_persisted: false,
+              };
+              fs.writeFileSync(diagnosticOut, JSON.stringify(receipt, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+            };
+            let controlCommit;
+            try {
+              const response = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: exactHead,
+              });
+              controlCommit = response.data;
+            } catch (error) {
+              const status = Number(error && error.status || error && error.response && error.response.status || 0);
+              writeDiagnostic('OWNER_IDENTITY_READ_UNAVAILABLE', status || null);
+              core.setFailed('Owner identity readback unavailable; fail closed before effects');
+              return;
+            }
             if (String(controlCommit.sha || '').toLowerCase() !== exactHead ||
                 !controlCommit.author || controlCommit.author.login !== context.repo.owner ||
                 !controlCommit.committer || controlCommit.committer.login !== context.repo.owner) {
+              writeDiagnostic('OWNER_IDENTITY_MISMATCH');
               core.setFailed('Control request commit must be exact, Owner-authored and Owner-committed');
               return;
             }
             const changed = controlCommit.files || [];
             if (changed.length !== 1 || changed[0].filename !== requestPath) {
+              writeDiagnostic('OWNER_IDENTITY_SCOPE_MISMATCH');
               core.setFailed('GitHub commit identity readback must confirm only the semantic request file changed');
             }
+
+      - name: Materialize Owner identity failure fallback
+        if: always() && steps.rate.outputs.deferred != 'true' && steps.owner_identity.outcome == 'failure'
+        env:
+          CONTROL_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const out = path.join(process.env.RUNNER_TEMP, 'parent-controller-owner-identity-failure.json');
+          if (!fs.existsSync(out)) {
+            const receipt = {
+              schema_version: 'UES_PARENT_CONTROLLER_OWNER_IDENTITY_FAILURE_V1',
+              control_head: String(process.env.CONTROL_HEAD || '').toLowerCase(),
+              validation_run_id: Number(process.env.GITHUB_RUN_ID || '0') || null,
+              stage: 'PRE_EFFECT_PREFLIGHT',
+              decision: 'OWNER_IDENTITY_STEP_FAILURE_UNCLASSIFIED',
+              github_status: null,
+              effect_job_reached: false,
+              external_effects_dispatched: 0,
+              new_tasks_or_sessions_created: 0,
+              safe_to_blind_retry: false,
+              raw_session_ids_persisted: false,
+              secret_material_persisted: false,
+            };
+            fs.writeFileSync(out, JSON.stringify(receipt, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+          }
+          NODE
+
+      - name: Preserve Owner identity pre-effect failure evidence
+        if: always() && steps.rate.outputs.deferred != 'true' && steps.owner_identity.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-parent-owner-identity-failure-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/parent-controller-owner-identity-failure.json
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Checkout exact trusted UES runtime
         if: steps.rate.outputs.deferred != 'true'
@@ -417,7 +486,8 @@ jobs:
       issues: write
       pull-requests: read
     steps:
-      - name: Publish durable pre-effect failure receipt
+      - name: Publish pre-effect failure UI mirror (best effort)
+        continue-on-error: true
         uses: actions/github-script@v7
         env:
           CONTROL_HEAD: ${{ github.event.pull_request.head.sha }}
