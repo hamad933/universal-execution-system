@@ -7,6 +7,25 @@ from .lineage_registry import lineage_lane_id, normalize_role
 from .state_store import StateUnavailable, StateVersionConflict, WorkstreamRuntimeRecord
 
 
+def _confirmed_receipt_session_fingerprint(record: WorkstreamRuntimeRecord) -> str | None:
+    """Recover only an already-authoritative initial creation fingerprint."""
+
+    receipt = record.operation_receipt if isinstance(record.operation_receipt, Mapping) else {}
+    if str(receipt.get("state") or "").upper() != "CONFIRMED":
+        return None
+    creation_kind = str(receipt.get("creation_kind") or "").upper()
+    if creation_kind and creation_kind != "INITIAL_LOGICAL_LINEAGE":
+        return None
+    post = receipt.get("post_condition") if isinstance(receipt.get("post_condition"), Mapping) else {}
+    if post.get("observed") is not True:
+        return None
+    evidence = post.get("evidence") if isinstance(post.get("evidence"), Mapping) else {}
+    fp = str(evidence.get("session_fingerprint") or "").strip().lower()
+    if len(fp) != 64 or any(ch not in "0123456789abcdef" for ch in fp):
+        return None
+    return fp
+
+
 def recover_lineage_policy_from_state(
     store: Any,
     *,
@@ -32,6 +51,12 @@ def recover_lineage_policy_from_state(
 
     evidence = read.record.evidence_bindings or {}
     current_fp = str(evidence.get("session_fingerprint") or "").strip().lower()
+    recovery_source = "EVIDENCE_BINDINGS" if current_fp else None
+    if not current_fp:
+        current_fp = _confirmed_receipt_session_fingerprint(read.record) or ""
+        if current_fp:
+            recovery_source = "CONFIRMED_CREATION_RECEIPT"
+
     known = {
         str(item).strip().lower()
         for item in result.get("known_session_fingerprints") or []
@@ -42,10 +67,16 @@ def recover_lineage_policy_from_state(
         result["known_session_fingerprints"] = sorted(known)
 
     persisted_branch = str(evidence.get("provider_starting_branch") or "").strip()
+    if not persisted_branch and recovery_source == "CONFIRMED_CREATION_RECEIPT":
+        receipt = read.record.operation_receipt if isinstance(read.record.operation_receipt, Mapping) else {}
+        post = receipt.get("post_condition") if isinstance(receipt.get("post_condition"), Mapping) else {}
+        post_evidence = post.get("evidence") if isinstance(post.get("evidence"), Mapping) else {}
+        persisted_branch = str(post_evidence.get("starting_branch") or receipt.get("starting_branch") or "").strip()
     if persisted_branch and not str(result.get("provider_starting_branch") or "").strip():
         result["provider_starting_branch"] = persisted_branch
 
     result["_state_generation_recovered"] = bool(current_fp)
+    result["_state_generation_recovery_source"] = recovery_source
     result["_state_generation"] = int(evidence.get("generation") or 0)
     result["_state_transition_key"] = evidence.get("generation_transition_key")
     return result
