@@ -1,6 +1,6 @@
 {
   "schema_version": "UES_PARENT_CONTROLLER_REQUEST_V1",
-  "request_id": "RP02-IPA-RECOVERY-OBSERVE-R03-20260825T0304P03",
+  "request_id": "RP02-IPA-RECOVERY-OBSERVE-R04-20260825T0306P03",
   "project": "RP02",
   "runtime_sha": "e898b8a87aa02d99f65048caf9cd8e2ddfca73df",
   "current_authority": {
@@ -36,7 +36,7 @@
   },
   "wakeup": {
     "event_type": "EXTERNAL_RECONCILIATION_REQUEST",
-    "event_id": "RP02-IPA-RECOVERY-OBSERVE-R03-20260825T0304P03",
+    "event_id": "RP02-IPA-RECOVERY-OBSERVE-R04-20260825T0306P03",
     "repository": "hamad933/Enterprise-Operations-Control",
     "workstream": "RP02-IPA-RECOVERY-OBSERVE",
     "sha": "dc5cfe6f2d138c448561ff67f27e3c656b420229"
