@@ -200,10 +200,10 @@ class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):
         """Boundedly reconcile post-write ref visibility without retrying the write.
 
         GitHub may acknowledge a non-force ref update before a subsequent GET exposes
-        the new object. A single stale read must therefore not convert a committed
-        StateStore CAS into a false failure. Definite conflicts still fail immediately;
-        normal/uncertain writes only re-read the authoritative ref for a bounded period.
-        No create/update mutation is repeated here.
+        the new object. A single stale or temporarily unavailable read must therefore
+        not convert a committed StateStore CAS into a false failure. Definite conflicts
+        still fail immediately; normal/uncertain writes only re-read the authoritative
+        ref for a bounded period. No create/update mutation is repeated here.
         """
 
         if conflict:
@@ -221,9 +221,13 @@ class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):
             try:
                 observed = self.transport.get_ref(ref)
             except GitHubRefTransportError as exc:
-                raise StateUnavailable(
-                    "state write outcome requires authoritative ref readback"
-                ) from exc
+                if attempt + 1 >= attempts:
+                    raise StateUnavailable(
+                        "state write outcome requires authoritative ref readback"
+                    ) from exc
+                if delay:
+                    time.sleep(delay)
+                continue
             if observed == proposed_sha:
                 return
             if observed != previous_sha:
