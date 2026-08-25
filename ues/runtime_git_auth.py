@@ -7,6 +7,7 @@ import subprocess
 from typing import MutableMapping
 
 _REMOTE = re.compile(r"^(?:https://github\.com/|git@github\.com:)([^/]+/[^/]+?)(?:\.git)?$", re.IGNORECASE)
+_GITHUB_EXTRAHEADER_KEY = "http.https://github.com/.extraheader"
 
 
 def _remote_repository() -> str | None:
@@ -25,13 +26,38 @@ def _remote_repository() -> str | None:
     return match.group(1) if match else None
 
 
-def configure_same_repo_git_auth(env: MutableMapping[str, str] | None = None) -> bool:
-    """Inject same-repository Git HTTP auth into child Git processes via environment.
+def _local_git_extraheader_present() -> bool:
+    """Detect checkout-persisted GitHub auth without reading or exposing its value."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "config",
+                "--local",
+                "--name-only",
+                "--get-regexp",
+                r"^http\.https://github\.com/\.extraheader$",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
-    Parent Controller runtime checkouts intentionally use `persist-credentials:false`,
-    while the owner-authorized same-repo StateStore uses Git-native non-force pushes.
-    This helper restores only the already-granted job token for the exact current
-    repository, without writing credentials to `.git/config` or command arguments.
+
+def configure_same_repo_git_auth(env: MutableMapping[str, str] | None = None) -> bool:
+    """Ensure exact same-repository Git HTTP auth without duplicating checkout credentials.
+
+    Jobs that persist checkout credentials already have a local GitHub extraheader.
+    Parent Controller effect jobs intentionally use `persist-credentials:false` and
+    still need the already-granted job token for Git-native same-repository StateStore
+    CAS. This helper reuses an existing effective header when present and otherwise
+    injects the token only through child-process `GIT_CONFIG_*` environment entries.
+    It never writes credentials to `.git/config` or command arguments.
     """
 
     target = os.environ if env is None else env
@@ -55,13 +81,15 @@ def configure_same_repo_git_auth(env: MutableMapping[str, str] | None = None) ->
     if count < 0 or count > 128:
         raise RuntimeError("invalid inherited GIT_CONFIG_COUNT")
 
-    key = "http.https://github.com/.extraheader"
     for index in range(count):
-        if target.get(f"GIT_CONFIG_KEY_{index}") == key:
+        if target.get(f"GIT_CONFIG_KEY_{index}") == _GITHUB_EXTRAHEADER_KEY:
             return True
 
+    if _local_git_extraheader_present():
+        return True
+
     credential = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
-    target[f"GIT_CONFIG_KEY_{count}"] = key
+    target[f"GIT_CONFIG_KEY_{count}"] = _GITHUB_EXTRAHEADER_KEY
     target[f"GIT_CONFIG_VALUE_{count}"] = f"AUTHORIZATION: basic {credential}"
     target["GIT_CONFIG_COUNT"] = str(count + 1)
     return True
