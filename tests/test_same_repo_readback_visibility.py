@@ -24,6 +24,7 @@ class DelayedVisibilityTransport:
         self.update_mode = "normal"
         self.stale_reads_remaining = 0
         self.stale_value: str | None = None
+        self.post_update_read_errors = 0
         self.read_errors_remaining = 0
 
     def assert_private_repository(self) -> None:
@@ -69,12 +70,12 @@ class DelayedVisibilityTransport:
             self.refs[ref] = commit_sha
             self.stale_value = current
             self.stale_reads_remaining = 2
-            return
-        if self.update_mode == "not_applied":
+        elif self.update_mode == "not_applied":
             self.stale_value = current
             self.stale_reads_remaining = 10
-            return
-        self.refs[ref] = commit_sha
+        else:
+            self.refs[ref] = commit_sha
+        self.read_errors_remaining = self.post_update_read_errors
 
 
 def runtime_record(lane_id: str) -> WorkstreamRuntimeRecord:
@@ -111,7 +112,7 @@ class SameRepoReadbackVisibilityTests(unittest.TestCase):
         self.assertEqual(self.store.read_workstream(self.lane).version, 2)
 
     def test_transient_post_write_readback_error_recovers_without_retrying_write(self) -> None:
-        self.transport.read_errors_remaining = 1
+        self.transport.post_update_read_errors = 1
         saved = self.store.compare_and_swap_workstream(
             self.lane,
             1,
@@ -122,7 +123,7 @@ class SameRepoReadbackVisibilityTests(unittest.TestCase):
         self.assertEqual(self.store.read_workstream(self.lane).version, 2)
 
     def test_persistent_post_write_readback_error_fails_closed_without_retrying_write(self) -> None:
-        self.transport.read_errors_remaining = self.store.publish_readback_attempts
+        self.transport.post_update_read_errors = self.store.publish_readback_attempts
         with self.assertRaises(StateUnavailable):
             self.store.compare_and_swap_workstream(
                 self.lane,
