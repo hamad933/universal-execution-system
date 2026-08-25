@@ -46,7 +46,9 @@ class RPParallelWorkflowLivenessTests(unittest.TestCase):
     def test_terminal_backfill_remains_independent_recovery_lane(self):
         text = Path(".github/workflows/ues-terminal-result-backfill.yml").read_text(encoding="utf-8")
 
-        self.assertIn("max-parallel: 6", text)
+        # Terminal recovery stays project-scoped and concurrent, while the shared
+        # account-global provider inventory is admitted at a bounded width.
+        self.assertIn("max-parallel: 2", text)
         self.assertIn("group: ues-terminal-result-backfill-${{ matrix.project }}", text)
         self.assertIn("\n  schedule:\n", text)
         self.assertNotIn("group: ues-project-lifecycle-${{ matrix.project }}", text)
