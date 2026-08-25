@@ -314,9 +314,9 @@ def _materialize_snapshot(snapshot: Mapping[str, Any], store: Any | None = None)
 
 
 def observe() -> dict[str, Any]:
-    persist_health(phase="START", status="IN_FLIGHT")
     recovery_snapshot: dict[str, Any] | None = None
     try:
+        persist_health(phase="START", status="IN_FLIGHT")
         import os
 
         key = str(os.environ.get("JULES_API_KEY") or "").strip()
