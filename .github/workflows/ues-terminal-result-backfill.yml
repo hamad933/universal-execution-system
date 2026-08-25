@@ -100,13 +100,43 @@ jobs:
                       'exception_text_persisted': False,
                   }
                   continue
+              summary = result.get('summary', {}) if isinstance(result.get('summary'), dict) else {}
+              safe_results = []
+              for item in result.get('results', []):
+                  if not isinstance(item, dict):
+                      continue
+                  safe_results.append({
+                      key: item.get(key)
+                      for key in (
+                          'project', 'route', 'logical_workstream', 'role', 'generation',
+                          'session_fingerprint', 'repository', 'status', 'verdict',
+                          'candidate_sha', 'reviewed_sha', 'finding_count', 'result_state',
+                          'freshness_status', 'result_fingerprint', 'current_view_fingerprint',
+                          'parent_action_required', 'safe_read_only_recovery_exists',
+                      )
+                      if key in item
+                  })
               outputs[name] = {
                   'result': result.get('result'),
-                  'results': result.get('results', []),
-                  'summary': result.get('summary', {}),
+                  'results': safe_results,
+                  'summary': {
+                      key: summary.get(key)
+                      for key in (
+                          'lineage_count', 'provider_session_count', 'provider_inventory_source',
+                          'provider_observation_available', 'provider_observation_fresh',
+                          'provider_observation_reason', 'terminal_result_count',
+                          'durable_lineage_terminal_result_count', 'parent_consumable_result_count',
+                          'terminal_unconsumed_result_count', 'blocked_lane_freezes_independent_lanes',
+                      )
+                      if key in summary
+                  },
                   'provider_mutation_performed': False,
                   'new_tasks_or_sessions_created': 0,
                   'safe_to_blind_retry': False,
+                  'findings_persisted_in_artifact': False,
+                  'raw_activity_content_persisted': False,
+                  'raw_session_ids_persisted': False,
+                  'raw_titles_persisted': False,
               }
           receipt = {
               'schema_version': 'UES_TERMINAL_LIFECYCLE_READBACK_V1',
@@ -116,6 +146,10 @@ jobs:
               'provider_mutation_performed': False,
               'new_tasks_or_sessions_created': 0,
               'safe_to_blind_retry': False,
+              'findings_persisted_in_artifact': False,
+              'raw_activity_content_persisted': False,
+              'raw_session_ids_persisted': False,
+              'raw_titles_persisted': False,
           }
           path = Path('${{ runner.temp }}') / 'ues-terminal-lifecycle-readback.json'
           path.write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n', encoding='utf-8')
@@ -140,3 +174,30 @@ jobs:
           path: ${{ runner.temp }}/ues-terminal-lifecycle-readback.json
           retention-days: 7
           if-no-files-found: error
+
+  terminal-watchdog:
+    if: always()
+    needs: [backfill, lifecycle-readback]
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout governed default branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Audit terminal-result liveness without freezing independent lanes
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: python -m ues.terminal_watchdog
