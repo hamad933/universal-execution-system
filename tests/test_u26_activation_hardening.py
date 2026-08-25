@@ -19,14 +19,16 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
         cls.rp_authority = RP_AUTHORITY.read_text(encoding="utf-8")
         cls.portfolio = PORTFOLIO.read_text(encoding="utf-8")
 
-    def test_same_project_lifecycle_writers_share_one_concurrency_namespace(self):
+    def test_effect_writers_share_project_namespace_while_rp_maintenance_is_isolated(self):
         self.assertIn(
             "group: ues-project-lifecycle-${{ needs.parent-controller-preflight.outputs.project }}",
             self.parent,
         )
-        self.assertIn("group: ues-project-lifecycle-${{ matrix.project }}", self.rp_readonly)
         self.assertIn("group: ues-project-lifecycle-${{ matrix.project }}", self.rp_authority)
         self.assertIn("group: ues-project-lifecycle-${{ matrix.project }}", self.portfolio)
+        self.assertNotIn("group: ues-project-lifecycle-${{ matrix.project }}", self.rp_readonly)
+        self.assertIn("group: ues-rp-readonly-lifecycle-${{ matrix.project }}", self.rp_readonly)
+        self.assertIn("group: ues-rp-provider-observer", self.rp_readonly)
         for text in (self.parent, self.rp_readonly, self.rp_authority, self.portfolio):
             self.assertIn("cancel-in-progress: false", text)
 
@@ -42,11 +44,11 @@ class U26ActivationHardeningWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("cancel-in-progress: true", top_level)
 
-    def test_rp_matrix_burst_is_bounded(self):
-        self.assertIn("max-parallel: 2", self.rp_readonly)
-        self.assertIn("max-parallel: 2", self.rp_authority)
-        self.assertNotIn("max-parallel: 4", self.rp_readonly)
-        self.assertNotIn("max-parallel: 4", self.rp_authority)
+    def test_rp_matrix_burst_allows_all_four_independent_projects(self):
+        self.assertIn("max-parallel: 4", self.rp_readonly)
+        self.assertIn("max-parallel: 4", self.rp_authority)
+        self.assertNotIn("max-parallel: 2", self.rp_readonly)
+        self.assertNotIn("max-parallel: 2", self.rp_authority)
 
     def test_parent_pipeline_preserves_sanitized_durable_receipt_artifact(self):
         self.assertIn("issues: write", self.parent)
