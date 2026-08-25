@@ -46,7 +46,7 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
     concurrency:
       group: ues-terminal-result-backfill-${{ matrix.project }}
       cancel-in-progress: false
@@ -69,12 +69,13 @@ jobs:
 
       - name: Read-only project-scoped terminal backfill
         id: backfill
-        timeout-minutes: 25
+        timeout-minutes: 45
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_TERMINAL_BACKFILL_ACTIVITY_READ_WORKERS: "8"
           UES_BACKFILL_PROJECT: ${{ matrix.project }}
         run: |
           set +e
