@@ -105,7 +105,7 @@ class ConfirmedLineageReceiptRecoveryTests(unittest.TestCase):
                 self._write_record(state=state, observed=observed)
                 recovered = self._recover()
                 self.assertFalse(recovered["_state_generation_recovered"])
-                self.assertNotIn("known_session_fingerprints", recovered)
+                self.assertEqual(recovered["known_session_fingerprints"], [])
 
     def test_missing_creation_kind_or_malformed_fingerprint_never_recovers_identity(self) -> None:
         cases = (
@@ -120,7 +120,7 @@ class ConfirmedLineageReceiptRecoveryTests(unittest.TestCase):
                 self._write_record(**case)
                 recovered = self._recover()
                 self.assertFalse(recovered["_state_generation_recovered"])
-                self.assertNotIn("known_session_fingerprints", recovered)
+                self.assertEqual(recovered["known_session_fingerprints"], [])
 
 
 if __name__ == "__main__":
