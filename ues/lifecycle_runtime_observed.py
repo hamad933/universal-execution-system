@@ -10,7 +10,7 @@ from . import lifecycle_runtime as legacy
 from . import lifecycle_runtime_current as current
 from .identity import canonical_lane_id
 from .providers.base import NetworkError, RateLimitError, ServerError
-from .state_store import StateUnavailable, WorkstreamRuntimeRecord
+from .state_store import StateUnavailable, StateVersionConflict, WorkstreamRuntimeRecord
 
 SCHEMA_VERSION = "1.0"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -19,6 +19,7 @@ _PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
 _PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
 _PROVIDER_READ_UNAVAILABLE_RESULT = "PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
 _PROVIDER_READ_UNAVAILABLE_EXIT = 75
+_TELEMETRY_WRITE_ERRORS = (StateUnavailable, StateVersionConflict)
 
 
 def _bounded_env_text(env: Mapping[str, str], key: str, *, limit: int = 512) -> str | None:
@@ -67,11 +68,54 @@ def runtime_binding_from_env(env: Mapping[str, str] | None = None) -> dict[str, 
     return result
 
 
+def _telemetry_degraded_result(
+    *,
+    project: str,
+    route: str,
+    status: str,
+    binding: Mapping[str, Any],
+    health_durable: bool,
+    runtime_binding_durable: bool,
+    error: BaseException | None,
+    original_result: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return explicit non-authoritative telemetry degradation without granting authority.
+
+    Lifecycle health/runtime-binding lanes are observability only. Their write
+    failure must not become a project-effect gate because every downstream
+    mutation still has independent Current Authority, exact binding,
+    duplicate/UNKNOWN/idempotency and authoritative StateStore transition gates.
+    """
+
+    result = dict(original_result or {})
+    result.setdefault("lane_id", canonical_lane_id(project, route, legacy.HEALTH_WORKSTREAM))
+    result.setdefault("version", None)
+    result["status"] = status
+    result["health_telemetry_durable"] = bool(health_durable)
+    result["runtime_binding_durable"] = bool(runtime_binding_durable)
+    result["telemetry_grants_no_authority"] = True
+    result["telemetry_failure_blocks_downstream_effects"] = False
+    result["downstream_authority_and_state_gates_required"] = True
+    result["safe_to_blind_retry"] = False
+    if error is not None:
+        result["telemetry_error_category"] = type(error).__name__
+    result["runtime_binding_status"] = str(binding.get("status") or "UNBOUND")
+    if binding.get("status") == "BOUND":
+        result["runtime_sha"] = binding.get("sha")
+    return result
+
+
 def _persist_health_with_runtime_binding(
     original: Callable[..., dict[str, Any]],
     runtime_binding: Mapping[str, Any],
 ) -> Callable[..., dict[str, Any]]:
-    """Decorate health writes with the exact sanitized runtime execution binding."""
+    """Decorate best-effort health writes with exact sanitized runtime binding.
+
+    Health and runtime-binding records are telemetry only. A bounded StateStore
+    conflict/unavailability here is recorded as degraded observability and the
+    already-started lifecycle continues into its authoritative downstream gates.
+    Provider or project effects are never retried or authorized by this wrapper.
+    """
 
     binding = dict(runtime_binding)
 
@@ -84,31 +128,61 @@ def _persist_health_with_runtime_binding(
         summary: Mapping[str, Any],
         error_category: str | None = None,
     ) -> dict[str, Any]:
-        original_result = original(
-            store,
-            project=project,
-            route=route,
-            status=status,
-            summary=summary,
-            error_category=error_category,
-        )
-        lane_id = canonical_lane_id(project, route, legacy.HEALTH_WORKSTREAM)
-        read = store.read_workstream(lane_id)
-        if read.status != "OK" or read.record is None:
-            raise StateUnavailable(read.reason or "lifecycle health unavailable for runtime binding")
+        try:
+            original_result = original(
+                store,
+                project=project,
+                route=route,
+                status=status,
+                summary=summary,
+                error_category=error_category,
+            )
+        except _TELEMETRY_WRITE_ERRORS as exc:
+            return _telemetry_degraded_result(
+                project=project,
+                route=route,
+                status=status,
+                binding=binding,
+                health_durable=False,
+                runtime_binding_durable=False,
+                error=exc,
+            )
 
-        record = WorkstreamRuntimeRecord.from_dict(read.record.to_dict())
-        record.last_observed_github_state = dict(binding)
-        provenance = dict(record.authority_provenance or {})
-        provenance["runtime_binding_grants_no_authority"] = True
-        record.authority_provenance = provenance
-        saved = store.compare_and_swap_workstream(lane_id, read.version, record)
-        if saved.status != "OK":
-            raise StateUnavailable(saved.reason or "failed to persist lifecycle runtime binding")
+        lane_id = canonical_lane_id(project, route, legacy.HEALTH_WORKSTREAM)
+        try:
+            read = store.read_workstream(lane_id)
+            if read.status != "OK" or read.record is None:
+                raise StateUnavailable(read.reason or "lifecycle health unavailable for runtime binding")
+
+            record = WorkstreamRuntimeRecord.from_dict(read.record.to_dict())
+            record.last_observed_github_state = dict(binding)
+            provenance = dict(record.authority_provenance or {})
+            provenance["runtime_binding_grants_no_authority"] = True
+            record.authority_provenance = provenance
+            saved = store.compare_and_swap_workstream(lane_id, read.version, record)
+            if saved.status != "OK":
+                raise StateUnavailable(saved.reason or "failed to persist lifecycle runtime binding")
+        except _TELEMETRY_WRITE_ERRORS as exc:
+            return _telemetry_degraded_result(
+                project=project,
+                route=route,
+                status=status,
+                binding=binding,
+                health_durable=True,
+                runtime_binding_durable=False,
+                error=exc,
+                original_result=original_result,
+            )
 
         result = dict(original_result)
         result["version"] = saved.version
         result["runtime_binding_status"] = str(binding.get("status") or "UNBOUND")
+        result["health_telemetry_durable"] = True
+        result["runtime_binding_durable"] = True
+        result["telemetry_grants_no_authority"] = True
+        result["telemetry_failure_blocks_downstream_effects"] = False
+        result["downstream_authority_and_state_gates_required"] = True
+        result["safe_to_blind_retry"] = False
         if binding.get("status") == "BOUND":
             result["runtime_sha"] = binding.get("sha")
         return result
