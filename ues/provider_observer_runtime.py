@@ -31,6 +31,7 @@ from .providers.base import (
 )
 from .providers.jules import JulesClient
 from .state_store import StateUnavailable, WorkstreamRuntimeRecord
+from .terminal_results import extract_terminal_candidate, materialize_project_results
 
 HEALTH_WORKSTREAM = "PROVIDER-OBSERVER-HEALTH"
 _DEFAULT_OBSERVER_PROJECT_SCOPE = ("CEP", "GS")
@@ -43,6 +44,7 @@ _READ_ERRORS = (
     RateLimitError,
     ServerError,
 )
+_ACTIVITY_READ_STATES = frozenset({"AWAITING_USER_FEEDBACK", "COMPLETED"})
 
 
 def _utc_now() -> datetime:
@@ -196,20 +198,27 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
             "activity_content_persisted": False,
             "activity_ids_persisted": False,
             "activity_read_complete": False,
-            "activity_read_skipped": state != "AWAITING_USER_FEEDBACK",
+            "activity_read_skipped": state not in _ACTIVITY_READ_STATES,
         }
 
-        if session_name and state == "AWAITING_USER_FEEDBACK":
+        if session_name and state in _ACTIVITY_READ_STATES:
             try:
                 activities = client.list_activities(session_name, page_size=100)
                 entry.update(_activity_summary(activities))
                 entry["activity_read_complete"] = True
                 entry["activity_read_skipped"] = False
+                if state == "COMPLETED":
+                    entry["_terminal_candidate"] = extract_terminal_candidate(activities)
             except _READ_ERRORS as exc:
                 entry["activity_read_complete"] = False
                 entry["activity_read_skipped"] = False
                 entry["activity_read_error_category"] = _error_category(exc)
                 entry["exception_text_persisted"] = False
+                if state == "COMPLETED":
+                    entry["_terminal_candidate"] = {
+                        "structured": False,
+                        "state": "COMPLETED_OUTPUT_UNCONSUMED",
+                    }
 
         projects[project["project"]]["sessions"].append(entry)
 
@@ -241,7 +250,7 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
     return {
         "schema_version": SCHEMA_VERSION,
         "result": "JULES_PROVIDER_PROJECT_OBSERVATION",
-        "observer_profile": "RESILIENT_RUNTIME_R1",
+        "observer_profile": "RESILIENT_RUNTIME_R2_TERMINAL_RESULTS",
         "observed_at": observed_at,
         "provider": "JULES",
         "provider_read_complete": True,
@@ -257,6 +266,23 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
     }
 
 
+def _materialize_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    store = build_live_state_store()
+    result = dict(snapshot)
+    projects = snapshot.get("projects")
+    if not isinstance(projects, Mapping):
+        raise StateUnavailable("provider observation projects missing before terminal materialization")
+    result["projects"] = {
+        str(name): materialize_project_results(project_snapshot, store)
+        for name, project_snapshot in projects.items()
+        if isinstance(project_snapshot, Mapping)
+    }
+    result["terminal_result_materialization"] = "READ_ONLY_EXACT_LINEAGE_BINDING"
+    result["provider_mutation_performed"] = False
+    result["raw_activity_content_persisted"] = False
+    return result
+
+
 def observe() -> dict[str, Any]:
     persist_health(phase="START", status="IN_FLIGHT")
     try:
@@ -266,7 +292,7 @@ def observe() -> dict[str, Any]:
         if not key:
             raise RuntimeError("JULES_API_KEY missing")
         client = JulesClient(key)
-        snapshot = collect_resilient_observation(client)
+        snapshot = _materialize_snapshot(collect_resilient_observation(client))
         persistence = persist_provider_observation(snapshot)
         health = persist_health(phase="COMPLETE", status="PASS")
         return {
@@ -276,6 +302,7 @@ def observe() -> dict[str, Any]:
             "persistence": persistence,
             "health": health,
             "provider_mutation_performed": False,
+            "new_tasks_or_sessions_created": 0,
         }
     except Exception as exc:
         category = _error_category(exc)
@@ -294,18 +321,23 @@ def observe() -> dict[str, Any]:
             "error_category": category,
             "exception_text_persisted": False,
             "provider_mutation_performed": False,
+            "new_tasks_or_sessions_created": 0,
             "health": health,
         }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="UES resilient live Jules provider observer")
-    parser.add_argument("command", choices=("observe", "audit"))
+    parser.add_argument("command", choices=("observe", "backfill", "audit"))
     parser.add_argument("--stale-seconds", type=int, default=45 * 60)
     args = parser.parse_args(argv)
 
-    if args.command == "observe":
+    if args.command in {"observe", "backfill"}:
         result = observe()
+        if args.command == "backfill":
+            result["result_mode"] = "LEGACY_COMPLETED_SESSION_READ_ONLY_BACKFILL"
+            result["provider_mutation_performed"] = False
+            result["new_tasks_or_sessions_created"] = 0
         print(json.dumps(result, sort_keys=True))
         return 0 if result.get("result") == "JULES_PROVIDER_OBSERVATION_COMPLETE" else 2
 

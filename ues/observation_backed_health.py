@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -22,12 +23,7 @@ def observation_backed_no_effect_eligible(
     adapter: Mapping[str, Any],
     authority: Mapping[str, Any] | None,
 ) -> bool:
-    """Return True only when a lifecycle cycle has no provider-routing topology.
-
-    This optimization is deliberately narrower than "no current authority". Stable
-    workstreams, dynamic lineages, authorized initial/successor generations, or
-    authorized workflow dispatches all force the normal live lifecycle runtime.
-    """
+    """Return True only when a lifecycle cycle has no provider-routing topology."""
 
     runtime = legacy._lineage_runtime(adapter) or {}
     stable = runtime.get("workstreams")
@@ -62,12 +58,11 @@ def run_observation_backed_no_effect_health(
     stale_seconds: int = DEFAULT_STALE_SECONDS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Persist lifecycle health from the already-authoritative provider observation.
+    """Persist lifecycle health and expose sanitized terminal results from StateStore.
 
-    The provider observer is the only Jules reader in this no-topology path. This
-    function performs no provider call and cannot route a provider effect. It fails
-    closed if the persisted observation is missing, stale, incomplete, mutated, or
-    bound to another repository.
+    This path performs no provider call and cannot route an effect. Terminal results
+    are consumable only when the observer already proved exact session fingerprint,
+    repository, durable lineage generation and reviewed/candidate SHA binding.
     """
 
     if not observation_backed_no_effect_eligible(adapter, authority):
@@ -112,19 +107,27 @@ def run_observation_backed_no_effect_health(
     if not isinstance(session_count, int) or isinstance(session_count, bool) or session_count < 0:
         raise StateUnavailable("provider observation session_count is invalid")
 
+    raw_results = provider_state.get("results")
+    results = [dict(item) for item in raw_results if isinstance(item, Mapping)] if isinstance(raw_results, list) else []
+    state_counts = Counter(str(item.get("result_state") or "UNKNOWN") for item in results)
+    consumable = [item for item in results if item.get("result_state") == "PARENT_CONSUMABLE"]
+
     runtime_binding = observed.runtime_binding_from_env()
     persist = observed._persist_health_with_runtime_binding(legacy._persist_health, runtime_binding)
     event_id = str((authority or {}).get("authority_event_id") or "").strip() or None
     summary = {
         "project": project,
         "runtime": "V2_OBSERVATION_BACKED_NO_EFFECT",
-        "lineage_count": 0,
+        "lineage_count": len(results),
         "provider_session_count": session_count,
         "provider_inventory_source": "STATESTORE_PROVIDER_OBSERVATION",
         "provider_observation_version": read.version,
         "provider_observation_age_seconds": age_seconds,
         "provider_live_read_performed": False,
-        "binding_counts": {},
+        "binding_counts": dict(sorted(state_counts.items())),
+        "terminal_result_count": len(results),
+        "parent_consumable_result_count": len(consumable),
+        "terminal_unconsumed_result_count": len(results) - len(consumable),
         "recovery_action_counts": {},
         "effect_decision_counts": {},
         "external_effects_dispatched": 0,
@@ -135,6 +138,7 @@ def run_observation_backed_no_effect_health(
         "adapter_mutable_snapshot_is_authority": False,
         "state_store_generation_recovery_enabled": True,
         "same_session_reuse_first": True,
+        "blocked_lane_freezes_independent_lanes": False,
     }
 
     persist(
@@ -150,12 +154,12 @@ def run_observation_backed_no_effect_health(
     )
     health = persist(store, project=project, route=route, status="PASS", summary=summary)
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "project": project,
         "route": route,
         "result": "OBSERVATION_BACKED_NO_EFFECT_LIFECYCLE_COMPLETE",
         "summary": summary,
-        "results": [],
+        "results": results,
         "health": health,
         "current_authority_loaded": authority is not None,
         "current_authority_event_id": event_id,
