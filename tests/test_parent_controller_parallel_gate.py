@@ -18,7 +18,7 @@ class ParentControllerParallelGateTests(unittest.TestCase):
         cls.execute = cls.text.split("\n  parent-controller-execute:\n", 1)[1]
 
     def test_trusted_preflight_no_longer_waits_for_full_core(self) -> None:
-        header = cls_header = self.preflight.split("\n    steps:\n", 1)[0]
+        header = self.preflight.split("\n    steps:\n", 1)[0]
         self.assertNotIn("needs: core", header)
         self.assertIn("Parent Controller trusted preflight", header)
 
