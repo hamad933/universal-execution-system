@@ -30,9 +30,17 @@ def test_project_pipeline_preserves_independent_phase_timeouts() -> None:
     text = _workflow_text()
     backfill = text.index("Read-only project-scoped terminal backfill")
     lifecycle = text.index("Read this project lifecycle immediately after its backfill")
-    assert "timeout-minutes: 45" in text[:backfill]
-    assert "timeout-minutes: 25" in text[backfill:lifecycle]
+    assert "timeout-minutes: 70" in text[:backfill]
+    assert "timeout-minutes: 45" in text[backfill:lifecycle]
     assert "timeout-minutes: 20" in text[lifecycle:]
+
+
+def test_terminal_backfill_uses_existing_hard_bounded_max_activity_workers() -> None:
+    text = _workflow_text()
+    backfill = text.index("Read-only project-scoped terminal backfill")
+    lifecycle = text.index("Read this project lifecycle immediately after its backfill")
+    phase = text[backfill:lifecycle]
+    assert 'UES_TERMINAL_BACKFILL_ACTIVITY_READ_WORKERS: "8"' in phase
 
 
 def test_global_watchdog_waits_only_for_project_pipeline_completion() -> None:
