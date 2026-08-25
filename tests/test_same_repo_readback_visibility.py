@@ -7,9 +7,9 @@ from hashlib import sha256
 from typing import Any, Mapping
 
 from ues.identity import canonical_lane_id
-from ues.state_backends.github_refs import GitHubRefConflict
+from ues.state_backends.github_refs import GitHubRefConflict, GitHubRefTransportError
 from ues.state_backends.public_same_repo import OwnerAuthorizedSameRepoStateStore
-from ues.state_store import StateVersionConflict, WorkstreamRuntimeRecord
+from ues.state_store import StateUnavailable, StateVersionConflict, WorkstreamRuntimeRecord
 
 
 class DelayedVisibilityTransport:
@@ -24,11 +24,15 @@ class DelayedVisibilityTransport:
         self.update_mode = "normal"
         self.stale_reads_remaining = 0
         self.stale_value: str | None = None
+        self.read_errors_remaining = 0
 
     def assert_private_repository(self) -> None:
         return None
 
     def get_ref(self, ref: str) -> str | None:
+        if self.read_errors_remaining > 0:
+            self.read_errors_remaining -= 1
+            raise GitHubRefTransportError("GitHub API request failed (HTTP 403)")
         if self.stale_reads_remaining > 0:
             self.stale_reads_remaining -= 1
             return self.stale_value
@@ -104,6 +108,29 @@ class SameRepoReadbackVisibilityTests(unittest.TestCase):
         )
         self.assertEqual(saved.version, 2)
         self.assertEqual(self.transport.update_calls, 1)
+        self.assertEqual(self.store.read_workstream(self.lane).version, 2)
+
+    def test_transient_post_write_readback_error_recovers_without_retrying_write(self) -> None:
+        self.transport.read_errors_remaining = 1
+        saved = self.store.compare_and_swap_workstream(
+            self.lane,
+            1,
+            runtime_record(self.lane),
+        )
+        self.assertEqual(saved.version, 2)
+        self.assertEqual(self.transport.update_calls, 1)
+        self.assertEqual(self.store.read_workstream(self.lane).version, 2)
+
+    def test_persistent_post_write_readback_error_fails_closed_without_retrying_write(self) -> None:
+        self.transport.read_errors_remaining = self.store.publish_readback_attempts
+        with self.assertRaises(StateUnavailable):
+            self.store.compare_and_swap_workstream(
+                self.lane,
+                1,
+                runtime_record(self.lane),
+            )
+        self.assertEqual(self.transport.update_calls, 1)
+        self.transport.read_errors_remaining = 0
         self.assertEqual(self.store.read_workstream(self.lane).version, 2)
 
     def test_unobserved_write_still_fails_closed_without_blind_retry(self) -> None:
