@@ -12,12 +12,14 @@ class PortfolioEffectIngressLivenessTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.text = WORKFLOW.read_text(encoding="utf-8")
         cls.effect_job = cls.text.split("\n  project-lineage-cycle:\n", 1)[1]
+        cls.pre_matrix = cls.effect_job.split("\n    strategy:\n", 1)[0]
 
     def test_cep_gs_effect_ingress_is_explicit_event_driven_only(self) -> None:
-        self.assertIn("github.event_name == 'workflow_dispatch'", self.effect_job)
-        self.assertIn("github.event_name == 'repository_dispatch'", self.effect_job)
-        self.assertNotIn("github.event_name == 'schedule'", self.effect_job.split("\n    strategy:\n", 1)[0])
-        self.assertNotIn("github.event_name == 'push'", self.effect_job.split("\n    strategy:\n", 1)[0])
+        self.assertIn("github.event_name == 'workflow_dispatch'", self.pre_matrix)
+        self.assertIn("github.event_name == 'repository_dispatch'", self.pre_matrix)
+        self.assertNotIn("github.event_name == 'schedule'", self.pre_matrix)
+        self.assertNotIn("github.event_name == 'push'", self.pre_matrix)
+        self.assertNotIn("matrix.project", self.pre_matrix)
 
     def test_schedule_and_push_remain_available_for_recovery_not_effect_ingress(self) -> None:
         triggers = self.text.split("\npermissions:\n", 1)[0]
@@ -26,9 +28,11 @@ class PortfolioEffectIngressLivenessTests(unittest.TestCase):
         self.assertIn("provider-observer-fallback:", self.text)
         self.assertIn("run: python -m ues.provider_observer_recovery", self.text)
 
-    def test_cep_and_gs_retain_full_cross_project_parallelism_and_same_project_effect_serialization(self) -> None:
+    def test_cep_and_gs_retain_full_cross_project_parallelism_and_bounded_dynamic_selection(self) -> None:
         self.assertIn("max-parallel: 2", self.effect_job)
-        self.assertIn("project: [CEP, GS]", self.effect_job)
+        self.assertIn("[\"ALL\",\"CEP\",\"GS\"]", self.effect_job)
+        self.assertIn("[\"CEP\",\"GS\"]", self.effect_job)
+        self.assertIn("project: ${{ fromJSON(", self.effect_job)
         self.assertIn("group: ues-project-lifecycle-${{ matrix.project }}", self.effect_job)
         self.assertIn("cancel-in-progress: false", self.effect_job)
 

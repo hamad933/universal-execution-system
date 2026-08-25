@@ -7,6 +7,8 @@ import unittest
 class RPParallelWorkflowLivenessTests(unittest.TestCase):
     def test_rp_effect_ingress_is_event_driven_and_all_projects_can_run_together(self):
         text = Path(".github/workflows/ues-rp-authority-lifecycle.yml").read_text(encoding="utf-8")
+        effect_job = text.split("\n  rp-current-authority-cycle:\n", 1)[1]
+        pre_matrix = effect_job.split("\n    strategy:\n", 1)[0]
 
         self.assertIn("workflow_dispatch:", text)
         self.assertIn("repository_dispatch:", text)
@@ -14,7 +16,10 @@ class RPParallelWorkflowLivenessTests(unittest.TestCase):
         self.assertNotIn("\n  schedule:", text)
         self.assertNotIn("\n  push:", text)
         self.assertIn("max-parallel: 4", text)
-        self.assertIn("project: [RP01, RP02, RP03, RP04]", text)
+        self.assertNotIn("matrix.project", pre_matrix)
+        self.assertIn("[\"ALL\",\"RP01\",\"RP02\",\"RP03\",\"RP04\"]", effect_job)
+        self.assertIn("[\"RP01\",\"RP02\",\"RP03\",\"RP04\"]", effect_job)
+        self.assertIn("project: ${{ fromJSON(", effect_job)
 
     def test_readonly_maintenance_has_full_project_parallelism_and_separate_lanes(self):
         text = Path(".github/workflows/ues-rp-readonly-runtime.yml").read_text(encoding="utf-8")
