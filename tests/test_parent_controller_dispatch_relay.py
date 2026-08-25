@@ -19,21 +19,24 @@ class ParentControllerInlinePipelineTests(unittest.TestCase):
         self.assertNotIn("createWorkflowDispatch", self.text)
         self.assertNotIn("workflow_dispatch", self.text)
 
-    def test_parent_preflight_runs_only_after_core_for_exact_control_pr(self):
+    def test_parent_preflight_runs_independently_for_exact_control_pr(self):
         self.assertIn("parent-controller-preflight:", self.text)
-        self.assertIn("needs: core", self.text)
-        self.assertIn("github.event_name == 'pull_request'", self.text)
-        self.assertIn("github.event.pull_request.head.ref == 'ues-parent-control'", self.text)
-        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", self.text)
-        self.assertIn('PR_DRAFT: ${{ github.event.pull_request.draft }}', self.text)
-        self.assertIn('git diff --name-only "$BASE_SHA...$CONTROL_HEAD"', self.text)
+        preflight = self.text.split("\n  parent-controller-preflight:\n", 1)[1].split(
+            "\n  parent-controller-preflight-failure:\n", 1
+        )[0]
+        self.assertNotIn("needs: core", preflight.split("\n    steps:\n", 1)[0])
+        self.assertIn("github.event_name == 'pull_request'", preflight)
+        self.assertIn("github.event.pull_request.head.ref == 'ues-parent-control'", preflight)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", preflight)
+        self.assertIn('PR_DRAFT: ${{ github.event.pull_request.draft }}', preflight)
+        self.assertIn('git diff --name-only "$BASE_SHA...$CONTROL_HEAD"', preflight)
         self.assertIn(
             "Persistent Parent Controller PR must contain only .ues/parent-controller-request.json",
-            self.text,
+            preflight,
         )
-        self.assertNotIn("github.rest.pulls.listFiles", self.text)
-        self.assertIn("controlCommit.author.login !== context.repo.owner", self.text)
-        self.assertIn("controlCommit.committer.login !== context.repo.owner", self.text)
+        self.assertNotIn("github.rest.pulls.listFiles", preflight)
+        self.assertIn("controlCommit.author.login !== context.repo.owner", preflight)
+        self.assertIn("controlCommit.committer.login !== context.repo.owner", preflight)
 
     def test_preflight_is_read_only_and_has_no_provider_secret(self):
         preflight = self.text.split("\n  parent-controller-preflight:\n", 1)[1].split(
@@ -73,7 +76,8 @@ class ParentControllerInlinePipelineTests(unittest.TestCase):
 
     def test_effect_job_is_separate_project_serialized_boundary(self):
         execute = self.text.split("\n  parent-controller-execute:\n", 1)[1]
-        self.assertIn("needs: parent-controller-preflight", execute)
+        self.assertIn("needs: [core, parent-controller-preflight]", execute)
+        self.assertIn("needs.core.result == 'success'", execute)
         self.assertIn(
             "group: ues-project-lifecycle-${{ needs.parent-controller-preflight.outputs.project }}",
             execute,
