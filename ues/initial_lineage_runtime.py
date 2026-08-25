@@ -19,6 +19,7 @@ from .live_runtime import build_live_state_store
 from .policy_resolution import resolve_execution_policy
 from .providers.base import NetworkError, RateLimitError, ServerError
 from .providers.github import GitHubClient
+from .structured_handoff import build_required_handoff_instructions
 from .task_budget import observe_rolling_quota_window
 
 SCHEMA_VERSION = "1.0"
@@ -189,13 +190,38 @@ def _parse_exact_baseline(task_spec: Mapping[str, Any]) -> tuple[str, str]:
     return ref, sha
 
 
-def _task_prompt(task_spec: Mapping[str, Any]) -> str:
+def _task_prompt(
+    task_spec: Mapping[str, Any],
+    *,
+    role: str | None = None,
+    workstream: str | None = None,
+) -> str:
     canonical = json.dumps(dict(task_spec), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return (
+    base = (
         "Execute exactly the following Parent-governed task specification. "
         "Do not widen scope or perform any action prohibited by it. Return the required evidence and stop at its stop_gate.\n\n"
         + canonical
     )
+    if role is None and workstream is None:
+        return base
+    if role is None or workstream is None:
+        raise ValueError("role and workstream are both required for machine-actionable handoff enforcement")
+
+    state_role = _state_role(role)
+    instructions = build_required_handoff_instructions(state_role, workstream)
+    if state_role in {"REVIEWER", "ASSURANCE"}:
+        _, candidate_sha = _parse_exact_baseline(task_spec)
+        instructions = instructions.replace(
+            '"candidate_sha": null', f'"candidate_sha": "{candidate_sha}"'
+        ).replace(
+            '"reviewed_sha": null', f'"reviewed_sha": "{candidate_sha}"'
+        )
+        instructions += (
+            "\nFor this READ_ONLY review/assurance task, candidate_sha and reviewed_sha MUST both remain exactly "
+            f"{candidate_sha}. If that exact SHA was not actually reviewed, do not claim a verdict; return a blocked or "
+            "UNKNOWN handoff that states the evidence boundary instead."
+        )
+    return base + "\n\n" + instructions
 
 
 def _source_for_repository(client: JulesLifecycleClient, repository: str) -> tuple[str | None, bool]:
@@ -516,7 +542,7 @@ def run(project: str) -> dict[str, Any]:
                 workstream=workstream,
                 role=role,
                 task_spec=task_spec,
-                prompt=_task_prompt(task_spec),
+                prompt=_task_prompt(task_spec, role=role, workstream=workstream),
                 title=f"{project_id} {workstream} {role} G1",
                 source_name=source_name,
                 starting_branch=starting_branch,
