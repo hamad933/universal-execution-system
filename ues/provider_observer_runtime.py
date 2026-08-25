@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -31,6 +33,7 @@ from .providers.base import (
 )
 from .providers.jules import JulesClient
 from .state_store import StateUnavailable, WorkstreamRuntimeRecord
+from .terminal_results import extract_terminal_candidate, lineage_index, materialize_project_results
 
 HEALTH_WORKSTREAM = "PROVIDER-OBSERVER-HEALTH"
 _DEFAULT_OBSERVER_PROJECT_SCOPE = ("CEP", "GS")
@@ -43,6 +46,9 @@ _READ_ERRORS = (
     RateLimitError,
     ServerError,
 )
+_ACTIVITY_READ_STATES = frozenset({"AWAITING_USER_FEEDBACK", "COMPLETED"})
+_DEFAULT_ACTIVITY_READ_WORKERS = 4
+_MAX_ACTIVITY_READ_WORKERS = 8
 
 
 def _utc_now() -> datetime:
@@ -80,6 +86,30 @@ def _health_lane_id() -> str:
 def _error_category(exc: Exception) -> str:
     value = getattr(exc, "category", None)
     return str(value or type(exc).__name__).upper()[:120]
+
+
+def _activity_read_workers() -> int:
+    raw = str(os.environ.get("UES_PROVIDER_ACTIVITY_READ_WORKERS") or "").strip()
+    if not raw:
+        return _DEFAULT_ACTIVITY_READ_WORKERS
+    try:
+        requested = int(raw)
+    except ValueError:
+        return _DEFAULT_ACTIVITY_READ_WORKERS
+    return max(1, min(_MAX_ACTIVITY_READ_WORKERS, requested))
+
+
+def _bound_terminal_fingerprints(store: Any) -> dict[str, frozenset[str]]:
+    """Resolve durable exact-lineage session identities before terminal Activity reads."""
+    result: dict[str, frozenset[str]] = {}
+    for project in PROJECTS:
+        project_name = str(project.get("project") or "").strip()
+        if not project_name:
+            continue
+        route = str(project.get("route") or project_name).strip()
+        index = lineage_index(store, project=project_name, route=route)
+        result[project_name] = frozenset(index)
+    return result
 
 
 def persist_health(*, phase: str, status: str, error_category: str | None = None) -> dict[str, Any]:
@@ -139,8 +169,45 @@ def persist_health(*, phase: str, status: str, error_category: str | None = None
     }
 
 
-def collect_resilient_observation(client: JulesClient, *, observed_at: str | None = None) -> dict[str, Any]:
+def _read_activity_candidate(
+    client: JulesClient,
+    session_name: str,
+    state: str,
+) -> dict[str, Any]:
+    """Perform one independent GET-only Activity read and return sanitized materialization data."""
+    try:
+        activities = client.list_activities(session_name, page_size=100)
+        result: dict[str, Any] = {
+            "summary": _activity_summary(activities),
+            "activity_read_complete": True,
+            "activity_read_skipped": False,
+        }
+        if state == "COMPLETED":
+            result["terminal_candidate"] = extract_terminal_candidate(activities)
+        return result
+    except _READ_ERRORS as exc:
+        result = {
+            "activity_read_complete": False,
+            "activity_read_skipped": False,
+            "activity_read_error_category": _error_category(exc),
+            "exception_text_persisted": False,
+        }
+        if state == "COMPLETED":
+            result["terminal_candidate"] = {
+                "structured": False,
+                "state": "COMPLETED_OUTPUT_UNCONSUMED",
+            }
+        return result
+
+
+def collect_resilient_observation(
+    client: JulesClient,
+    *,
+    observed_at: str | None = None,
+    bound_terminal_fingerprints: Mapping[str, frozenset[str] | set[str] | tuple[str, ...]] | None = None,
+) -> dict[str, Any]:
     observed_at = observed_at or _iso(_utc_now())
+    bound_terminal_fingerprints = bound_terminal_fingerprints or {}
     sources = client.list_sources(page_size=100)
     sessions = client.list_sessions(page_size=100)
     source_by_name = {
@@ -161,6 +228,7 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
         for project in PROJECTS
     }
     unattributed = 0
+    pending_activity_reads: list[tuple[dict[str, Any], str, str]] = []
 
     for session in sessions:
         source_name = _resource_name(session.get("sourceIdentifier"))
@@ -174,8 +242,9 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
         session_name = _resource_name(session.get("name"))
         state = str(session.get("normalizedState") or "UNKNOWN").upper()
         title = session.get("title") or session.get("displayName") or ""
+        session_fingerprint = _fingerprint(session_name) if session_name else None
         entry: dict[str, Any] = {
-            "session_fingerprint": _fingerprint(session_name) if session_name else None,
+            "session_fingerprint": session_fingerprint,
             "identity_complete": bool(session_name),
             "state": state,
             "state_authoritative": bool(session.get("stateAuthoritative")),
@@ -196,22 +265,50 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
             "activity_content_persisted": False,
             "activity_ids_persisted": False,
             "activity_read_complete": False,
-            "activity_read_skipped": state != "AWAITING_USER_FEEDBACK",
+            "activity_read_skipped": state not in _ACTIVITY_READ_STATES,
         }
 
-        if session_name and state == "AWAITING_USER_FEEDBACK":
-            try:
-                activities = client.list_activities(session_name, page_size=100)
-                entry.update(_activity_summary(activities))
-                entry["activity_read_complete"] = True
-                entry["activity_read_skipped"] = False
-            except _READ_ERRORS as exc:
-                entry["activity_read_complete"] = False
-                entry["activity_read_skipped"] = False
-                entry["activity_read_error_category"] = _error_category(exc)
-                entry["exception_text_persisted"] = False
+        completed_bound = bool(
+            state == "COMPLETED"
+            and session_fingerprint
+            and session_fingerprint in set(bound_terminal_fingerprints.get(project["project"], ()))
+        )
+        should_read_activities = state == "AWAITING_USER_FEEDBACK" or completed_bound
+        if state == "COMPLETED" and not completed_bound:
+            entry["activity_read_skipped"] = True
+            entry["activity_read_reason"] = "NO_EXACT_DURABLE_LINEAGE_BINDING"
+
+        if session_name and should_read_activities:
+            pending_activity_reads.append((entry, session_name, state))
 
         projects[project["project"]]["sessions"].append(entry)
+
+    if pending_activity_reads:
+        workers = min(_activity_read_workers(), len(pending_activity_reads))
+        if workers == 1:
+            outcomes = [
+                _read_activity_candidate(client, session_name, state)
+                for _, session_name, state in pending_activity_reads
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ues-jules-activity") as executor:
+                outcomes = list(
+                    executor.map(
+                        lambda item: _read_activity_candidate(client, item[1], item[2]),
+                        pending_activity_reads,
+                    )
+                )
+        for (entry, _, state), outcome in zip(pending_activity_reads, outcomes, strict=True):
+            summary = outcome.get("summary")
+            if isinstance(summary, Mapping):
+                entry.update(summary)
+            entry["activity_read_complete"] = bool(outcome.get("activity_read_complete"))
+            entry["activity_read_skipped"] = bool(outcome.get("activity_read_skipped"))
+            if outcome.get("activity_read_error_category"):
+                entry["activity_read_error_category"] = outcome["activity_read_error_category"]
+                entry["exception_text_persisted"] = False
+            if state == "COMPLETED" and isinstance(outcome.get("terminal_candidate"), Mapping):
+                entry["_terminal_candidate"] = dict(outcome["terminal_candidate"])
 
     for project in PROJECTS:
         summary = projects[project["project"]]
@@ -241,7 +338,7 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
     return {
         "schema_version": SCHEMA_VERSION,
         "result": "JULES_PROVIDER_PROJECT_OBSERVATION",
-        "observer_profile": "RESILIENT_RUNTIME_R1",
+        "observer_profile": "RESILIENT_RUNTIME_R2_TERMINAL_RESULTS",
         "observed_at": observed_at,
         "provider": "JULES",
         "provider_read_complete": True,
@@ -253,20 +350,44 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
         "raw_session_ids_persisted": False,
         "raw_titles_persisted": False,
         "activity_content_persisted": False,
+        "activity_read_workers": min(_activity_read_workers(), len(pending_activity_reads)) if pending_activity_reads else 0,
         "projects": projects,
     }
 
 
-def observe() -> dict[str, Any]:
-    persist_health(phase="START", status="IN_FLIGHT")
-    try:
-        import os
+def _materialize_snapshot(snapshot: Mapping[str, Any], store: Any | None = None) -> dict[str, Any]:
+    store = store or build_live_state_store()
+    result = dict(snapshot)
+    projects = snapshot.get("projects")
+    if not isinstance(projects, Mapping):
+        raise StateUnavailable("provider observation projects missing before terminal materialization")
+    result["projects"] = {
+        str(name): materialize_project_results(project_snapshot, store)
+        for name, project_snapshot in projects.items()
+        if isinstance(project_snapshot, Mapping)
+    }
+    result["terminal_result_materialization"] = "READ_ONLY_EXACT_LINEAGE_BINDING"
+    result["provider_mutation_performed"] = False
+    result["raw_activity_content_persisted"] = False
+    return result
 
+
+def observe() -> dict[str, Any]:
+    recovery_snapshot: dict[str, Any] | None = None
+    try:
+        persist_health(phase="START", status="IN_FLIGHT")
         key = str(os.environ.get("JULES_API_KEY") or "").strip()
         if not key:
             raise RuntimeError("JULES_API_KEY missing")
+        store = build_live_state_store()
+        terminal_fingerprints = _bound_terminal_fingerprints(store)
         client = JulesClient(key)
-        snapshot = collect_resilient_observation(client)
+        snapshot = collect_resilient_observation(
+            client,
+            bound_terminal_fingerprints=terminal_fingerprints,
+        )
+        snapshot = _materialize_snapshot(snapshot, store)
+        recovery_snapshot = snapshot
         persistence = persist_provider_observation(snapshot)
         health = persist_health(phase="COMPLETE", status="PASS")
         return {
@@ -276,6 +397,7 @@ def observe() -> dict[str, Any]:
             "persistence": persistence,
             "health": health,
             "provider_mutation_performed": False,
+            "new_tasks_or_sessions_created": 0,
         }
     except Exception as exc:
         category = _error_category(exc)
@@ -288,24 +410,38 @@ def observe() -> dict[str, Any]:
                 "error_category": category,
                 "health_persistence": "FAILED",
             }
-        return {
+        result = {
             "schema_version": SCHEMA_VERSION,
             "result": "JULES_PROVIDER_OBSERVATION_FAILED",
             "error_category": category,
             "exception_text_persisted": False,
             "provider_mutation_performed": False,
+            "new_tasks_or_sessions_created": 0,
             "health": health,
         }
+        if recovery_snapshot is not None:
+            result.update({
+                "provider_read_complete": True,
+                "state_persistence_complete": False,
+                "sanitized_recovery_snapshot": recovery_snapshot,
+                "raw_activity_content_persisted": False,
+                "safe_to_blind_retry": False,
+            })
+        return result
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="UES resilient live Jules provider observer")
-    parser.add_argument("command", choices=("observe", "audit"))
+    parser.add_argument("command", choices=("observe", "backfill", "audit"))
     parser.add_argument("--stale-seconds", type=int, default=45 * 60)
     args = parser.parse_args(argv)
 
-    if args.command == "observe":
+    if args.command in {"observe", "backfill"}:
         result = observe()
+        if args.command == "backfill":
+            result["result_mode"] = "LEGACY_COMPLETED_SESSION_READ_ONLY_BACKFILL"
+            result["provider_mutation_performed"] = False
+            result["new_tasks_or_sessions_created"] = 0
         print(json.dumps(result, sort_keys=True))
         return 0 if result.get("result") == "JULES_PROVIDER_OBSERVATION_COMPLETE" else 2
 

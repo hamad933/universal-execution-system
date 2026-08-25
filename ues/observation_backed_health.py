@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -9,6 +10,7 @@ from .identity import canonical_lane_id
 from .live_runtime import build_live_state_store
 from .provider_observer import DEFAULT_STALE_SECONDS, OBSERVATION_WORKSTREAM
 from .state_store import StateUnavailable
+from .terminal_recovery import read_persisted_terminal_results
 
 
 def _parse_time(value: str) -> datetime:
@@ -22,12 +24,7 @@ def observation_backed_no_effect_eligible(
     adapter: Mapping[str, Any],
     authority: Mapping[str, Any] | None,
 ) -> bool:
-    """Return True only when a lifecycle cycle has no provider-routing topology.
-
-    This optimization is deliberately narrower than "no current authority". Stable
-    workstreams, dynamic lineages, authorized initial/successor generations, or
-    authorized workflow dispatches all force the normal live lifecycle runtime.
-    """
+    """Return True only when a lifecycle cycle has no provider-routing topology."""
 
     runtime = legacy._lineage_runtime(adapter) or {}
     stable = runtime.get("workstreams")
@@ -55,6 +52,15 @@ def observation_backed_no_effect_eligible(
     return True
 
 
+def _result_key(item: Mapping[str, Any]) -> tuple[str, str, str, int]:
+    return (
+        str(item.get("session_fingerprint") or ""),
+        str(item.get("logical_workstream") or ""),
+        str(item.get("role") or "").upper(),
+        int(item.get("generation") or 0),
+    )
+
+
 def run_observation_backed_no_effect_health(
     adapter: Mapping[str, Any],
     *,
@@ -62,12 +68,12 @@ def run_observation_backed_no_effect_health(
     stale_seconds: int = DEFAULT_STALE_SECONDS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Persist lifecycle health from the already-authoritative provider observation.
+    """Expose Parent-consumable terminal results even if aggregate observation is unavailable.
 
-    The provider observer is the only Jules reader in this no-topology path. This
-    function performs no provider call and cannot route a provider effect. It fails
-    closed if the persisted observation is missing, stale, incomplete, mutated, or
-    bound to another repository.
+    Durable terminal results live on exact lineage records. The aggregate provider
+    observation remains useful inventory/freshness evidence, but a failed observer
+    publication can no longer erase already-read completed work or force results=[]
+    for an independently persisted exact result.
     """
 
     if not observation_backed_no_effect_eligible(adapter, authority):
@@ -82,49 +88,103 @@ def run_observation_backed_no_effect_health(
         raise StateUnavailable("adapter identity is incomplete for observation-backed health")
 
     store = build_live_state_store()
+    persisted_results = read_persisted_terminal_results(
+        store,
+        project=project,
+        route=route,
+        repository=repository,
+    )
+
     observation_lane = canonical_lane_id(project, route, OBSERVATION_WORKSTREAM)
     read = store.read_workstream(observation_lane)
-    if read.status != "OK" or read.record is None:
-        raise StateUnavailable(read.reason or "provider observation unavailable for no-effect health")
+    provider_results: list[dict[str, Any]] = []
+    provider_observation_available = False
+    provider_observation_fresh = False
+    provider_observation_reason: str | None = None
+    provider_observation_version: int | None = None
+    provider_observation_age_seconds: float | None = None
+    session_count: int | None = None
 
-    provider_state = read.record.last_observed_provider_state
-    if not isinstance(provider_state, Mapping):
-        raise StateUnavailable("provider observation payload is missing")
-    if provider_state.get("provider_read_complete") is not True:
-        raise StateUnavailable("provider observation is not a complete authoritative read")
-    if provider_state.get("provider_mutation_performed") is not False:
-        raise StateUnavailable("provider observation is not read-only")
-    if str(provider_state.get("repository") or "").casefold() != repository.casefold():
-        raise StateUnavailable("provider observation repository binding does not match adapter")
+    if read.status == "OK" and read.record is not None:
+        provider_state = read.record.last_observed_provider_state
+        if not isinstance(provider_state, Mapping):
+            provider_observation_reason = "PROVIDER_OBSERVATION_PAYLOAD_MISSING"
+        elif provider_state.get("provider_read_complete") is not True:
+            provider_observation_reason = "PROVIDER_OBSERVATION_READ_INCOMPLETE"
+        elif provider_state.get("provider_mutation_performed") is not False:
+            provider_observation_reason = "PROVIDER_OBSERVATION_NOT_READ_ONLY"
+        elif str(provider_state.get("repository") or "").casefold() != repository.casefold():
+            provider_observation_reason = "PROVIDER_OBSERVATION_REPOSITORY_MISMATCH"
+        else:
+            provider_observation_available = True
+            provider_observation_version = read.version
+            observed_at = str(provider_state.get("observed_at") or "").strip()
+            try:
+                provider_observation_age_seconds = max(
+                    0.0,
+                    (
+                        (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+                        - _parse_time(observed_at)
+                    ).total_seconds(),
+                )
+                provider_observation_fresh = provider_observation_age_seconds <= stale_seconds
+                if not provider_observation_fresh:
+                    provider_observation_reason = "PROVIDER_OBSERVATION_STALE"
+            except (TypeError, ValueError):
+                provider_observation_reason = "PROVIDER_OBSERVATION_TIMESTAMP_INVALID"
+            raw_session_count = provider_state.get("session_count")
+            if isinstance(raw_session_count, int) and not isinstance(raw_session_count, bool) and raw_session_count >= 0:
+                session_count = raw_session_count
+            else:
+                provider_observation_reason = provider_observation_reason or "PROVIDER_OBSERVATION_SESSION_COUNT_INVALID"
+            raw_results = provider_state.get("results")
+            if isinstance(raw_results, list):
+                provider_results = [dict(item) for item in raw_results if isinstance(item, Mapping)]
+    else:
+        provider_observation_reason = read.reason or f"PROVIDER_OBSERVATION_{read.status}"
 
-    observed_at = str(provider_state.get("observed_at") or "").strip()
-    try:
-        age_seconds = max(
-            0.0,
-            ((now or datetime.now(timezone.utc)).astimezone(timezone.utc) - _parse_time(observed_at)).total_seconds(),
-        )
-    except (TypeError, ValueError) as exc:
-        raise StateUnavailable("provider observation timestamp is invalid") from exc
-    if age_seconds > stale_seconds:
-        raise StateUnavailable("provider observation is stale for no-effect health")
+    if not persisted_results and not provider_observation_available:
+        raise StateUnavailable(provider_observation_reason or "provider observation and terminal results unavailable")
 
-    session_count = provider_state.get("session_count")
-    if not isinstance(session_count, int) or isinstance(session_count, bool) or session_count < 0:
-        raise StateUnavailable("provider observation session_count is invalid")
+    merged: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+    for item in provider_results:
+        merged[_result_key(item)] = item
+    # Exact durable lineage results override the aggregate mirror because they
+    # survive observer publication failure and are revalidated against current SHA.
+    for item in persisted_results:
+        merged[_result_key(item)] = dict(item)
+    results = list(merged.values())
+    results.sort(key=lambda item: (str(item.get("logical_workstream") or ""), str(item.get("role") or ""), int(item.get("generation") or 0)))
+
+    state_counts = Counter(str(item.get("result_state") or "UNKNOWN") for item in results)
+    consumable = [item for item in results if item.get("result_state") == "PARENT_CONSUMABLE"]
 
     runtime_binding = observed.runtime_binding_from_env()
     persist = observed._persist_health_with_runtime_binding(legacy._persist_health, runtime_binding)
     event_id = str((authority or {}).get("authority_event_id") or "").strip() or None
+    if provider_observation_available and persisted_results:
+        inventory_source = "STATESTORE_PROVIDER_OBSERVATION_PLUS_DURABLE_LINEAGE_RESULTS"
+    elif persisted_results:
+        inventory_source = "STATESTORE_DURABLE_LINEAGE_RESULTS_ONLY"
+    else:
+        inventory_source = "STATESTORE_PROVIDER_OBSERVATION"
     summary = {
         "project": project,
         "runtime": "V2_OBSERVATION_BACKED_NO_EFFECT",
-        "lineage_count": 0,
+        "lineage_count": len(results),
         "provider_session_count": session_count,
-        "provider_inventory_source": "STATESTORE_PROVIDER_OBSERVATION",
-        "provider_observation_version": read.version,
-        "provider_observation_age_seconds": age_seconds,
+        "provider_inventory_source": inventory_source,
+        "provider_observation_available": provider_observation_available,
+        "provider_observation_fresh": provider_observation_fresh,
+        "provider_observation_reason": provider_observation_reason,
+        "provider_observation_version": provider_observation_version,
+        "provider_observation_age_seconds": provider_observation_age_seconds,
         "provider_live_read_performed": False,
-        "binding_counts": {},
+        "binding_counts": dict(sorted(state_counts.items())),
+        "terminal_result_count": len(results),
+        "durable_lineage_terminal_result_count": len(persisted_results),
+        "parent_consumable_result_count": len(consumable),
+        "terminal_unconsumed_result_count": len(results) - len(consumable),
         "recovery_action_counts": {},
         "effect_decision_counts": {},
         "external_effects_dispatched": 0,
@@ -135,6 +195,7 @@ def run_observation_backed_no_effect_health(
         "adapter_mutable_snapshot_is_authority": False,
         "state_store_generation_recovery_enabled": True,
         "same_session_reuse_first": True,
+        "blocked_lane_freezes_independent_lanes": False,
     }
 
     persist(
@@ -150,12 +211,12 @@ def run_observation_backed_no_effect_health(
     )
     health = persist(store, project=project, route=route, status="PASS", summary=summary)
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.2",
         "project": project,
         "route": route,
         "result": "OBSERVATION_BACKED_NO_EFFECT_LIFECYCLE_COMPLETE",
         "summary": summary,
-        "results": [],
+        "results": results,
         "health": health,
         "current_authority_loaded": authority is not None,
         "current_authority_event_id": event_id,

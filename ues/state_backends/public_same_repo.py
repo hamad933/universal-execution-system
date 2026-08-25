@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import socket
+import subprocess
 import time
 from typing import Any, Callable, Mapping, TypeVar
 from urllib.error import HTTPError, URLError
@@ -10,9 +13,12 @@ from urllib.request import Request, urlopen
 
 from .github_refs import (
     BACKEND_SCHEMA,
+    STATE_PATH,
     GitHubGitDataTransport,
+    GitHubRefConflict,
     GitHubRefStateStore,
     GitHubRefTransportError,
+    GitHubRefWriteUncertain,
     _iso,
     _required,
 )
@@ -38,6 +44,25 @@ def _repository(value: str) -> str:
     return text
 
 
+def _repository_from_remote(value: str) -> str:
+    """Extract owner/name from a GitHub checkout remote without exposing credentials."""
+
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        raise GitHubRefTransportError("Git checkout remote identity is unavailable")
+    text = re.sub(r"\.git$", "", text, flags=re.IGNORECASE)
+    patterns = (
+        r"^https?://github\.com/([^/]+/[^/]+)$",
+        r"^ssh://git@github\.com/([^/]+/[^/]+)$",
+        r"^git@github\.com:([^/]+/[^/]+)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _repository(match.group(1))
+    raise GitHubRefTransportError("Git checkout remote is not an exact supported GitHub repository")
+
+
 class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
     """Explicit owner-authorized transport for runtime state in the UES repository itself.
 
@@ -46,6 +71,12 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
     when the runtime repository and the exact owner-authorized repository identity
     are identical. Tokens remain runtime-only and state snapshots still pass through
     the normal StateStore receipt sanitizer.
+
+    In GitHub Actions, the trusted same-repository checkout is also used as a
+    Git-native StateStore transport. This removes GitHub REST/Git-Data rate-limit
+    budget from the runtime-state critical path while preserving exact repository
+    identity and non-force fast-forward CAS semantics. Outside GitHub Actions the
+    existing REST transport remains the default.
 
     Public mode protects secrets, not metadata confidentiality. Lane/session/source
     identifiers persisted by callers may be visible through public runtime refs.
@@ -77,18 +108,76 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
             timeout_seconds=timeout_seconds,
         )
 
-    def _retry_throttled_read(self, action: Callable[[], _T]) -> _T:
-        """Boundedly retry only read-side 403/429 transport failures.
+    @property
+    def git_native_enabled(self) -> bool:
+        """Use the authenticated checkout only inside GitHub Actions unless disabled."""
 
-        Runtime state uses GitHub Git Data reads heavily. A concurrent observation
-        burst can receive a temporary 403/429 even though the token remains valid.
-        Repeating GET-only work is side-effect free, so this transport gives those
-        statuses a short bounded recovery window. Writes are intentionally not
-        wrapped here and therefore preserve the existing no-blind-write-retry rule.
+        actions = str(os.environ.get("GITHUB_ACTIONS") or "").strip().lower() == "true"
+        disabled = (
+            str(os.environ.get("UES_DISABLE_GIT_NATIVE_SAME_REPO") or "").strip().lower()
+            == "true"
+        )
+        return actions and not disabled
 
-        A persistent or authorization-related 403 still fails closed after the
-        bounded read attempts; no mutation is attempted as part of recovery.
+    def _git(
+        self,
+        *args: str,
+        input_text: str | None = None,
+        remote_write: bool = False,
+    ) -> str:
+        """Run Git without placing the runtime token on the command line.
+
+        actions/checkout persists repository-scoped authentication in local Git
+        configuration. We deliberately reuse that authenticated channel. A failed
+        remote push is never retried here: a definite rejection is a CAS conflict;
+        every other failed push is outcome-uncertain and must be reconciled by the
+        StateStore's authoritative ref readback path.
         """
+
+        env = os.environ.copy()
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        env.setdefault("GIT_AUTHOR_NAME", "ues-runtime")
+        env.setdefault("GIT_AUTHOR_EMAIL", "ues-runtime@users.noreply.github.com")
+        env.setdefault("GIT_COMMITTER_NAME", "ues-runtime")
+        env.setdefault("GIT_COMMITTER_EMAIL", "ues-runtime@users.noreply.github.com")
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                input=input_text,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=self.timeout_seconds,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            if remote_write:
+                raise GitHubRefWriteUncertain("Git push outcome uncertain") from None
+            raise GitHubRefTransportError("Git transport unavailable") from None
+
+        if completed.returncode == 0:
+            return str(completed.stdout or "")
+
+        diagnostic = f"{completed.stdout or ''}\n{completed.stderr or ''}".casefold()
+        if remote_write:
+            definite_conflict = any(
+                marker in diagnostic
+                for marker in (
+                    "non-fast-forward",
+                    "fetch first",
+                    "stale info",
+                    "[rejected]",
+                    "cannot lock ref",
+                )
+            )
+            if definite_conflict:
+                raise GitHubRefConflict("Git ref CAS conflict")
+            raise GitHubRefWriteUncertain("Git push outcome uncertain")
+        raise GitHubRefTransportError("Git transport read/object operation unavailable")
+
+    def _retry_throttled_read(self, action: Callable[[], _T]) -> _T:
+        """Boundedly retry only read-side 403/429 REST transport failures."""
 
         attempts = max(1, int(self.read_throttle_attempts))
         delay = max(0.0, float(self.read_throttle_delay_seconds))
@@ -109,6 +198,16 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
 
         if self._storage_policy_verified:
             return
+        if self.git_native_enabled:
+            observed = _repository_from_remote(self._git("remote", "get-url", "origin"))
+            if observed.casefold() != self.expected_repository.casefold():
+                raise GitHubRefTransportError(
+                    "runtime repository identity does not match the owner-authorized repository"
+                )
+            self.storage_visibility = "OWNER_AUTHORIZED_SAME_REPO"
+            self._storage_policy_verified = True
+            return
+
         value = self._retry_throttled_read(lambda: self._request_json("GET", self._repo_path))
         assert value is not None
         observed = str(value.get("full_name") or "").strip()
@@ -120,12 +219,87 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
         self._storage_policy_verified = True
 
     def get_ref(self, ref: str) -> str | None:
+        if self.git_native_enabled:
+            ref = _required(ref, "ref")
+            output = self._git("ls-remote", "--refs", "origin", f"refs/{ref}")
+            rows = [line.split() for line in output.splitlines() if line.strip()]
+            exact = [row for row in rows if len(row) >= 2 and row[1] == f"refs/{ref}"]
+            if not exact:
+                return None
+            if len(exact) != 1:
+                raise GitHubRefTransportError("Git ref read returned ambiguous identity")
+            return str(exact[0][0])
         base = super()
         return self._retry_throttled_read(lambda: base.get_ref(ref))
 
     def read_snapshot(self, commit_sha: str) -> Mapping[str, Any]:
+        if self.git_native_enabled:
+            commit_sha = _required(commit_sha, "commit_sha")
+            self._git("fetch", "--no-tags", "--depth=1", "origin", commit_sha)
+            raw = self._git("show", f"{commit_sha}:{STATE_PATH}")
+            try:
+                value: Any = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise GitHubRefTransportError("state blob is corrupt") from exc
+            if not isinstance(value, Mapping):
+                raise GitHubRefTransportError("state snapshot must be an object")
+            return value
         base = super()
         return self._retry_throttled_read(lambda: base.read_snapshot(commit_sha))
+
+    def create_snapshot_commit(
+        self,
+        *,
+        parent_sha: str | None,
+        snapshot: Mapping[str, Any],
+        message: str,
+    ) -> str:
+        if not self.git_native_enabled:
+            return super().create_snapshot_commit(
+                parent_sha=parent_sha,
+                snapshot=snapshot,
+                message=message,
+            )
+
+        if parent_sha:
+            self._git("fetch", "--no-tags", "--depth=1", "origin", _required(parent_sha, "parent_sha"))
+        raw = json.dumps(
+            snapshot,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ) + "\n"
+        blob_sha = self._git("hash-object", "-w", "--stdin", input_text=raw).strip()
+        if not blob_sha:
+            raise GitHubRefTransportError("Git blob creation returned no SHA")
+        tree_input = f"100644 blob {blob_sha}\t{STATE_PATH}\n"
+        tree_sha = self._git("mktree", input_text=tree_input).strip()
+        if not tree_sha:
+            raise GitHubRefTransportError("Git tree creation returned no SHA")
+        args = ["commit-tree", tree_sha]
+        if parent_sha:
+            args.extend(["-p", parent_sha])
+        args.extend(["-m", _required(message, "message")])
+        commit_sha = self._git(*args).strip()
+        if not commit_sha:
+            raise GitHubRefTransportError("Git commit creation returned no SHA")
+        return commit_sha
+
+    def create_ref(self, ref: str, commit_sha: str) -> None:
+        if self.git_native_enabled:
+            ref = _required(ref, "ref")
+            commit_sha = _required(commit_sha, "commit_sha")
+            self._git("push", "origin", f"{commit_sha}:refs/{ref}", remote_write=True)
+            return
+        super().create_ref(ref, commit_sha)
+
+    def update_ref(self, ref: str, commit_sha: str) -> None:
+        if self.git_native_enabled:
+            ref = _required(ref, "ref")
+            commit_sha = _required(commit_sha, "commit_sha")
+            self._git("push", "origin", f"{commit_sha}:refs/{ref}", remote_write=True)
+            return
+        super().update_ref(ref, commit_sha)
 
     def _list_refs_once(self, prefix: str) -> dict[str, str]:
         headers = {
@@ -172,6 +346,20 @@ class OwnerAuthorizedSameRepoGitDataTransport(GitHubGitDataTransport):
         prefix = str(prefix or "").strip().strip("/")
         if not prefix:
             raise ValueError("ref prefix is required")
+        if self.git_native_enabled:
+            output = self._git(
+                "ls-remote",
+                "--refs",
+                "origin",
+                f"refs/{prefix}*",
+            )
+            result: dict[str, str] = {}
+            for line in output.splitlines():
+                parts = line.split()
+                if len(parts) < 2 or not parts[1].startswith("refs/"):
+                    continue
+                result[parts[1][len("refs/"):]] = parts[0]
+            return dict(sorted(result.items()))
         return self._retry_throttled_read(lambda: self._list_refs_once(prefix))
 
 
@@ -198,14 +386,7 @@ class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):
         )
 
     def _retry_post_cas_read(self, action: Callable[[], _T], *, unavailable_message: str) -> _T:
-        """Boundedly re-read an already confirmed CAS without repeating its mutation.
-
-        `_cas` returns only after the proposed ref is authoritatively reconciled. A
-        following lane/operation materialization read can still hit a short read-side
-        outage. Retrying only that read preserves the one-write rule while preventing
-        a transient GET failure from turning a confirmed CAS into a false failure.
-        Persistent unavailability and any non-UNAVAILABLE state still fail closed.
-        """
+        """Boundedly re-read an already confirmed CAS without repeating its mutation."""
 
         attempts = max(1, int(self.post_cas_readback_attempts))
         delay = max(0.0, float(self.post_cas_readback_delay_seconds))
@@ -269,14 +450,7 @@ class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):
         proposed_sha: str,
         conflict: bool,
     ) -> None:
-        """Boundedly reconcile post-write ref visibility without retrying the write.
-
-        GitHub may acknowledge a non-force ref update before a subsequent GET exposes
-        the new object. A single stale or temporarily unavailable read must therefore
-        not convert a committed StateStore CAS into a false failure. Definite conflicts
-        still fail immediately; normal/uncertain writes only re-read the authoritative
-        ref for a bounded period. No create/update mutation is repeated here.
-        """
+        """Boundedly reconcile post-write ref visibility without retrying the write."""
 
         if conflict:
             super()._resolve_publish(
