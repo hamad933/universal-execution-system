@@ -1,6 +1,6 @@
 {
   "schema_version": "UES_PARENT_CONTROLLER_REQUEST_V1",
-  "request_id": "RP02-IPA-RECOVERY-OBSERVE-R04-20260825T0306P03",
+  "request_id": "RP02-IPA-WAVE1-S01-S02-R05-20260825T0311P03",
   "project": "RP02",
   "runtime_sha": "e898b8a87aa02d99f65048caf9cd8e2ddfca73df",
   "current_authority": {
@@ -19,26 +19,83 @@
     },
     "lineages": {
       "RP02-IPA-S01-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
-      "RP02-IPA-S02-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
-      "RP02-IPA-S03-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
-      "RP02-IPA-S04-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
-      "RP02-IPA-S05-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
-      "RP02-IPA-S06-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
-      "RP02-IPA-S07-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
-      "RP02-IPA-S08-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}}
+      "RP02-IPA-S02-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}}
     },
     "generation_policy": {
-      "necessary_generation_authorized": false,
-      "generation_effect_authorized": false,
-      "authorized_initial_lineages": {},
+      "necessary_generation_authorized": true,
+      "generation_effect_authorized": true,
+      "authorized_initial_lineages": {
+        "RP02-IPA-S01-001:REVIEWER": {
+          "authorized": true,
+          "creation_kind": "INITIAL_LOGICAL_LINEAGE",
+          "task_spec": {
+            "objective": "Independently assure RP02 S01 Overview at /app/index.html on the frozen candidate. Determine whether the implemented page is portfolio-grade, faithful to the governed RP02 product and visual model, operationally legible, responsive, accessible at a practical baseline, and free of material production or debug leakage. Focus specifically on the overview header, Route Ribbon, authority aperture, executive situational awareness, and whether evidence, authority, and conflict cues are legible without generic-dashboard drift. This is evidence generation only; reviewer output is not acceptance.",
+            "exact_baseline": "feature/rp02-portfolio-polish-001@dc5cfe6f2d138c448561ff67f27e3c656b420229",
+            "write_scope": [],
+            "prohibited_scope": [
+              "Any repository mutation, file edit, commit, push, branch creation, PR mutation, merge, release, deploy, or publication",
+              "Any backend, database, persistence, live integration or data, production authentication, secret, or production-environment scope",
+              "Any change to the frozen candidate, accepted screenshot evidence, governance, tests, or assurance criteria",
+              "Any implementation of findings; report evidence only to the RP02 Parent Controller"
+            ],
+            "validation": [
+              "Verify the exact source branch still resolves to dc5cfe6f2d138c448561ff67f27e3c656b420229 before review",
+              "Inspect the governing route implementation and tests/portfolio-capture.cjs on the exact candidate",
+              "Evaluate the page at desktop 1440x960, tablet 900x1024, and mobile 390x844 using the repository-supported local or browser workflow without modifying the repository",
+              "Check visible information architecture, interaction and state semantics, accessibility basics, visual craft, responsive behavior, production or debug leakage, console or page errors, and horizontal overflow",
+              "Treat the product as a synthetic facilities operations, control, and maintenance application governed by Measure -> Detect -> Validate evidence -> Confirm authority and scope -> Decide -> Execute controlled action -> Verify -> Audit and monitor; do not judge it as a generic dashboard",
+              "Apply RP02 visual authority RP02-DEC-VIS-002 Route Ribbon Precision: Authority, Evidence, and Conflict must remain understandable in context and the interface must not collapse into slide or infographic styling"
+            ],
+            "evidence": [
+              "List exact files, routes, states, commands, and checks actually inspected or run",
+              "For every finding give severity, precise page or state locator, observed behavior, expected governed behavior, and reproducible evidence",
+              "Return one independent verdict from PASS, PASS_WITH_NOTES, REVISION_REQUIRED, BLOCKED_MISSING_EVIDENCE, REJECTED_OUT_OF_SCOPE, or SUPERSEDED",
+              "State missing evidence explicitly, residual risk, and any required Parent action; distinguish defects from preference or unsupported speculation"
+            ],
+            "handoff": "Return a Controller-ready READ_ONLY IPA intake containing inspected sources and evidence; page-local findings deduplicated with severity and precise locator; independent verdict; missing evidence; residual risk; required actions; and the review boundary. Do not implement, commit, push, open or change a PR, merge, release, deploy, publish, or claim Owner or Parent acceptance.",
+            "stop_gate": "RETURN_READ_ONLY_IPA_VERDICT_TO_RP02_PARENT_CONTROLLER_NO_MUTATION"
+          }
+        },
+        "RP02-IPA-S02-001:REVIEWER": {
+          "authorized": true,
+          "creation_kind": "INITIAL_LOGICAL_LINEAGE",
+          "task_spec": {
+            "objective": "Independently assure RP02 S02 Work Queue at /app/work-queue.html on the frozen candidate. Determine whether the implemented page is portfolio-grade, faithful to the governed RP02 product and visual model, operationally legible, responsive, accessible at a practical baseline, and free of material production or debug leakage. Focus specifically on work-queue prioritization and task semantics, the TSK-2041 evidence and state path especially on mobile, and whether authority and evidence context remains clear while scanning and acting. This is evidence generation only; reviewer output is not acceptance.",
+            "exact_baseline": "feature/rp02-portfolio-polish-001@dc5cfe6f2d138c448561ff67f27e3c656b420229",
+            "write_scope": [],
+            "prohibited_scope": [
+              "Any repository mutation, file edit, commit, push, branch creation, PR mutation, merge, release, deploy, or publication",
+              "Any backend, database, persistence, live integration or data, production authentication, secret, or production-environment scope",
+              "Any change to the frozen candidate, accepted screenshot evidence, governance, tests, or assurance criteria",
+              "Any implementation of findings; report evidence only to the RP02 Parent Controller"
+            ],
+            "validation": [
+              "Verify the exact source branch still resolves to dc5cfe6f2d138c448561ff67f27e3c656b420229 before review",
+              "Inspect the governing route implementation and tests/portfolio-capture.cjs on the exact candidate",
+              "Evaluate the page at desktop 1440x960, tablet 900x1024, and mobile 390x844 using the repository-supported local or browser workflow without modifying the repository",
+              "Check visible information architecture, interaction and state semantics, accessibility basics, visual craft, responsive behavior, production or debug leakage, console or page errors, and horizontal overflow",
+              "Treat the product as a synthetic facilities operations, control, and maintenance application governed by Measure -> Detect -> Validate evidence -> Confirm authority and scope -> Decide -> Execute controlled action -> Verify -> Audit and monitor; do not judge it as a generic dashboard",
+              "Apply RP02 visual authority RP02-DEC-VIS-002 Route Ribbon Precision: Authority, Evidence, and Conflict must remain understandable in context and the interface must not collapse into slide or infographic styling"
+            ],
+            "evidence": [
+              "List exact files, routes, states, commands, and checks actually inspected or run",
+              "For every finding give severity, precise page or state locator, observed behavior, expected governed behavior, and reproducible evidence",
+              "Return one independent verdict from PASS, PASS_WITH_NOTES, REVISION_REQUIRED, BLOCKED_MISSING_EVIDENCE, REJECTED_OUT_OF_SCOPE, or SUPERSEDED",
+              "State missing evidence explicitly, residual risk, and any required Parent action; distinguish defects from preference or unsupported speculation"
+            ],
+            "handoff": "Return a Controller-ready READ_ONLY IPA intake containing inspected sources and evidence; page-local findings deduplicated with severity and precise locator; independent verdict; missing evidence; residual risk; required actions; and the review boundary. Do not implement, commit, push, open or change a PR, merge, release, deploy, publish, or claim Owner or Parent acceptance.",
+            "stop_gate": "RETURN_READ_ONLY_IPA_VERDICT_TO_RP02_PARENT_CONTROLLER_NO_MUTATION"
+          }
+        }
+      },
       "authorized_lineages": {}
     }
   },
   "wakeup": {
     "event_type": "EXTERNAL_RECONCILIATION_REQUEST",
-    "event_id": "RP02-IPA-RECOVERY-OBSERVE-R04-20260825T0306P03",
+    "event_id": "RP02-IPA-WAVE1-S01-S02-R05-20260825T0311P03",
     "repository": "hamad933/Enterprise-Operations-Control",
-    "workstream": "RP02-IPA-RECOVERY-OBSERVE",
+    "workstream": "RP02-IPA-WAVE1",
     "sha": "dc5cfe6f2d138c448561ff67f27e3c656b420229"
   }
 }
