@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,11 @@ from ues.state_backends.public_same_repo import OwnerAuthorizedSameRepoGitDataTr
 
 
 class OwnerAuthorizedSameRepoReadRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
     def transport(self) -> OwnerAuthorizedSameRepoGitDataTransport:
         value = OwnerAuthorizedSameRepoGitDataTransport(
             "hamad933/universal-execution-system",

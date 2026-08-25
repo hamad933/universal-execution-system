@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 from ues.identity import canonical_lane_id
 from ues.state_backends.github_refs import BACKEND_SCHEMA, GitHubRefTransportError
@@ -44,6 +46,11 @@ class DiscoveryTransport:
 
 
 class PublicSameRepoPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
     def test_constructor_requires_exact_same_repository_identity(self):
         with self.assertRaises(ValueError):
             OwnerAuthorizedSameRepoGitDataTransport(
