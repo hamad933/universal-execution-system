@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout governed default branch
         uses: actions/checkout@v4
@@ -39,6 +39,7 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_PROVIDER_ACTIVITY_READ_WORKERS: "8"
         run: |
           set +e
           python -m ues.rp_readonly_runtime observe-provider > "$RUNNER_TEMP/rp-provider-observer-runtime.json"
