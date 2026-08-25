@@ -25,7 +25,7 @@ SCHEMA_VERSION = "1.0"
 SUPPORTED_PROJECTS = frozenset({"GS", "CEP", "RP01", "RP02", "RP03", "RP04"})
 SUPPORTED_ROLES = frozenset({"WRITER", "REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"})
 JULES_TASK_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
-_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
+_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list", "jules.sessions.get"})
 _PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
 _PROVIDER_READ_UNAVAILABLE_RESULT = "INITIAL_LINEAGE_PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
 _PROVIDER_READ_UNAVAILABLE_EXIT = 75
@@ -126,22 +126,12 @@ def _required_text(task_spec: Mapping[str, Any], *keys: str) -> str:
 
 
 def _validate_task_spec(task_spec: Mapping[str, Any], *, role: str) -> dict[str, Any]:
-    """Validate the complete bounded executor contract before any provider write.
-
-    The Current Authority task specification is the sole scope source for the
-    first physical generation. The schema is closed: unknown fields, conflicting
-    aliases, and non-string scope entries are rejected rather than being copied
-    into the provider prompt. Writers require a non-empty write domain;
-    reviewer/assurance roles are explicitly read-only.
-    """
-
     role_name = str(role or "").strip().upper()
     if role_name not in SUPPORTED_ROLES:
         raise ValueError("task_spec role is not supported")
     unknown = sorted(str(key) for key in task_spec if key not in _ALLOWED_TASK_FIELDS)
     if unknown:
         raise ValueError("task_spec contains unsupported fields: " + ", ".join(unknown))
-
     result = dict(task_spec)
     _required_text(task_spec, "objective")
     _required_text(task_spec, "exact_baseline")
@@ -151,7 +141,6 @@ def _validate_task_spec(task_spec: Mapping[str, Any], *, role: str) -> dict[str,
     _string_list(task_spec, "evidence", required_nonempty=True)
     _required_text(task_spec, "handoff")
     _required_text(task_spec, "stop_gate", "stopGate")
-
     if role_name == "WRITER" and not write_scope:
         raise ValueError("Writer task_spec.write_scope must not be empty")
     if role_name in {"REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"} and write_scope:
@@ -210,9 +199,7 @@ def _source_for_repository(client: JulesLifecycleClient, repository: str) -> tup
     return (unique[0], True) if len(unique) == 1 else (None, False)
 
 
-def _state_snapshot(
-    store: Any, *, project: str, route: str, workstream: str, role: str
-) -> dict[str, Any]:
+def _state_snapshot(store: Any, *, project: str, route: str, workstream: str, role: str) -> dict[str, Any]:
     lane_id = lineage_lane_id(project, route, workstream, _state_role(role))
     read = store.read_workstream(lane_id)
     if read.status != "OK" or read.record is None:
@@ -223,22 +210,14 @@ def _state_snapshot(
         "session_fingerprint": str(evidence.get("session_fingerprint") or "").strip() or None,
         "unknown_write_state": read.record.unknown_write_state,
         "action_in_flight": read.record.action_in_flight,
-        "operation_state": (read.record.operation_receipt or {}).get("state")
-        if isinstance(read.record.operation_receipt, Mapping)
-        else None,
+        "operation_state": (read.record.operation_receipt or {}).get("state") if isinstance(read.record.operation_receipt, Mapping) else None,
         "pending_initial_lineage_transition": evidence.get("pending_initial_lineage_transition"),
     }
 
 
-def _governed_initial_policy(
-    authority: Mapping[str, Any], lane_authority: Mapping[str, Any]
-) -> dict[str, Any]:
+def _governed_initial_policy(authority: Mapping[str, Any], lane_authority: Mapping[str, Any]) -> dict[str, Any]:
     governed = dict(authority)
-    generation = (
-        dict(authority.get("generation_policy") or {})
-        if isinstance(authority.get("generation_policy"), Mapping)
-        else {}
-    )
+    generation = dict(authority.get("generation_policy") or {}) if isinstance(authority.get("generation_policy"), Mapping) else {}
     enabled = lane_authority.get("authorized") is True
     generation["necessary_generation_authorized"] = enabled
     generation["generation_effect_authorized"] = enabled
@@ -246,13 +225,7 @@ def _governed_initial_policy(
     return governed
 
 
-def _marker_matches(
-    inventory: list[dict[str, Any]],
-    *,
-    repository: str,
-    starting_branch: str,
-    marker: str,
-) -> list[dict[str, Any]]:
+def _marker_matches(inventory: list[dict[str, Any]], *, repository: str, starting_branch: str, marker: str) -> list[dict[str, Any]]:
     token = f"[{marker}]"
     result: list[dict[str, Any]] = []
     for session in inventory:
@@ -266,7 +239,7 @@ def _marker_matches(
     return result
 
 
-def _authority_entries(authority: Mapping[str, Any]) -> Mapping[str,Any]:
+def _authority_entries(authority: Mapping[str, Any]) -> Mapping[str, Any]:
     generation = authority.get("generation_policy")
     generation = generation if isinstance(generation, Mapping) else {}
     value = generation.get("authorized_initial_lineages")
@@ -274,18 +247,10 @@ def _authority_entries(authority: Mapping[str, Any]) -> Mapping[str,Any]:
 
 
 def _is_pre_effect_provider_read_failure(exc: BaseException) -> bool:
-    return isinstance(exc, _PRE_EFFECT_PROVIDER_READ_ERRORS) and str(
-        getattr(exc, "operation", "") or ""
-    ) in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
+    return isinstance(exc, _PRE_EFFECT_PROVIDER_READ_ERRORS) and str(getattr(exc, "operation", "") or "") in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
 
 
-def _provider_read_unavailable_result(
-    project: str,
-    route: str,
-    *,
-    authority: Mapping[str, Any],
-    exc: BaseException,
-) -> dict[str, Any]:
+def _provider_read_unavailable_result(project: str, route: str, *, authority: Mapping[str, Any], exc: BaseException) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "project": project,
@@ -310,40 +275,16 @@ def run(project: str) -> dict[str, Any]:
     route = str(adapter.get("route") or project_id)
     repository = str(adapter.get("repository") or "").strip()
     actor = str(os.environ.get("UES_AUTHORITY_TRANSPORT_ACTOR") or os.environ.get("GITHUB_ACTOR") or "").strip()
-    authority = load_current_authority_json(
-        adapter,
-        os.environ.get("UES_CURRENT_AUTHORITY_JSON"),
-        transport_actor=actor,
-    )
+    authority = load_current_authority_json(adapter, os.environ.get("UES_CURRENT_AUTHORITY_JSON"), transport_actor=actor)
     if authority is None:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "project": project_id,
-            "route": route,
-            "result": "INITIAL_LINEAGE_RUNTIME_NO_CURRENT_AUTHORITY",
-            "external_effects_dispatched": 0,
-            "new_tasks_or_sessions_created": 0,
-            "safe_to_blind_retry": False,
-        }
-
+        return {"schema_version": SCHEMA_VERSION, "project": project_id, "route": route, "result": "INITIAL_LINEAGE_RUNTIME_NO_CURRENT_AUTHORITY", "external_effects_dispatched": 0, "new_tasks_or_sessions_created": 0, "safe_to_blind_retry": False}
     entries = _authority_entries(authority)
     if not entries:
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "project": project_id,
-            "route": route,
-            "result": "INITIAL_LINEAGE_RUNTIME_NO_AUTHORIZED_INITIAL_LINEAGES",
-            "authority_event_id": authority.get("authority_event_id"),
-            "external_effects_dispatched": 0,
-            "new_tasks_or_sessions_created": 0,
-            "safe_to_blind_retry": False,
-        }
-
+        return {"schema_version": SCHEMA_VERSION, "project": project_id, "route": route, "result": "INITIAL_LINEAGE_RUNTIME_NO_AUTHORIZED_INITIAL_LINEAGES", "authority_event_id": authority.get("authority_event_id"), "external_effects_dispatched": 0, "new_tasks_or_sessions_created": 0, "safe_to_blind_retry": False}
     key = str(os.environ.get("JULES_API_KEY") or "").strip()
     github_token = str(os.environ.get("GITHUB_TOKEN") or "").strip()
     if not key or not github_token:
         raise RuntimeError("JULES_API_KEY and GITHUB_TOKEN are required for authorized initial lineage runtime")
-
     store = build_live_state_store()
     jules = JulesLifecycleClient(key)
     github = GitHubClient(github_token)
@@ -352,23 +293,11 @@ def run(project: str) -> dict[str, Any]:
     except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
         if not _is_pre_effect_provider_read_failure(exc):
             raise
-        return _provider_read_unavailable_result(
-            project_id,
-            route,
-            authority=authority,
-            exc=exc,
-        )
+        return _provider_read_unavailable_result(project_id, route, authority=authority, exc=exc)
     source_name, source_proven = _source_for_repository(jules, repository)
-    # Jules currently meters tasks in a rolling 24-hour window. Historical
-    # sessions stay in inventory for reconciliation/marker matching but are not
-    # charged against the current capacity gate.
-    provider_observation = observe_rolling_quota_window(
-        inventory,
-        window_seconds=JULES_TASK_QUOTA_WINDOW_SECONDS,
-    )
+    provider_observation = observe_rolling_quota_window(inventory, window_seconds=JULES_TASK_QUOTA_WINDOW_SECONDS)
     owner, repo = legacy._repo_parts(repository)
     event_id = str(authority.get("authority_event_id") or "").strip()
-
     results: list[dict[str, Any]] = []
     for raw_key, raw_lane in sorted(entries.items(), key=lambda item: str(item[0])):
         if not isinstance(raw_lane, Mapping) or raw_lane.get("authorized") is not True:
@@ -376,41 +305,15 @@ def run(project: str) -> dict[str, Any]:
         try:
             workstream, role = _parse_lane_key(str(raw_key))
         except ValueError as exc:
-            results.append(
-                {
-                    "authority_key": str(raw_key),
-                    "decision": "INITIAL_LINEAGE_AUTHORITY_KEY_INVALID",
-                    "reason": str(exc),
-                    "provider_write_attempted": False,
-                    "safe_to_blind_retry": False,
-                }
-            )
+            results.append({"authority_key": str(raw_key), "decision": "INITIAL_LINEAGE_AUTHORITY_KEY_INVALID", "reason": str(exc), "provider_write_attempted": False, "safe_to_blind_retry": False})
             continue
-
         dynamic_role = _dynamic_role_config(authority, workstream=workstream, role=role)
         if dynamic_role is None:
-            results.append(
-                {
-                    "workstream": workstream,
-                    "role": role,
-                    "decision": "INITIAL_LINEAGE_DYNAMIC_TOPOLOGY_REQUIRED",
-                    "provider_write_attempted": False,
-                    "safe_to_blind_retry": False,
-                }
-            )
+            results.append({"workstream": workstream, "role": role, "decision": "INITIAL_LINEAGE_DYNAMIC_TOPOLOGY_REQUIRED", "provider_write_attempted": False, "safe_to_blind_retry": False})
             continue
-
         raw_task_spec = raw_lane.get("task_spec")
         if not isinstance(raw_task_spec, Mapping):
-            results.append(
-                {
-                    "workstream": workstream,
-                    "role": role,
-                    "decision": "INITIAL_LINEAGE_TASK_SPEC_REQUIRED",
-                    "provider_write_attempted": False,
-                    "safe_to_blind_retry": False,
-                }
-            )
+            results.append({"workstream": workstream, "role": role, "decision": "INITIAL_LINEAGE_TASK_SPEC_REQUIRED", "provider_write_attempted": False, "safe_to_blind_retry": False})
             continue
         try:
             task_spec = _validate_task_spec(raw_task_spec, role=role)
@@ -419,145 +322,30 @@ def run(project: str) -> dict[str, Any]:
             if dynamic_branch != starting_branch:
                 raise ValueError("dynamic provider_starting_branch must match task_spec.exact_baseline branch")
         except ValueError as exc:
-            results.append(
-                {
-                    "workstream": workstream,
-                    "role": role,
-                    "decision": "INITIAL_LINEAGE_TASK_CONTRACT_INVALID",
-                    "reason": str(exc),
-                    "provider_write_attempted": False,
-                    "safe_to_blind_retry": False,
-                }
-            )
+            results.append({"workstream": workstream, "role": role, "decision": "INITIAL_LINEAGE_TASK_CONTRACT_INVALID", "reason": str(exc), "provider_write_attempted": False, "safe_to_blind_retry": False})
             continue
-
-        state = _state_snapshot(
-            store,
-            project=project_id,
-            route=route,
-            workstream=workstream,
-            role=role,
-        )
+        state = _state_snapshot(store, project=project_id, route=route, workstream=workstream, role=role)
         governed = _governed_initial_policy(authority, raw_lane)
-        effective = resolve_execution_policy(
-            adapter=adapter,
-            governed_authority=governed,
-            provider_observation=provider_observation,
-            state_snapshot=state,
-        ).to_dict()
-
-        if state.get("unknown_write_state") and isinstance(
-            state.get("pending_initial_lineage_transition"), Mapping
-        ):
-            reconciliation = reconcile_unknown_initial_lineage(
-                store,
-                project=project_id,
-                route=route,
-                workstream=workstream,
-                role=role,
-                inventory=inventory,
-                authority_event_id=event_id,
-                policy_provenance=effective.get("provenance")
-                if isinstance(effective.get("provenance"), Mapping)
-                else {},
-            )
-            results.append(
-                {
-                    "workstream": workstream,
-                    "role": role,
-                    "current_policy": effective,
-                    "effect": reconciliation,
-                }
-            )
+        effective = resolve_execution_policy(adapter=adapter, governed_authority=governed, provider_observation=provider_observation, state_snapshot=state).to_dict()
+        if state.get("unknown_write_state") and isinstance(state.get("pending_initial_lineage_transition"), Mapping):
+            reconciliation = reconcile_unknown_initial_lineage(store, project=project_id, route=route, workstream=workstream, role=role, inventory=inventory, authority_event_id=event_id, policy_provenance=effective.get("provenance") if isinstance(effective.get("provenance"), Mapping) else {})
+            results.append({"workstream": workstream, "role": role, "current_policy": effective, "effect": reconciliation})
             continue
-
         exact = github.verify_exact_head(owner, repo, starting_branch, candidate_sha)
         exact_ref = bool(exact.get("exact_head_match"))
-        transition_key = initial_lineage_transition_key(
-            project=project_id,
-            route=route,
-            workstream=workstream,
-            role=role,
-            candidate_sha=candidate_sha,
-            initial_task_spec=task_spec,
-        )
-        matches = _marker_matches(
-            inventory,
-            repository=repository,
-            starting_branch=starting_branch,
-            marker=transition_key[:12],
-        )
+        transition_key = initial_lineage_transition_key(project=project_id, route=route, workstream=workstream, role=role, candidate_sha=candidate_sha, initial_task_spec=task_spec)
+        matches = _marker_matches(inventory, repository=repository, starting_branch=starting_branch, marker=transition_key[:12])
         if int(state.get("generation") or 0) == 0 and matches:
-            effect = {
-                "decision": "INITIAL_LINEAGE_EXISTING_PROVIDER_MARKER_REQUIRES_ADJUDICATION",
-                "provider_write_attempted": False,
-                "match_count": len(matches),
-                "transition_key": transition_key,
-                "safe_to_blind_retry": False,
-            }
+            effect = {"decision": "INITIAL_LINEAGE_EXISTING_PROVIDER_MARKER_REQUIRES_ADJUDICATION", "provider_write_attempted": False, "match_count": len(matches), "transition_key": transition_key, "safe_to_blind_retry": False}
         elif not source_name or not source_proven or not exact_ref:
-            effect = {
-                "decision": "INITIAL_LINEAGE_EXACT_SOURCE_OR_BASELINE_REQUIRED",
-                "provider_write_attempted": False,
-                "source_binding_proven": bool(source_name and source_proven),
-                "exact_starting_ref_binding": exact_ref,
-                "safe_to_blind_retry": False,
-            }
+            effect = {"decision": "INITIAL_LINEAGE_EXACT_SOURCE_OR_BASELINE_REQUIRED", "provider_write_attempted": False, "source_binding_proven": bool(source_name and source_proven), "exact_starting_ref_binding": exact_ref, "safe_to_blind_retry": False}
         else:
-            effect = execute_initial_lineage_generation(
-                store,
-                jules,
-                adapter=adapter,
-                authority=authority,
-                transport_actor=actor,
-                current_policy=effective,
-                project=project_id,
-                route=route,
-                workstream=workstream,
-                role=role,
-                task_spec=task_spec,
-                prompt=_task_prompt(task_spec),
-                title=f"{project_id} {workstream} {role} G1",
-                source_name=source_name,
-                starting_branch=starting_branch,
-                repository=repository,
-                candidate_sha=candidate_sha,
-                active_duplicate_absent=not matches,
-                exact_repository_binding=source_proven,
-                exact_starting_ref_binding=exact_ref,
-            )
-        results.append(
-            {
-                "workstream": workstream,
-                "role": role,
-                "candidate_sha": candidate_sha,
-                "starting_branch": starting_branch,
-                "dynamic_topology_bound": True,
-                "current_policy": effective,
-                "effect": effect,
-            }
-        )
-
-    decisions = Counter(
-        str((item.get("effect") or item).get("decision") or "NO_EFFECT") for item in results
-    )
+            effect = execute_initial_lineage_generation(store, jules, adapter=adapter, authority=authority, transport_actor=actor, current_policy=effective, project=project_id, route=route, workstream=workstream, role=role, task_spec=task_spec, prompt=_task_prompt(task_spec), title=f"{project_id} {workstream} {role} G1", source_name=source_name, starting_branch=starting_branch, repository=repository, candidate_sha=candidate_sha, active_duplicate_absent=not matches, exact_repository_binding=source_proven, exact_starting_ref_binding=exact_ref)
+        results.append({"workstream": workstream, "role": role, "candidate_sha": candidate_sha, "starting_branch": starting_branch, "dynamic_topology_bound": True, "current_policy": effective, "effect": effect})
+    decisions = Counter(str((item.get("effect") or item).get("decision") or "NO_EFFECT") for item in results)
     external = sum(int((item.get("effect") or {}).get("external_effects_dispatched") or 0) for item in results)
     created = sum(int((item.get("effect") or {}).get("new_tasks_or_sessions_created") or 0) for item in results)
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "project": project_id,
-        "route": route,
-        "result": "INITIAL_LINEAGE_RUNTIME_COMPLETE",
-        "authority_event_id": event_id,
-        "lineage_count": len(results),
-        "provider_quota_window": provider_observation,
-        "effect_decision_counts": dict(sorted(decisions.items())),
-        "external_effects_dispatched": external,
-        "new_tasks_or_sessions_created": created,
-        "results": results,
-        "raw_session_ids_persisted": False,
-        "safe_to_blind_retry": False,
-    }
+    return {"schema_version": SCHEMA_VERSION, "project": project_id, "route": route, "result": "INITIAL_LINEAGE_RUNTIME_COMPLETE", "authority_event_id": event_id, "lineage_count": len(results), "provider_quota_window": provider_observation, "effect_decision_counts": dict(sorted(decisions.items())), "external_effects_dispatched": external, "new_tasks_or_sessions_created": created, "results": results, "raw_session_ids_persisted": False, "safe_to_blind_retry": False}
 
 
 def main(argv: list[str] | None = None) -> int:
