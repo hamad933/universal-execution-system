@@ -44,14 +44,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
-          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_STATE_REF_PREFIX: ues-runtime/candidate/${{ github.ref_name }}
         run: python -m ues.live_runtime state-smoke
 
       - name: Live runtime watchdog audit
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
-          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_STATE_REF_PREFIX: ues-runtime/candidate/${{ github.ref_name }}
         run: python -m ues.live_runtime state-audit
 
       - name: Check Jules secret availability without disclosure
@@ -79,7 +79,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
-          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_STATE_REF_PREFIX: ues-runtime/candidate/${{ github.ref_name }}
         run: python -m ues.provider_observer_runtime observe
 
       - name: Persist sanitized Jules probe success proof
@@ -87,7 +87,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
-          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_STATE_REF_PREFIX: ues-runtime/candidate/${{ github.ref_name }}
         run: python -m ues.live_runtime record-jules-probe
 
       - name: Persist sanitized Jules probe failure status
@@ -95,7 +95,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
-          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_STATE_REF_PREFIX: ues-runtime/candidate/${{ github.ref_name }}
           JULES_SECRET_PRESENT: ${{ steps.jules_secret.outputs.present }}
         run: |
           python - <<'PY'
