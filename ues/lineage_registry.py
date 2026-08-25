@@ -69,10 +69,10 @@ def match_lineage_session(
     reconciled separately from their deterministic UES title marker by the guarded
     initial-lineage runtime.
 
-    Once an exact durable session fingerprint and exact source repository match,
-    provider starting-branch movement is diagnostic drift rather than an identity
-    failure. This prevents a secondary mutable provider field from erasing an
-    already-proven session identity while still refusing branch-only adoption.
+    An explicit conflicting provider branch remains fail-closed. When the provider
+    omits branch metadata entirely, however, that absence must not erase an exact
+    durable session fingerprint + exact repository identity. The missing secondary
+    metadata is surfaced as diagnostic evidence instead of becoming false UNBOUND.
     """
 
     expected_repo = str(repository or "").strip().casefold()
@@ -98,7 +98,10 @@ def match_lineage_session(
         if repo != expected_repo:
             continue
         fp = str(session.get("_session_fingerprint") or "").strip().lower()
+        actual_provider_branch = str(session.get("sourceStartingBranch") or "").strip()
         if fp not in fingerprints:
+            continue
+        if provider_branch and actual_provider_branch and actual_provider_branch != provider_branch:
             continue
         candidates.append(session)
 
@@ -134,15 +137,13 @@ def match_lineage_session(
     session = candidates[0]
     state = str(session.get("normalizedState") or session.get("state") or "UNKNOWN").upper()
     actual_provider_branch = str(session.get("sourceStartingBranch") or "").strip()
-    provider_branch_drift = bool(
-        provider_branch and actual_provider_branch and actual_provider_branch != provider_branch
-    )
+    provider_branch_metadata_missing = bool(provider_branch and not actual_provider_branch)
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "PROVEN",
         "reason": (
-            "EXACT_GOVERNED_LINEAGE_BINDING_BRANCH_DRIFT"
-            if provider_branch_drift
+            "EXACT_GOVERNED_LINEAGE_BINDING_BRANCH_METADATA_UNAVAILABLE"
+            if provider_branch_metadata_missing
             else "EXACT_GOVERNED_LINEAGE_BINDING"
         ),
         "session": session,
@@ -150,7 +151,7 @@ def match_lineage_session(
         "session_fingerprint": str(session.get("_session_fingerprint") or ""),
         "provider_state": state,
         "continuation_disposition": continuation_disposition(state),
-        "provider_starting_branch_drift": provider_branch_drift,
+        "provider_starting_branch_metadata_missing": provider_branch_metadata_missing,
         "expected_provider_starting_branch": provider_branch or None,
         "observed_provider_starting_branch": actual_provider_branch or None,
     }
@@ -272,8 +273,8 @@ def upsert_lineage_observation(
         "current_candidate_sha": current_candidate_sha,
         "raw_session_id_persisted": False,
     }
-    if binding.get("provider_starting_branch_drift") is not None:
-        evidence["provider_starting_branch_drift"] = bool(binding.get("provider_starting_branch_drift"))
+    if binding.get("provider_starting_branch_metadata_missing") is not None:
+        evidence["provider_starting_branch_metadata_missing"] = bool(binding.get("provider_starting_branch_metadata_missing"))
         evidence["observed_provider_starting_branch"] = binding.get("observed_provider_starting_branch")
     if revoked_legacy_fp:
         evidence["revoked_legacy_session_fingerprint"] = revoked_legacy_fp
