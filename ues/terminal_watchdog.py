@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .identity import canonical_lane_id
+from .live_runtime import build_live_state_store
 from .provider_observer import OBSERVATION_WORKSTREAM
-from .state_backends.recovery_same_repo import build_recovery_state_store
 from .terminal_recovery import (
     TERMINAL_RESULT_KEY,
     load_governed_projects,
@@ -43,7 +43,7 @@ def _lane_state(
 ) -> tuple[str, bool, bool, bool, str]:
     state = str(result_state or "UNKNOWN")
     if state == "PARENT_CONSUMABLE":
-        return "TERMINAL_RESULT_PARENT_CONSUMABLE", False, True, False, "LANE"
+        return "TERMINAL_RESULT_PARENT_CONSUMABLE", False, False, True, "LANE"
     if state in {
         "COMPLETED_OUTPUT_UNCONSUMED",
         "COMPLETED_OUTPUT_UNSTRUCTURED",
@@ -54,7 +54,7 @@ def _lane_state(
     if state in {"RESULT_IDENTITY_UNRESOLVED", "STRUCTURED_HANDOFF_UNBOUND"}:
         return state, True, False, True, "LANE"
     if state in {"REVIEWED_SHA_MISMATCH", "RESULT_STALE_AFTER_CANDIDATE_MOVEMENT"}:
-        return state, False, True, True, "LANE"
+        return state, False, False, True, "LANE"
     return state, bool(has_exact_identity), bool(has_exact_identity), True, "LANE"
 
 
@@ -62,7 +62,7 @@ def run(*, now: datetime | None = None) -> dict[str, Any]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     projects = load_governed_projects()
     try:
-        store = build_recovery_state_store()
+        store = build_live_state_store()
         lane_ids = store.discover_lane_ids()
     except Exception as exc:
         return {
@@ -123,13 +123,9 @@ def run(*, now: datetime | None = None) -> dict[str, Any]:
             provider_state = lineage.get("provider_state") or {}
             provider_terminal = str(provider_state.get("state") or "").upper() == "COMPLETED"
             if current is None:
-                if provider_terminal:
-                    state = "TERMINAL_SESSION_RESULT_NOT_PERSISTED"
-                    safe_recovery = bool(lineage.get("session_fingerprint"))
-                    parent_action = False
-                    auto_recovery = safe_recovery
-                else:
+                if not provider_terminal:
                     continue
+                safe_recovery = bool(lineage.get("session_fingerprint"))
                 entries.append({
                     "project": project["project"],
                     "route": project["route"],
@@ -138,12 +134,12 @@ def run(*, now: datetime | None = None) -> dict[str, Any]:
                     "role": lineage["role"],
                     "generation": lineage["generation"],
                     "session_fingerprint": lineage.get("session_fingerprint"),
-                    "state": state,
+                    "state": "TERMINAL_SESSION_RESULT_NOT_PERSISTED",
                     "age_seconds": None,
                     "exact_cause": "COMPLETED_PROVIDER_STATE_WITHOUT_DURABLE_TERMINAL_RESULT",
                     "safe_recovery_available": safe_recovery,
-                    "parent_action_required": parent_action,
-                    "ues_automatic_recovery_possible": auto_recovery,
+                    "parent_action_required": False,
+                    "ues_automatic_recovery_possible": safe_recovery,
                     "blocking_scope": "LANE",
                 })
                 continue
@@ -216,7 +212,6 @@ def run(*, now: datetime | None = None) -> dict[str, Any]:
                             "blocking_scope": "LANE",
                         })
 
-    # Deduplicate repeated aggregate/lineage evidence for the same exact lane/session.
     deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
     for entry in entries:
         key = (
