@@ -4,7 +4,7 @@ import argparse
 import json
 from typing import Any
 
-from .state_backends.recovery_same_repo import build_recovery_state_store
+from .live_runtime import build_live_state_store
 from .terminal_recovery_runtime import run_read_only_backfill
 
 
@@ -14,14 +14,14 @@ def _category(exc: BaseException) -> str:
         return "GITHUB_REF_HTTP_403_UNAVAILABLE"
     if "HTTP 429" in text:
         return "GITHUB_REF_HTTP_429_UNAVAILABLE"
-    if "unavailable" in text.lower():
+    if "transport" in text.lower() or "unavailable" in text.lower():
         return "GITHUB_REF_NETWORK_OR_TRANSPORT_UNAVAILABLE"
     return str(getattr(exc, "category", None) or type(exc).__name__).upper()[:120]
 
 
 def run(projects: list[str] | None = None) -> dict[str, Any]:
     try:
-        store = build_recovery_state_store()
+        store = build_live_state_store()
     except Exception as exc:
         return {
             "schema_version": "1.0",
