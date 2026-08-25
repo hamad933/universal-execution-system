@@ -87,6 +87,31 @@ class RuntimeObserverTests(unittest.TestCase):
         self.assertEqual(item["activity_read_error_category"], "ACTIVITY_READ_FAILED")
         self.assertNotIn("private text", str(result))
 
+    def test_start_health_failure_is_structured_before_any_provider_call(self):
+        provider_calls = []
+
+        class NeverConstructedClient:
+            def __init__(self, key):
+                provider_calls.append(key)
+
+        with (
+            patch.dict("os.environ", {"JULES_API_KEY": "secret"}, clear=False),
+            patch(
+                "ues.provider_observer_runtime.persist_health",
+                side_effect=StateUnavailable("private state backend detail"),
+            ),
+            patch("ues.provider_observer_runtime.JulesClient", NeverConstructedClient),
+        ):
+            result = observe()
+
+        self.assertEqual(result["result"], "JULES_PROVIDER_OBSERVATION_FAILED")
+        self.assertEqual(result["error_category"], "STATEUNAVAILABLE")
+        self.assertEqual(result["health"]["health_persistence"], "FAILED")
+        self.assertFalse(result["provider_mutation_performed"])
+        self.assertEqual(result["new_tasks_or_sessions_created"], 0)
+        self.assertEqual(provider_calls, [])
+        self.assertNotIn("private state backend detail", str(result))
+
     def test_observe_persists_fail_health_without_exception_text(self):
         health_calls = []
 
