@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from .state_backends.recovery_same_repo import build_recovery_state_store
-from .terminal_recovery import run_read_only_backfill
+from .terminal_recovery_runtime import run_read_only_backfill
 
 
 def _category(exc: BaseException) -> str:
