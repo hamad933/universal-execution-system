@@ -80,7 +80,6 @@ jobs:
 
   parent-controller-preflight:
     name: Parent Controller trusted preflight
-    needs: core
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.ref == 'ues-parent-control' &&
@@ -523,8 +522,9 @@ jobs:
 
   parent-controller-execute:
     name: Parent Controller authority-gated execute
-    needs: parent-controller-preflight
+    needs: [core, parent-controller-preflight]
     if: >-
+      needs.core.result == 'success' &&
       needs.parent-controller-preflight.outputs.rate_limit_deferred != 'true' &&
       needs.parent-controller-preflight.outputs.already_receipted != 'true'
     runs-on: ubuntu-latest
