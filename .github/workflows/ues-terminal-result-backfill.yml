@@ -52,7 +52,7 @@ jobs:
       cancel-in-progress: false
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 6
       matrix:
         project: ${{ fromJSON(needs.discover-projects.outputs.projects) }}
     steps:
@@ -104,7 +104,7 @@ jobs:
       cancel-in-progress: false
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 6
       matrix:
         project: ${{ fromJSON(needs.discover-projects.outputs.projects) }}
     steps:
