@@ -1,8 +1,8 @@
 {
   "schema_version": "UES_PARENT_CONTROLLER_REQUEST_V1",
-  "request_id": "RP02-IPA-WAVE1-POSTREAD-R06-20260825T0317P03",
+  "request_id": "RP02-IPA-WAVE1-OBSERVE-R07-20260825T0409P03",
   "project": "RP02",
-  "runtime_sha": "e898b8a87aa02d99f65048caf9cd8e2ddfca73df",
+  "runtime_sha": "c0f7da005bc4f70e87b8fc925e406df2b5e82142",
   "current_authority": {
     "source": "DRIVE_CURRENT_STATE",
     "source_id": "1pIfAopiyt3mSsJ5srOKccr7DNhzoRlpr",
@@ -10,7 +10,7 @@
     "route": "RP02",
     "current": true,
     "authority_event_id": "RP02-IPA-DISPATCH-001",
-    "expires_at": "2026-08-25T04:30:00+03:00",
+    "expires_at": "2026-08-25T05:30:00+03:00",
     "task_budget": {
       "ceiling": 100,
       "reserve_target": 0,
@@ -18,8 +18,18 @@
       "unknown_lifetime_capacity": "ALLOW_UNLESS_DIRECT_CEILING_REACHED"
     },
     "lineages": {
-      "RP02-IPA-S01-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}},
-      "RP02-IPA-S02-001": {"reviewer": {"provider_starting_branch": "feature/rp02-portfolio-polish-001"}}
+      "RP02-IPA-S01-001": {
+        "reviewer": {
+          "provider_starting_branch": "feature/rp02-portfolio-polish-001",
+          "known_session_fingerprints": ["3e053993020c1defdb0620778eea256365ca01c0fc63c1a2aff84e1a4dffc74f"]
+        }
+      },
+      "RP02-IPA-S02-001": {
+        "reviewer": {
+          "provider_starting_branch": "feature/rp02-portfolio-polish-001",
+          "known_session_fingerprints": ["cf4479f69beeec26371ac73bde2d607542011a7a3660e3458099e7aa660c57d3"]
+        }
+      }
     },
     "generation_policy": {
       "necessary_generation_authorized": false,
@@ -30,9 +40,9 @@
   },
   "wakeup": {
     "event_type": "EXTERNAL_RECONCILIATION_REQUEST",
-    "event_id": "RP02-IPA-WAVE1-POSTREAD-R06-20260825T0317P03",
+    "event_id": "RP02-IPA-WAVE1-OBSERVE-R07-20260825T0409P03",
     "repository": "hamad933/Enterprise-Operations-Control",
-    "workstream": "RP02-IPA-WAVE1-POSTREAD",
+    "workstream": "RP02-IPA-WAVE1-OBSERVE",
     "sha": "dc5cfe6f2d138c448561ff67f27e3c656b420229"
   }
 }
