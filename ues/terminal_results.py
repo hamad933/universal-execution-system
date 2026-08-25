@@ -36,11 +36,7 @@ def _agent_messages(activities: Sequence[Mapping[str, Any]]) -> list[str]:
 
 
 def extract_terminal_candidate(activities: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Extract a sanitized terminal handoff candidate from runtime-only Activities.
-
-    Raw Jules prose remains in memory only. This function returns only bounded,
-    whitelisted fields plus fingerprints safe for durable public StateStore use.
-    """
+    """Extract only sanitized structured content from runtime-only provider Activities."""
 
     runtime = find_latest_structured_handoff_runtime(activities)
     if runtime is None:
@@ -83,9 +79,7 @@ def extract_terminal_candidate(activities: Sequence[Mapping[str, Any]]) -> dict[
                 "locator": _bounded(raw.get("locator") or raw.get("line") or raw.get("selector"), 500),
                 "summary": _bounded(raw.get("summary") or raw.get("detail"), 1200),
                 "recommended_action": _bounded(
-                    raw.get("recommended_action")
-                    or raw.get("recommended_remediation")
-                    or raw.get("action"),
+                    raw.get("recommended_action") or raw.get("recommended_remediation") or raw.get("action"),
                     1200,
                 ),
                 "evidence_references": [item for item in refs if item],
@@ -148,20 +142,39 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
     return result
 
 
+def _identity_result(*, project: str, route: str, repository: str, fp: str, reason: str) -> dict[str, Any]:
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "project": project,
+        "route": route,
+        "logical_workstream": None,
+        "role": None,
+        "generation": None,
+        "session_fingerprint": fp or None,
+        "repository": repository,
+        "status": "COMPLETE",
+        "verdict": None,
+        "finding_count": None,
+        "findings": [],
+        "result_state": "RESULT_IDENTITY_UNRESOLVED",
+        "identity_reason": reason,
+        "freshness_status": "UNBOUND",
+        "parent_action_required": True,
+        "raw_activity_content_persisted": False,
+        "raw_session_id_persisted": False,
+    }
+    result["result_fingerprint"] = _fingerprint(result)
+    return result
+
+
 def _bound_result(
-    *,
-    project: str,
-    route: str,
-    repository: str,
-    session: Mapping[str, Any],
-    candidate: Mapping[str, Any],
-    lineage: Mapping[str, Any],
+    *, project: str, route: str, repository: str, session: Mapping[str, Any],
+    candidate: Mapping[str, Any], lineage: Mapping[str, Any],
 ) -> dict[str, Any]:
     fp = str(session.get("session_fingerprint") or "")
     role = str(lineage.get("role") or "").upper()
     workstream = str(lineage.get("workstream") or "")
     current_sha = str(lineage.get("current_candidate_sha") or "") or None
-
     base = {
         "schema_version": SCHEMA_VERSION,
         "project": project,
@@ -184,8 +197,10 @@ def _bound_result(
         "raw_activity_content_persisted": False,
         "raw_session_id_persisted": False,
     }
-
-    if str(candidate.get("workstream") or "") != workstream or str(candidate.get("role") or "").upper() != role:
+    if str(session.get("source_repository") or "").casefold() != repository.casefold() or session.get("source_binding_proven") is not True:
+        base["result_state"] = "RESULT_IDENTITY_UNRESOLVED"
+        base["freshness_status"] = "UNBOUND"
+    elif str(candidate.get("workstream") or "") != workstream or str(candidate.get("role") or "").upper() != role:
         base["result_state"] = "STRUCTURED_HANDOFF_UNBOUND"
         base["freshness_status"] = "UNBOUND"
     elif role in {"REVIEWER", "ASSURANCE"}:
@@ -198,7 +213,6 @@ def _bound_result(
         if current_sha and claimed and claimed != current_sha:
             base["result_state"] = "RESULT_STALE_AFTER_CANDIDATE_MOVEMENT"
             base["freshness_status"] = "STALE_AFTER_CANDIDATE_MOVEMENT"
-
     base["result_fingerprint"] = _fingerprint(base)
     return base
 
@@ -222,54 +236,51 @@ def materialize_project_results(project_snapshot: Mapping[str, Any], store: Any)
         if not fp:
             entry["result_state"] = "RESULT_IDENTITY_UNRESOLVED"
             entry["classification"] = "SESSION_IDENTITY_UNRESOLVED"
+            results.append(_identity_result(project=project, route=route, repository=repository, fp=fp, reason="SESSION_FINGERPRINT_MISSING"))
+            continue
+        if str(entry.get("source_repository") or "").casefold() != repository.casefold() or entry.get("source_binding_proven") is not True:
+            entry["result_state"] = "RESULT_IDENTITY_UNRESOLVED"
+            entry["classification"] = "SESSION_IDENTITY_UNRESOLVED"
+            results.append(_identity_result(project=project, route=route, repository=repository, fp=fp, reason="SOURCE_REPOSITORY_BINDING_UNPROVEN"))
             continue
         matches = index.get(fp, [])
         if len(matches) != 1:
             entry["result_state"] = "RESULT_IDENTITY_UNRESOLVED"
             entry["classification"] = "SESSION_IDENTITY_UNRESOLVED"
+            reason = "NO_EXACT_LINEAGE_MATCH" if not matches else "MULTIPLE_EXACT_LINEAGE_MATCHES"
+            results.append(_identity_result(project=project, route=route, repository=repository, fp=fp, reason=reason))
             continue
         lineage = matches[0]
         if not isinstance(candidate, Mapping) or candidate.get("structured") is not True:
             state = str((candidate or {}).get("state") or "COMPLETED_OUTPUT_UNSTRUCTURED")
             entry["result_state"] = state
             entry["classification"] = state
-            results.append(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "project": project,
-                    "route": route,
-                    "logical_workstream": lineage["workstream"],
-                    "role": lineage["role"],
-                    "generation": lineage["generation"],
-                    "session_fingerprint": fp,
-                    "repository": repository,
-                    "status": "COMPLETE",
-                    "verdict": None,
-                    "finding_count": None,
-                    "findings": [],
-                    "result_state": state,
-                    "freshness_status": "UNADJUDICABLE",
-                    "safe_read_only_recovery_exists": True,
-                    "parent_action_required": True,
-                    "raw_activity_content_persisted": False,
-                    "raw_session_id_persisted": False,
-                }
-            )
+            result = {
+                "schema_version": SCHEMA_VERSION,
+                "project": project,
+                "route": route,
+                "logical_workstream": lineage["workstream"],
+                "role": lineage["role"],
+                "generation": lineage["generation"],
+                "session_fingerprint": fp,
+                "repository": repository,
+                "status": "COMPLETE",
+                "verdict": None,
+                "finding_count": None,
+                "findings": [],
+                "result_state": state,
+                "freshness_status": "UNADJUDICABLE",
+                "safe_read_only_recovery_exists": True,
+                "parent_action_required": True,
+                "raw_activity_content_persisted": False,
+                "raw_session_id_persisted": False,
+            }
+            result["result_fingerprint"] = _fingerprint(result)
+            results.append(result)
             continue
-        result = _bound_result(
-            project=project,
-            route=route,
-            repository=repository,
-            session=entry,
-            candidate=candidate,
-            lineage=lineage,
-        )
+        result = _bound_result(project=project, route=route, repository=repository, session=entry, candidate=candidate, lineage=lineage)
         entry["result_state"] = result["result_state"]
-        entry["classification"] = (
-            "COMPLETED_OUTPUT_CONSUMED"
-            if result["result_state"] == "PARENT_CONSUMABLE"
-            else result["result_state"]
-        )
+        entry["classification"] = "COMPLETED_OUTPUT_CONSUMED" if result["result_state"] == "PARENT_CONSUMABLE" else result["result_state"]
         results.append(result)
 
     output["sessions"] = sessions
