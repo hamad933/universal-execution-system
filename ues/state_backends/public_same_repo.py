@@ -13,12 +13,18 @@ from .github_refs import (
     GitHubGitDataTransport,
     GitHubRefStateStore,
     GitHubRefTransportError,
+    _iso,
+    _required,
 )
 from ..state_store import (
     SCHEMA_VERSION,
+    OperationRead,
+    OperationRecord,
+    StateRead,
     StateStoreCapabilities,
     StateUnavailable,
     StateVersionConflict,
+    WorkstreamRuntimeRecord,
 )
 
 OWNER_AUTHORIZED_PUBLIC_SAME_REPO_POLICY = "OWNER_AUTHORIZED_PUBLIC_SAME_REPOSITORY"
@@ -175,6 +181,8 @@ class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):
     transport: OwnerAuthorizedSameRepoGitDataTransport
     publish_readback_attempts = 7
     publish_readback_delay_seconds = 0.5
+    post_cas_readback_attempts = 3
+    post_cas_readback_delay_seconds = 0.5
 
     @property
     def capabilities(self) -> StateStoreCapabilities:
@@ -187,6 +195,70 @@ class OwnerAuthorizedSameRepoStateStore(GitHubRefStateStore):
             durable_operation_records=True,
             authoritative_restart_reconciliation=True,
             conflict_detection=True,
+        )
+
+    def _retry_post_cas_read(self, action: Callable[[], _T], *, unavailable_message: str) -> _T:
+        """Boundedly re-read an already confirmed CAS without repeating its mutation.
+
+        `_cas` returns only after the proposed ref is authoritatively reconciled. A
+        following lane/operation materialization read can still hit a short read-side
+        outage. Retrying only that read preserves the one-write rule while preventing
+        a transient GET failure from turning a confirmed CAS into a false failure.
+        Persistent unavailability and any non-UNAVAILABLE state still fail closed.
+        """
+
+        attempts = max(1, int(self.post_cas_readback_attempts))
+        delay = max(0.0, float(self.post_cas_readback_delay_seconds))
+        last_unavailable: StateUnavailable | None = None
+        for attempt in range(attempts):
+            try:
+                read = action()
+            except StateUnavailable as exc:
+                last_unavailable = exc
+            else:
+                status = str(getattr(read, "status", "") or "")
+                if status == "OK":
+                    return read
+                reason = str(getattr(read, "reason", "") or unavailable_message)
+                if status != "UNAVAILABLE":
+                    raise StateUnavailable(reason)
+                last_unavailable = StateUnavailable(reason)
+            if attempt + 1 < attempts and delay:
+                time.sleep(delay)
+
+        if last_unavailable is not None:
+            raise StateUnavailable(unavailable_message) from last_unavailable
+        raise StateUnavailable(unavailable_message)
+
+    def compare_and_swap_workstream(
+        self,
+        lane_id: str,
+        expected_version: int,
+        record: WorkstreamRuntimeRecord,
+    ) -> StateRead:
+        lane_id = _required(lane_id, "lane_id")
+        if record.lane_id != lane_id:
+            raise ValueError("lane identity mismatch")
+        record.updated_at = _iso(self.clock())
+        self._cas("lane", lane_id, expected_version, record.to_dict())
+        return self._retry_post_cas_read(
+            lambda: self.read_workstream(lane_id),
+            unavailable_message="lane state unavailable after CAS",
+        )
+
+    def compare_and_swap_operation(
+        self,
+        operation_key: str,
+        expected_version: int,
+        record: OperationRecord,
+    ) -> OperationRead:
+        operation_key = _required(operation_key, "operation_key")
+        if record.operation_key != operation_key:
+            raise ValueError("operation identity mismatch")
+        self._cas("operation", operation_key, expected_version, record.to_dict())
+        return self._retry_post_cas_read(
+            lambda: self.read_operation(operation_key),
+            unavailable_message="operation state unavailable after CAS",
         )
 
     def _resolve_publish(
