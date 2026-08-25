@@ -23,7 +23,8 @@ class ParentControllerSingleTransportTests(unittest.TestCase):
         self.assertNotIn("parent-controller-relay:", text)
         self.assertNotIn("createWorkflowDispatch", text)
         self.assertNotIn("workflow_dispatch", text)
-        self.assertIn("needs: parent-controller-preflight", text)
+        self.assertIn("needs: [core, parent-controller-preflight]", text)
+        self.assertIn("needs.core.result == 'success'", text)
 
     def test_current_manual_describes_one_path_and_no_manual_handoff(self):
         text = MANUAL.read_text(encoding="utf-8")
