@@ -16,11 +16,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  discover-projects:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      projects: ${{ steps.discover.outputs.projects }}
+    steps:
+      - name: Checkout governed default branch
+        uses: actions/checkout@v4
+
+      - name: Discover repository-backed governed adapters
+        id: discover
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          projects = []
+          for path in sorted(Path('adapters').glob('*.json')):
+              if path.name == 'registry.json':
+                  continue
+              try:
+                  value = json.loads(path.read_text(encoding='utf-8'))
+              except (OSError, json.JSONDecodeError):
+                  continue
+              if not isinstance(value, dict):
+                  continue
+              project = str(value.get('project') or '').strip().upper()
+              repository = str(value.get('repository') or '').strip()
+              if project and repository.count('/') == 1 and project not in projects:
+                  projects.append(project)
+          if not projects:
+              raise SystemExit('no repository-backed governed adapters discovered')
+          print('projects=' + json.dumps(projects, separators=(',', ':')))
+          PY
+
   backfill:
+    needs: discover-projects
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        project: ${{ fromJSON(needs.discover-projects.outputs.projects) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 18
     steps:
       - name: Checkout governed default branch
         uses: actions/checkout@v4
@@ -33,8 +74,7 @@ jobs:
       - name: Install UES
         run: python -m pip install -e .
 
-      - name: Read-only generic terminal backfill
-        id: backfill
+      - name: Read-only terminal backfill for exact governed project
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
@@ -42,28 +82,33 @@ jobs:
           UES_STATE_REF_PREFIX: ues-runtime/v2
         run: |
           set +e
-          python -m ues.terminal_backfill > "$RUNNER_TEMP/ues-terminal-backfill.json"
+          python -m ues.terminal_backfill "${{ matrix.project }}" > "$RUNNER_TEMP/ues-terminal-backfill-${{ matrix.project }}.json"
           status=$?
           set -e
-          cat "$RUNNER_TEMP/ues-terminal-backfill.json"
+          cat "$RUNNER_TEMP/ues-terminal-backfill-${{ matrix.project }}.json"
           exit "$status"
 
-      - name: Preserve terminal backfill receipt
+      - name: Preserve project terminal backfill receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ues-terminal-backfill-${{ github.run_id }}
-          path: ${{ runner.temp }}/ues-terminal-backfill.json
+          name: ues-terminal-backfill-${{ matrix.project }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ues-terminal-backfill-${{ matrix.project }}.json
           retention-days: 7
           if-no-files-found: error
 
   lifecycle-readback:
     if: always()
-    needs: backfill
+    needs: [discover-projects, backfill]
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        project: ${{ fromJSON(needs.discover-projects.outputs.projects) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
       - name: Checkout governed default branch
         uses: actions/checkout@v4
@@ -76,30 +121,30 @@ jobs:
       - name: Install UES
         run: python -m pip install -e .
 
-      - name: Read every adapter-backed lifecycle independently
+      - name: Read exact adapter-backed lifecycle independently
         env:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_PROJECT: ${{ matrix.project }}
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
           from ues.terminal_lifecycle import run
-          from ues.terminal_recovery import load_governed_projects
 
-          outputs = {}
-          failures = {}
-          for project in load_governed_projects():
-              name = project['project']
-              try:
-                  result = run(name)
-              except Exception as exc:
-                  failures[name] = {
-                      'error_category': str(getattr(exc, 'category', None) or type(exc).__name__).upper(),
-                      'exception_text_persisted': False,
-                  }
-                  continue
+          project = os.environ['UES_PROJECT']
+          failure = None
+          output = None
+          try:
+              result = run(project)
+          except Exception as exc:
+              failure = {
+                  'error_category': str(getattr(exc, 'category', None) or type(exc).__name__).upper(),
+                  'exception_text_persisted': False,
+              }
+          else:
               summary = result.get('summary', {}) if isinstance(result.get('summary'), dict) else {}
               safe_results = []
               for item in result.get('results', []):
@@ -116,7 +161,7 @@ jobs:
                       )
                       if key in item
                   })
-              outputs[name] = {
+              output = {
                   'result': result.get('result'),
                   'results': safe_results,
                   'summary': {
@@ -130,18 +175,12 @@ jobs:
                       )
                       if key in summary
                   },
-                  'provider_mutation_performed': False,
-                  'new_tasks_or_sessions_created': 0,
-                  'safe_to_blind_retry': False,
-                  'findings_persisted_in_artifact': False,
-                  'raw_activity_content_persisted': False,
-                  'raw_session_ids_persisted': False,
-                  'raw_titles_persisted': False,
               }
           receipt = {
               'schema_version': 'UES_TERMINAL_LIFECYCLE_READBACK_V1',
-              'projects': outputs,
-              'failures': failures,
+              'project': project,
+              'output': output,
+              'failure': failure,
               'blocked_lane_freezes_independent_lanes': False,
               'provider_mutation_performed': False,
               'new_tasks_or_sessions_created': 0,
@@ -151,27 +190,24 @@ jobs:
               'raw_session_ids_persisted': False,
               'raw_titles_persisted': False,
           }
-          path = Path('${{ runner.temp }}') / 'ues-terminal-lifecycle-readback.json'
+          path = Path(os.environ['RUNNER_TEMP']) / f'ues-terminal-lifecycle-readback-{project}.json'
           path.write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n', encoding='utf-8')
           print(json.dumps({
-              'project_count': len(outputs),
-              'failure_count': len(failures),
-              'parent_consumable_result_count': sum(
-                  int((value.get('summary') or {}).get('parent_consumable_result_count') or 0)
-                  for value in outputs.values()
-              ),
+              'project': project,
+              'failure': failure is not None,
+              'parent_consumable_result_count': int(((output or {}).get('summary') or {}).get('parent_consumable_result_count') or 0),
               'blocked_lane_freezes_independent_lanes': False,
           }, sort_keys=True))
-          if not outputs:
+          if output is None:
               raise SystemExit(2)
           PY
 
-      - name: Preserve lifecycle readback receipt
+      - name: Preserve project lifecycle readback receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ues-terminal-lifecycle-readback-${{ github.run_id }}
-          path: ${{ runner.temp }}/ues-terminal-lifecycle-readback.json
+          name: ues-terminal-lifecycle-readback-${{ matrix.project }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ues-terminal-lifecycle-readback-${{ matrix.project }}.json
           retention-days: 7
           if-no-files-found: error
 
