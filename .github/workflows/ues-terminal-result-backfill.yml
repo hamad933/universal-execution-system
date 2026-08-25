@@ -52,7 +52,12 @@ jobs:
       cancel-in-progress: false
     strategy:
       fail-fast: false
-      max-parallel: 6
+      # Jules source/session inventory is account-global. Each project cell must
+      # independently preserve its StateStore/CAS lane, but unconstrained matrix
+      # fan-out duplicates the same provider inventory scan and can exhaust the
+      # bounded GET budget before any Activity read starts. Keep two project lanes
+      # progressing concurrently while bounding only this shared provider resource.
+      max-parallel: 2
       matrix:
         project: ${{ fromJSON(needs.discover-projects.outputs.projects) }}
     steps:
@@ -75,7 +80,9 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-          UES_TERMINAL_BACKFILL_ACTIVITY_READ_WORKERS: "8"
+          # At matrix width two, four GET-only Activity workers per project cap the
+          # aggregate Activity fan-out at eight, matching the proven observer bound.
+          UES_TERMINAL_BACKFILL_ACTIVITY_READ_WORKERS: "4"
           UES_BACKFILL_PROJECT: ${{ matrix.project }}
         run: |
           set +e
