@@ -15,7 +15,7 @@ class ResolvedExecutionPolicy:
     project: str
     route: str
     authority_event_id: str | None
-    ceiling: int
+    ceiling: int | None
     reserve_target: int
     reserve_is_hard: bool
     unknown_quota_window_policy: str
@@ -121,12 +121,13 @@ def resolve_execution_policy(
     ).strip() or None
     authority_is_current = bool(authority and authority.get("current", True) and authority_event_id)
 
-    ceiling_source = "adapter.default"
     ceiling_value = stable_budget.get("ceiling")
+    ceiling_source = "adapter.default" if ceiling_value is not None else "unresolved"
     if authority_is_current and current_budget.get("ceiling") is not None:
         ceiling_value = current_budget.get("ceiling")
         ceiling_source = "governed_authority.task_budget.ceiling"
-    ceiling = _integer(ceiling_value, "ceiling")
+    ceiling = _integer(ceiling_value, "ceiling") if ceiling_value is not None else None
+    ceiling_resolved = ceiling is not None
 
     reserve_source = "adapter.default"
     reserve_value = _first(stable_budget.get("reserve_target"), stable_budget.get("reserve"), default=0)
@@ -136,7 +137,7 @@ def resolve_execution_policy(
         reserve_value = _first(current_budget.get("reserve_target"), current_budget.get("reserve"), default=0)
         reserve_source = "governed_authority.task_budget.reserve"
     reserve_target = _integer(reserve_value, "reserve_target")
-    if reserve_target > ceiling:
+    if ceiling is not None and reserve_target > ceiling:
         raise PolicyResolutionError("reserve_target cannot exceed ceiling")
 
     reserve_is_hard = bool(
@@ -244,6 +245,7 @@ def resolve_execution_policy(
         "authority_current": authority_is_current,
         "authority_event_id": authority_event_id,
         "ceiling": ceiling_source,
+        "ceiling_resolved": ceiling_resolved,
         "reserve": reserve_source,
         "budget_basis": "CURRENT_QUOTA_WINDOW",
         "historical_usage_affects_capacity": False,

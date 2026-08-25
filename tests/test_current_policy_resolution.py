@@ -90,6 +90,61 @@ class CurrentPolicyResolutionTests(unittest.TestCase):
         self.assertFalse(resolved.generation_allowed)
         self.assertEqual(resolved.budget["state"], "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED")
 
+    def test_runtime_resolved_ceiling_missing_is_distinct_fail_closed_state(self) -> None:
+        adapter = {
+            "project": "RP03",
+            "route": "RP03",
+            "task_budget": {
+                "current_ceiling_must_be_resolved_at_runtime": True,
+                "runtime_budget_preflight_required": True,
+                "unknown_lifetime_capacity": "DENY",
+            },
+        }
+        resolved = resolve_execution_policy(
+            adapter=adapter,
+            governed_authority={
+                "current": True,
+                "authority_event_id": "RP03-CURRENT",
+                "generation_policy": {
+                    "necessary_generation_authorized": True,
+                    "generation_effect_authorized": True,
+                },
+            },
+            provider_observation={
+                "quota_window_consumption_known": True,
+                "proven_quota_window_used": 8,
+                "current_window_enumerated_tasks": 8,
+                "hard_provider_limit_reached": False,
+            },
+        )
+        value = resolved.to_dict()
+        self.assertIsNone(value["ceiling"])
+        self.assertFalse(value["provenance"]["ceiling_resolved"])
+        self.assertEqual(value["provenance"]["ceiling"], "unresolved")
+        self.assertEqual(value["budget"]["state"], "CAPACITY_CEILING_UNRESOLVED")
+        self.assertFalse(value["budget"]["hard_ceiling_reached"])
+        self.assertFalse(value["generation_budget_safe"])
+        self.assertFalse(value["generation_allowed"])
+
+    def test_explicit_zero_ceiling_remains_an_actual_boundary(self) -> None:
+        resolved = resolve_execution_policy(
+            adapter=self.adapter("GS", ceiling=0, unknown="DENY"),
+            governed_authority={
+                "current": True,
+                "authority_event_id": "GS-CURRENT",
+                "generation_policy": {"necessary_generation_authorized": True},
+            },
+            provider_observation={
+                "quota_window_consumption_known": True,
+                "proven_quota_window_used": 0,
+                "current_window_enumerated_tasks": 0,
+            },
+        )
+        self.assertEqual(resolved.ceiling, 0)
+        self.assertTrue(resolved.provenance["ceiling_resolved"])
+        self.assertTrue(resolved.budget["hard_ceiling_reached"])
+        self.assertEqual(resolved.budget["state"], "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED")
+
     def test_unknown_write_state_blocks_effect_even_when_policy_allows(self) -> None:
         resolved = resolve_execution_policy(
             adapter=self.adapter("CEP", ceiling=100, unknown="ALLOW_UNLESS_DIRECT_CEILING_REACHED"),

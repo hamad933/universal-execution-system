@@ -87,7 +87,7 @@ def observe_rolling_quota_window(
 def evaluate_task_budget(
     *,
     project: str,
-    ceiling: int,
+    ceiling: int | None,
     reserve: int,
     quota_window_consumption_known: bool | None = None,
     proven_quota_window_used: int | None = None,
@@ -103,13 +103,17 @@ def evaluate_task_budget(
     """Evaluate task capacity for the *current provider quota window*.
 
     Historical/lifetime usage is never combined with current-window usage.
+    A missing runtime ceiling remains a distinct fail-closed state; it must not
+    be coerced to zero or represented as direct provider ceiling evidence.
     Legacy inputs/outputs remain compatibility surfaces only so older replay and
     adapter contracts do not need to change atomically with the runtime fix.
     """
 
-    if ceiling < 0 or reserve < 0:
-        raise ValueError("ceiling and reserve must be non-negative")
-    if reserve > ceiling:
+    if ceiling is not None and ceiling < 0:
+        raise ValueError("ceiling must be non-negative")
+    if reserve < 0:
+        raise ValueError("reserve must be non-negative")
+    if ceiling is not None and reserve > ceiling:
         raise ValueError("reserve cannot exceed ceiling")
 
     window_known = (
@@ -144,13 +148,17 @@ def evaluate_task_budget(
         int(current_window or 0),
         int(proven_window_used or 0),
     )
-    effective_limit = max(0, ceiling - reserve)
-    direct_limit_reached = bool(hard_ceiling_reached or observed_lower_bound >= effective_limit)
+    ceiling_resolved = ceiling is not None
+    effective_limit = max(0, int(ceiling) - reserve) if ceiling_resolved else None
+    direct_limit_reached = bool(hard_ceiling_reached)
+    if ceiling_resolved:
+        direct_limit_reached = bool(direct_limit_reached or observed_lower_bound >= effective_limit)
 
     common = {
         "schema_version": "3.0",
         "project": project,
         "ceiling": ceiling,
+        "ceiling_resolved": ceiling_resolved,
         "reserve": reserve,
         "budget_basis": "CURRENT_QUOTA_WINDOW",
         "quota_window_consumption_known": window_known,
@@ -177,6 +185,18 @@ def evaluate_task_budget(
             "state_v3": "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED",
             "safe_remaining": 0 if window_known else None,
             "observed_headroom": 0,
+            "budget_allows_new_task": False,
+            "automatic_new_task_creation": False,
+            "fail_closed": True,
+        }
+
+    if not ceiling_resolved:
+        return {
+            **common,
+            "state": "CAPACITY_CEILING_UNRESOLVED",
+            "state_v3": "CAPACITY_CEILING_UNRESOLVED",
+            "safe_remaining": None,
+            "observed_headroom": None,
             "budget_allows_new_task": False,
             "automatic_new_task_creation": False,
             "fail_closed": True,

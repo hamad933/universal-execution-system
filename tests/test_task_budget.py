@@ -67,6 +67,40 @@ class TaskBudgetTests(unittest.TestCase):
         self.assertTrue(budget["hard_ceiling_reached"])
         self.assertFalse(budget["budget_allows_new_task"])
 
+    def test_missing_runtime_ceiling_fails_closed_without_fabricating_hard_limit(self):
+        budget = evaluate_task_budget(
+            project="RP03",
+            ceiling=None,
+            reserve=0,
+            quota_window_consumption_known=True,
+            proven_quota_window_used=8,
+            current_window_enumerated_tasks=8,
+            hard_ceiling_reached=False,
+        )
+        self.assertEqual(budget["state"], "CAPACITY_CEILING_UNRESOLVED")
+        self.assertEqual(budget["state_v3"], "CAPACITY_CEILING_UNRESOLVED")
+        self.assertIsNone(budget["ceiling"])
+        self.assertFalse(budget["ceiling_resolved"])
+        self.assertFalse(budget["hard_ceiling_reached"])
+        self.assertIsNone(budget["safe_remaining"])
+        self.assertIsNone(budget["observed_headroom"])
+        self.assertFalse(budget["budget_allows_new_task"])
+        self.assertTrue(budget["fail_closed"])
+
+    def test_direct_provider_limit_still_wins_when_numeric_ceiling_is_unresolved(self):
+        budget = evaluate_task_budget(
+            project="RP03",
+            ceiling=None,
+            reserve=0,
+            quota_window_consumption_known=True,
+            proven_quota_window_used=8,
+            current_window_enumerated_tasks=8,
+            hard_ceiling_reached=True,
+        )
+        self.assertEqual(budget["state"], "DIRECT_CEILING_OR_RESERVE_BOUNDARY_REACHED")
+        self.assertTrue(budget["hard_ceiling_reached"])
+        self.assertFalse(budget["budget_allows_new_task"])
+
     def test_proven_window_usage_respects_reserve(self):
         budget = evaluate_task_budget(
             project="GS",
