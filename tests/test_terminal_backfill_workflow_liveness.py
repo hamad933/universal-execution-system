@@ -33,3 +33,4 @@ def test_global_watchdog_waits_only_for_project_pipeline_completion() -> None:
     assert "needs: [discover-projects, backfill]" in watchdog_text
     assert "blocked_lane_freezes_independent_lanes" in text
     assert "fail-fast: false" in text
+    assert "max-parallel: 6" in text
