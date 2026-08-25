@@ -82,6 +82,8 @@ def _snapshot(candidate, *, project="RP04", route="RP04", repository="owner/repo
                 "session_fingerprint": fp,
                 "state": "COMPLETED",
                 "classification": "COMPLETED_OUTPUT_REQUIRES_CONSUMPTION_CHECK",
+                "source_repository": repository,
+                "source_binding_proven": True,
                 "_terminal_candidate": candidate,
             }
         ],
@@ -155,6 +157,7 @@ class TerminalResultMaterializationTests(unittest.TestCase):
         session = result["sessions"][0]
         self.assertEqual(session["result_state"], "RESULT_IDENTITY_UNRESOLVED")
         self.assertEqual(session["classification"], "SESSION_IDENTITY_UNRESOLVED")
+        self.assertEqual(result["results"][0]["identity_reason"], "NO_EXACT_LINEAGE_MATCH")
         self.assertEqual(result["parent_consumable_result_count"], 0)
 
     def test_duplicate_observation_is_idempotent(self):
@@ -186,6 +189,15 @@ class TerminalResultMaterializationTests(unittest.TestCase):
         foreign = _store(project="RP03", route="RP03")
         result = materialize_project_results(_snapshot(candidate), foreign)
         self.assertEqual(result["sessions"][0]["result_state"], "RESULT_IDENTITY_UNRESOLVED")
+        self.assertEqual(result["results"][0]["identity_reason"], "NO_EXACT_LINEAGE_MATCH")
+        self.assertEqual(result["parent_consumable_result_count"], 0)
+
+    def test_source_repository_binding_must_be_proven(self):
+        candidate = extract_terminal_candidate(_handoff())
+        snapshot = _snapshot(candidate)
+        snapshot["sessions"][0]["source_binding_proven"] = False
+        result = materialize_project_results(snapshot, _store())
+        self.assertEqual(result["results"][0]["identity_reason"], "SOURCE_REPOSITORY_BINDING_UNPROVEN")
         self.assertEqual(result["parent_consumable_result_count"], 0)
 
     def test_completed_activity_read_outage_remains_recoverable_zero_effect_state(self):
