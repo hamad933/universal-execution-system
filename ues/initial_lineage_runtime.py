@@ -17,6 +17,7 @@ from .jules_lifecycle import JulesLifecycleClient
 from .lineage_registry import lineage_lane_id
 from .live_runtime import build_live_state_store
 from .policy_resolution import resolve_execution_policy
+from .providers.base import NetworkError, RateLimitError, ServerError
 from .providers.github import GitHubClient
 from .task_budget import observe_rolling_quota_window
 
@@ -24,6 +25,10 @@ SCHEMA_VERSION = "1.0"
 SUPPORTED_PROJECTS = frozenset({"GS", "CEP", "RP01", "RP02", "RP03", "RP04"})
 SUPPORTED_ROLES = frozenset({"WRITER", "REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"})
 JULES_TASK_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
+_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
+_PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
+_PROVIDER_READ_UNAVAILABLE_RESULT = "INITIAL_LINEAGE_PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
+_PROVIDER_READ_UNAVAILABLE_EXIT = 75
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _ALLOWED_TASK_FIELDS = frozenset(
@@ -268,6 +273,37 @@ def _authority_entries(authority: Mapping[str, Any]) -> Mapping[str,Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _is_pre_effect_provider_read_failure(exc: BaseException) -> bool:
+    return isinstance(exc, _PRE_EFFECT_PROVIDER_READ_ERRORS) and str(
+        getattr(exc, "operation", "") or ""
+    ) in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
+
+
+def _provider_read_unavailable_result(
+    project: str,
+    route: str,
+    *,
+    authority: Mapping[str, Any],
+    exc: BaseException,
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project": project,
+        "route": route,
+        "result": _PROVIDER_READ_UNAVAILABLE_RESULT,
+        "authority_event_id": authority.get("authority_event_id"),
+        "provider_read_authoritative": False,
+        "provider_read_operation": getattr(exc, "operation", None),
+        "provider_read_error_category": getattr(exc, "category", "PROVIDER_READ_ERROR"),
+        "provider_write_attempted": False,
+        "external_effects_dispatched": 0,
+        "new_tasks_or_sessions_created": 0,
+        "retry_condition": "FRESH_AUTHORITATIVE_PROVIDER_READ_REQUIRED",
+        "raw_session_ids_persisted": False,
+        "safe_to_blind_retry": False,
+    }
+
+
 def run(project: str) -> dict[str, Any]:
     adapter = _load_adapter(project)
     project_id = str(adapter.get("project") or project.upper())
@@ -311,7 +347,17 @@ def run(project: str) -> dict[str, Any]:
     store = build_live_state_store()
     jules = JulesLifecycleClient(key)
     github = GitHubClient(github_token)
-    inventory = legacy._provider_inventory(jules)
+    try:
+        inventory = legacy._provider_inventory(jules)
+    except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
+        if not _is_pre_effect_provider_read_failure(exc):
+            raise
+        return _provider_read_unavailable_result(
+            project_id,
+            route,
+            authority=authority,
+            exc=exc,
+        )
     source_name, source_proven = _source_for_repository(jules, repository)
     # Jules currently meters tasks in a rolling 24-hour window. Historical
     # sessions stay in inventory for reconciliation/marker matching but are not
@@ -518,7 +564,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="UES guarded initial logical lineage runtime")
     parser.add_argument("project", choices=sorted(SUPPORTED_PROJECTS))
     args = parser.parse_args(argv)
-    print(json.dumps(run(args.project), sort_keys=True))
+    result = run(args.project)
+    print(json.dumps(result, sort_keys=True))
+    if result.get("result") == _PROVIDER_READ_UNAVAILABLE_RESULT:
+        return _PROVIDER_READ_UNAVAILABLE_EXIT
     return 0
 
 
