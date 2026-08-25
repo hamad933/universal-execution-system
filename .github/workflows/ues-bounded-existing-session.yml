@@ -38,6 +38,7 @@ permissions:
 
 jobs:
   provider-observer-fallback:
+    if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     concurrency:
       group: ues-provider-observer-fallback
       cancel-in-progress: false
