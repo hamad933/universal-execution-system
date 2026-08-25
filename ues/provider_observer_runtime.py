@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -45,6 +47,8 @@ _READ_ERRORS = (
     ServerError,
 )
 _ACTIVITY_READ_STATES = frozenset({"AWAITING_USER_FEEDBACK", "COMPLETED"})
+_DEFAULT_ACTIVITY_READ_WORKERS = 4
+_MAX_ACTIVITY_READ_WORKERS = 8
 
 
 def _utc_now() -> datetime:
@@ -82,6 +86,17 @@ def _health_lane_id() -> str:
 def _error_category(exc: Exception) -> str:
     value = getattr(exc, "category", None)
     return str(value or type(exc).__name__).upper()[:120]
+
+
+def _activity_read_workers() -> int:
+    raw = str(os.environ.get("UES_PROVIDER_ACTIVITY_READ_WORKERS") or "").strip()
+    if not raw:
+        return _DEFAULT_ACTIVITY_READ_WORKERS
+    try:
+        requested = int(raw)
+    except ValueError:
+        return _DEFAULT_ACTIVITY_READ_WORKERS
+    return max(1, min(_MAX_ACTIVITY_READ_WORKERS, requested))
 
 
 def _bound_terminal_fingerprints(store: Any) -> dict[str, frozenset[str]]:
@@ -154,6 +169,37 @@ def persist_health(*, phase: str, status: str, error_category: str | None = None
     }
 
 
+def _read_activity_candidate(
+    client: JulesClient,
+    session_name: str,
+    state: str,
+) -> dict[str, Any]:
+    """Perform one independent GET-only Activity read and return sanitized materialization data."""
+    try:
+        activities = client.list_activities(session_name, page_size=100)
+        result: dict[str, Any] = {
+            "summary": _activity_summary(activities),
+            "activity_read_complete": True,
+            "activity_read_skipped": False,
+        }
+        if state == "COMPLETED":
+            result["terminal_candidate"] = extract_terminal_candidate(activities)
+        return result
+    except _READ_ERRORS as exc:
+        result = {
+            "activity_read_complete": False,
+            "activity_read_skipped": False,
+            "activity_read_error_category": _error_category(exc),
+            "exception_text_persisted": False,
+        }
+        if state == "COMPLETED":
+            result["terminal_candidate"] = {
+                "structured": False,
+                "state": "COMPLETED_OUTPUT_UNCONSUMED",
+            }
+        return result
+
+
 def collect_resilient_observation(
     client: JulesClient,
     *,
@@ -182,6 +228,7 @@ def collect_resilient_observation(
         for project in PROJECTS
     }
     unattributed = 0
+    pending_activity_reads: list[tuple[dict[str, Any], str, str]] = []
 
     for session in sessions:
         source_name = _resource_name(session.get("sourceIdentifier"))
@@ -232,25 +279,36 @@ def collect_resilient_observation(
             entry["activity_read_reason"] = "NO_EXACT_DURABLE_LINEAGE_BINDING"
 
         if session_name and should_read_activities:
-            try:
-                activities = client.list_activities(session_name, page_size=100)
-                entry.update(_activity_summary(activities))
-                entry["activity_read_complete"] = True
-                entry["activity_read_skipped"] = False
-                if state == "COMPLETED":
-                    entry["_terminal_candidate"] = extract_terminal_candidate(activities)
-            except _READ_ERRORS as exc:
-                entry["activity_read_complete"] = False
-                entry["activity_read_skipped"] = False
-                entry["activity_read_error_category"] = _error_category(exc)
-                entry["exception_text_persisted"] = False
-                if state == "COMPLETED":
-                    entry["_terminal_candidate"] = {
-                        "structured": False,
-                        "state": "COMPLETED_OUTPUT_UNCONSUMED",
-                    }
+            pending_activity_reads.append((entry, session_name, state))
 
         projects[project["project"]]["sessions"].append(entry)
+
+    if pending_activity_reads:
+        workers = min(_activity_read_workers(), len(pending_activity_reads))
+        if workers == 1:
+            outcomes = [
+                _read_activity_candidate(client, session_name, state)
+                for _, session_name, state in pending_activity_reads
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ues-jules-activity") as executor:
+                outcomes = list(
+                    executor.map(
+                        lambda item: _read_activity_candidate(client, item[1], item[2]),
+                        pending_activity_reads,
+                    )
+                )
+        for (entry, _, state), outcome in zip(pending_activity_reads, outcomes, strict=True):
+            summary = outcome.get("summary")
+            if isinstance(summary, Mapping):
+                entry.update(summary)
+            entry["activity_read_complete"] = bool(outcome.get("activity_read_complete"))
+            entry["activity_read_skipped"] = bool(outcome.get("activity_read_skipped"))
+            if outcome.get("activity_read_error_category"):
+                entry["activity_read_error_category"] = outcome["activity_read_error_category"]
+                entry["exception_text_persisted"] = False
+            if state == "COMPLETED" and isinstance(outcome.get("terminal_candidate"), Mapping):
+                entry["_terminal_candidate"] = dict(outcome["terminal_candidate"])
 
     for project in PROJECTS:
         summary = projects[project["project"]]
@@ -292,6 +350,7 @@ def collect_resilient_observation(
         "raw_session_ids_persisted": False,
         "raw_titles_persisted": False,
         "activity_content_persisted": False,
+        "activity_read_workers": min(_activity_read_workers(), len(pending_activity_reads)) if pending_activity_reads else 0,
         "projects": projects,
     }
 
@@ -317,8 +376,6 @@ def observe() -> dict[str, Any]:
     recovery_snapshot: dict[str, Any] | None = None
     try:
         persist_health(phase="START", status="IN_FLIGHT")
-        import os
-
         key = str(os.environ.get("JULES_API_KEY") or "").strip()
         if not key:
             raise RuntimeError("JULES_API_KEY missing")
