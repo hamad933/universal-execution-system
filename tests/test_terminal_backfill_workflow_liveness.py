@@ -26,6 +26,15 @@ def test_backfill_failure_does_not_suppress_same_project_lifecycle_readback() ->
     assert receipt_if != -1
 
 
+def test_project_pipeline_preserves_independent_phase_timeouts() -> None:
+    text = _workflow_text()
+    backfill = text.index("Read-only project-scoped terminal backfill")
+    lifecycle = text.index("Read this project lifecycle immediately after its backfill")
+    assert "timeout-minutes: 45" in text[:backfill]
+    assert "timeout-minutes: 25" in text[backfill:lifecycle]
+    assert "timeout-minutes: 20" in text[lifecycle:]
+
+
 def test_global_watchdog_waits_only_for_project_pipeline_completion() -> None:
     text = _workflow_text()
     watchdog = text.index("  terminal-watchdog:\n")
