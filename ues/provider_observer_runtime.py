@@ -31,7 +31,7 @@ from .providers.base import (
 )
 from .providers.jules import JulesClient
 from .state_store import StateUnavailable, WorkstreamRuntimeRecord
-from .terminal_results import extract_terminal_candidate, materialize_project_results
+from .terminal_results import extract_terminal_candidate, lineage_index, materialize_project_results
 
 HEALTH_WORKSTREAM = "PROVIDER-OBSERVER-HEALTH"
 _DEFAULT_OBSERVER_PROJECT_SCOPE = ("CEP", "GS")
@@ -82,6 +82,19 @@ def _health_lane_id() -> str:
 def _error_category(exc: Exception) -> str:
     value = getattr(exc, "category", None)
     return str(value or type(exc).__name__).upper()[:120]
+
+
+def _bound_terminal_fingerprints(store: Any) -> dict[str, frozenset[str]]:
+    """Resolve durable exact-lineage session identities before terminal Activity reads."""
+    result: dict[str, frozenset[str]] = {}
+    for project in PROJECTS:
+        project_name = str(project.get("project") or "").strip()
+        if not project_name:
+            continue
+        route = str(project.get("route") or project_name).strip()
+        index = lineage_index(store, project=project_name, route=route)
+        result[project_name] = frozenset(index)
+    return result
 
 
 def persist_health(*, phase: str, status: str, error_category: str | None = None) -> dict[str, Any]:
@@ -141,8 +154,14 @@ def persist_health(*, phase: str, status: str, error_category: str | None = None
     }
 
 
-def collect_resilient_observation(client: JulesClient, *, observed_at: str | None = None) -> dict[str, Any]:
+def collect_resilient_observation(
+    client: JulesClient,
+    *,
+    observed_at: str | None = None,
+    bound_terminal_fingerprints: Mapping[str, frozenset[str] | set[str] | tuple[str, ...]] | None = None,
+) -> dict[str, Any]:
     observed_at = observed_at or _iso(_utc_now())
+    bound_terminal_fingerprints = bound_terminal_fingerprints or {}
     sources = client.list_sources(page_size=100)
     sessions = client.list_sessions(page_size=100)
     source_by_name = {
@@ -176,8 +195,9 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
         session_name = _resource_name(session.get("name"))
         state = str(session.get("normalizedState") or "UNKNOWN").upper()
         title = session.get("title") or session.get("displayName") or ""
+        session_fingerprint = _fingerprint(session_name) if session_name else None
         entry: dict[str, Any] = {
-            "session_fingerprint": _fingerprint(session_name) if session_name else None,
+            "session_fingerprint": session_fingerprint,
             "identity_complete": bool(session_name),
             "state": state,
             "state_authoritative": bool(session.get("stateAuthoritative")),
@@ -201,7 +221,17 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
             "activity_read_skipped": state not in _ACTIVITY_READ_STATES,
         }
 
-        if session_name and state in _ACTIVITY_READ_STATES:
+        completed_bound = bool(
+            state == "COMPLETED"
+            and session_fingerprint
+            and session_fingerprint in set(bound_terminal_fingerprints.get(project["project"], ()))
+        )
+        should_read_activities = state == "AWAITING_USER_FEEDBACK" or completed_bound
+        if state == "COMPLETED" and not completed_bound:
+            entry["activity_read_skipped"] = True
+            entry["activity_read_reason"] = "NO_EXACT_DURABLE_LINEAGE_BINDING"
+
+        if session_name and should_read_activities:
             try:
                 activities = client.list_activities(session_name, page_size=100)
                 entry.update(_activity_summary(activities))
@@ -266,8 +296,8 @@ def collect_resilient_observation(client: JulesClient, *, observed_at: str | Non
     }
 
 
-def _materialize_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    store = build_live_state_store()
+def _materialize_snapshot(snapshot: Mapping[str, Any], store: Any | None = None) -> dict[str, Any]:
+    store = store or build_live_state_store()
     result = dict(snapshot)
     projects = snapshot.get("projects")
     if not isinstance(projects, Mapping):
@@ -285,14 +315,22 @@ def _materialize_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
 
 def observe() -> dict[str, Any]:
     persist_health(phase="START", status="IN_FLIGHT")
+    recovery_snapshot: dict[str, Any] | None = None
     try:
         import os
 
         key = str(os.environ.get("JULES_API_KEY") or "").strip()
         if not key:
             raise RuntimeError("JULES_API_KEY missing")
+        store = build_live_state_store()
+        terminal_fingerprints = _bound_terminal_fingerprints(store)
         client = JulesClient(key)
-        snapshot = _materialize_snapshot(collect_resilient_observation(client))
+        snapshot = collect_resilient_observation(
+            client,
+            bound_terminal_fingerprints=terminal_fingerprints,
+        )
+        snapshot = _materialize_snapshot(snapshot, store)
+        recovery_snapshot = snapshot
         persistence = persist_provider_observation(snapshot)
         health = persist_health(phase="COMPLETE", status="PASS")
         return {
@@ -315,7 +353,7 @@ def observe() -> dict[str, Any]:
                 "error_category": category,
                 "health_persistence": "FAILED",
             }
-        return {
+        result = {
             "schema_version": SCHEMA_VERSION,
             "result": "JULES_PROVIDER_OBSERVATION_FAILED",
             "error_category": category,
@@ -324,6 +362,15 @@ def observe() -> dict[str, Any]:
             "new_tasks_or_sessions_created": 0,
             "health": health,
         }
+        if recovery_snapshot is not None:
+            result.update({
+                "provider_read_complete": True,
+                "state_persistence_complete": False,
+                "sanitized_recovery_snapshot": recovery_snapshot,
+                "raw_activity_content_persisted": False,
+                "safe_to_blind_retry": False,
+            })
+        return result
 
 
 def main(argv: list[str] | None = None) -> int:

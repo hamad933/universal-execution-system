@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from ues.provider_observer_runtime import collect_resilient_observation, observe
+from ues.provider_observer_runtime import _fingerprint, collect_resilient_observation, observe
+from ues.state_store import StateUnavailable
 
 
 class ActivityFailure(Exception):
@@ -41,9 +42,14 @@ class FakeClient:
 
 
 class RuntimeObserverTests(unittest.TestCase):
-    def test_completed_sessions_are_read_for_recovery_but_failed_sessions_remain_skipped(self):
+    def test_completed_sessions_are_read_only_when_exact_durable_binding_exists(self):
         client = FakeClient()
-        result = collect_resilient_observation(client, observed_at="2026-08-24T00:10:00Z")
+        bound = {"GS": {_fingerprint("sessions/gs-complete")}}
+        result = collect_resilient_observation(
+            client,
+            observed_at="2026-08-24T00:10:00Z",
+            bound_terminal_fingerprints=bound,
+        )
         self.assertEqual(client.activity_calls, ["sessions/gs-complete", "sessions/cep-waiting"])
         gs = result["projects"]["GS"]
         by_state = {item["state"]: item for item in gs["sessions"]}
@@ -53,6 +59,21 @@ class RuntimeObserverTests(unittest.TestCase):
         self.assertEqual(by_state["COMPLETED"]["_terminal_candidate"]["state"], "COMPLETED_OUTPUT_UNSTRUCTURED")
         self.assertFalse(result["provider_mutation_performed"])
         self.assertFalse(result["activity_content_persisted"])
+
+    def test_unbound_completed_session_skips_activity_content_read(self):
+        client = FakeClient()
+        result = collect_resilient_observation(
+            client,
+            observed_at="2026-08-24T00:10:00Z",
+            bound_terminal_fingerprints={},
+        )
+        self.assertEqual(client.activity_calls, ["sessions/cep-waiting"])
+        gs = result["projects"]["GS"]
+        completed = next(item for item in gs["sessions"] if item["state"] == "COMPLETED")
+        self.assertTrue(completed["activity_read_skipped"])
+        self.assertFalse(completed["activity_read_complete"])
+        self.assertEqual(completed["activity_read_reason"], "NO_EXACT_DURABLE_LINEAGE_BINDING")
+        self.assertNotIn("_terminal_candidate", completed)
 
     def test_waiting_activity_failure_does_not_erase_provider_inventory(self):
         client = FakeClient(fail_waiting_activities=True)
@@ -83,6 +104,8 @@ class RuntimeObserverTests(unittest.TestCase):
         with (
             patch.dict("os.environ", {"JULES_API_KEY": "secret"}, clear=False),
             patch("ues.provider_observer_runtime.persist_health", side_effect=fake_health),
+            patch("ues.provider_observer_runtime.build_live_state_store", return_value=object()),
+            patch("ues.provider_observer_runtime._bound_terminal_fingerprints", return_value={}),
             patch("ues.provider_observer_runtime.JulesClient", BrokenClient),
         ):
             result = observe()
@@ -91,6 +114,40 @@ class RuntimeObserverTests(unittest.TestCase):
         self.assertNotIn("secret provider details", str(result))
         self.assertEqual(health_calls[0]["status"], "IN_FLIGHT")
         self.assertEqual(health_calls[-1]["status"], "FAIL")
+
+    def test_observe_preserves_sanitized_snapshot_when_persistence_becomes_unavailable(self):
+        health_calls = []
+        snapshot = {
+            "provider_read_complete": True,
+            "provider_mutation_performed": False,
+            "raw_session_ids_persisted": False,
+            "activity_content_persisted": False,
+            "projects": {},
+        }
+
+        def fake_health(**kwargs):
+            health_calls.append(kwargs)
+            return {**kwargs, "version": len(health_calls)}
+
+        with (
+            patch.dict("os.environ", {"JULES_API_KEY": "secret"}, clear=False),
+            patch("ues.provider_observer_runtime.persist_health", side_effect=fake_health),
+            patch("ues.provider_observer_runtime.build_live_state_store", return_value=object()),
+            patch("ues.provider_observer_runtime._bound_terminal_fingerprints", return_value={}),
+            patch("ues.provider_observer_runtime.JulesClient", return_value=object()),
+            patch("ues.provider_observer_runtime.collect_resilient_observation", return_value=snapshot),
+            patch("ues.provider_observer_runtime._materialize_snapshot", return_value=snapshot),
+            patch("ues.provider_observer_runtime.persist_provider_observation", side_effect=StateUnavailable("private backend detail")),
+        ):
+            result = observe()
+        self.assertEqual(result["result"], "JULES_PROVIDER_OBSERVATION_FAILED")
+        self.assertEqual(result["error_category"], "STATEUNAVAILABLE")
+        self.assertTrue(result["provider_read_complete"])
+        self.assertFalse(result["state_persistence_complete"])
+        self.assertFalse(result["safe_to_blind_retry"])
+        self.assertEqual(result["sanitized_recovery_snapshot"], snapshot)
+        self.assertNotIn("private backend detail", str(result))
+        self.assertFalse(result["provider_mutation_performed"])
 
 
 if __name__ == "__main__":
