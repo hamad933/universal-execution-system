@@ -25,8 +25,13 @@ class ParentControllerInlinePipelineTests(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request'", self.text)
         self.assertIn("github.event.pull_request.head.ref == 'ues-parent-control'", self.text)
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", self.text)
-        self.assertIn("pr.draft !== true", self.text)
-        self.assertIn("prFiles.length !== 1", self.text)
+        self.assertIn('PR_DRAFT: ${{ github.event.pull_request.draft }}', self.text)
+        self.assertIn('git diff --name-only "$BASE_SHA...$CONTROL_HEAD"', self.text)
+        self.assertIn(
+            "Persistent Parent Controller PR must contain only .ues/parent-controller-request.json",
+            self.text,
+        )
+        self.assertNotIn("github.rest.pulls.listFiles", self.text)
         self.assertIn("controlCommit.author.login !== context.repo.owner", self.text)
         self.assertIn("controlCommit.committer.login !== context.repo.owner", self.text)
 
@@ -42,12 +47,16 @@ class ParentControllerInlinePipelineTests(unittest.TestCase):
         self.assertNotIn("secrets.JULES_API_KEY", preflight)
 
     def test_control_branch_is_data_only_and_live_main_runtime_is_used(self):
-        self.assertIn("github.rest.repos.getContent", self.text)
-        self.assertIn("path: requestPath", self.text)
-        self.assertIn("ref: exactHead", self.text)
-        self.assertIn("github.rest.repos.getBranch", self.text)
+        preflight = self.text.split("\n  parent-controller-preflight:\n", 1)[1].split(
+            "\n  parent-controller-preflight-failure:\n", 1
+        )[0]
+        self.assertIn('REQUEST_PATH: .ues/parent-controller-request.json', preflight)
+        self.assertIn('git rev-parse "$CONTROL_HEAD:$REQUEST_PATH"', preflight)
+        self.assertIn('git hash-object "$RUNNER_TEMP/parent-controller-request.json"', preflight)
+        self.assertIn('git ls-remote origin "refs/heads/$DEFAULT_BRANCH"', preflight)
+        self.assertNotIn("github.rest.repos.getContent", preflight)
+        self.assertNotIn("github.rest.repos.getBranch", preflight)
         self.assertIn("ref: ${{ steps.control.outputs.runtime_sha }}", self.text)
-        self.assertNotIn("ref: ${{ github.event.pull_request.head.sha }}\n          persist-credentials: false\n\n      - name: Setup Python\n        uses: actions/setup-python@v5\n        with:\n          python-version: '3.12'", self.text)
         self.assertIn("--expected-runtime-sha", self.text)
         self.assertIn("python -m ues.parent_controller_request", self.text)
 
@@ -78,6 +87,7 @@ class ParentControllerInlinePipelineTests(unittest.TestCase):
         drift = execute.index("Reverify validated runtime is still current before effects")
         secret = execute.index("JULES_API_KEY: ${{ secrets.JULES_API_KEY }}")
         self.assertLess(drift, secret)
+        self.assertIn("git ls-remote origin", execute)
         self.assertIn("UES default branch moved after Parent Controller preflight", execute)
 
     def test_existing_governed_runtime_is_reused(self):
@@ -93,9 +103,14 @@ class ParentControllerInlinePipelineTests(unittest.TestCase):
         self.assertIn("UES_PARENT_CONTROLLER_RECEIPT_V1", self.text)
         self.assertIn("request_digest", self.text)
         self.assertIn("already_receipted", self.text)
+        execute = self.text.split("\n  parent-controller-execute:\n", 1)[1]
         self.assertIn(
-            "if: needs.parent-controller-preflight.outputs.already_receipted != 'true'",
-            self.text,
+            "needs.parent-controller-preflight.outputs.rate_limit_deferred != 'true'",
+            execute,
+        )
+        self.assertIn(
+            "needs.parent-controller-preflight.outputs.already_receipted != 'true'",
+            execute,
         )
 
     def test_final_receipt_is_sanitized_and_run_bound(self):
