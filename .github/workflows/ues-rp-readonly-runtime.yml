@@ -11,12 +11,11 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ues-rp-readonly-runtime
-  cancel-in-progress: false
-
 jobs:
   provider-observer:
+    concurrency:
+      group: ues-rp-provider-observer
+      cancel-in-progress: false
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -105,11 +104,11 @@ jobs:
     needs: provider-observer
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 4
       matrix:
         project: [RP01, RP02, RP03, RP04]
     concurrency:
-      group: ues-project-lifecycle-${{ matrix.project }}
+      group: ues-rp-readonly-lifecycle-${{ matrix.project }}
       cancel-in-progress: false
     permissions:
       contents: write
