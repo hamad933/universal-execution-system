@@ -78,6 +78,18 @@ class DelayedVisibilityTransport:
         self.read_errors_remaining = self.post_update_read_errors
 
 
+class FinalReadOutageStateStore(OwnerAuthorizedSameRepoStateStore):
+    def __init__(self, *args, **kwargs) -> None:
+        self.final_lane_read_failures = 0
+        super().__init__(*args, **kwargs)
+
+    def read_workstream(self, lane_id: str):
+        if self.final_lane_read_failures > 0:
+            self.final_lane_read_failures -= 1
+            return self._shadow("UNAVAILABLE", "transient final post-CAS read unavailable")
+        return super().read_workstream(lane_id)
+
+
 def runtime_record(lane_id: str) -> WorkstreamRuntimeRecord:
     return WorkstreamRuntimeRecord(
         lane_id=lane_id,
@@ -91,12 +103,14 @@ def runtime_record(lane_id: str) -> WorkstreamRuntimeRecord:
 class SameRepoReadbackVisibilityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.transport = DelayedVisibilityTransport()
-        self.store = OwnerAuthorizedSameRepoStateStore(
+        self.store = FinalReadOutageStateStore(
             self.transport,
             ref_prefix="ues-runtime/v2",
         )
         self.store.publish_readback_attempts = 4
         self.store.publish_readback_delay_seconds = 0.0
+        self.store.post_cas_readback_attempts = 3
+        self.store.post_cas_readback_delay_seconds = 0.0
         self.lane = canonical_lane_id("GS", "GS", "LIFECYCLE-RUNTIME-HEALTH")
         self.store.compare_and_swap_workstream(self.lane, 0, runtime_record(self.lane))
 
@@ -132,6 +146,29 @@ class SameRepoReadbackVisibilityTests(unittest.TestCase):
             )
         self.assertEqual(self.transport.update_calls, 1)
         self.transport.read_errors_remaining = 0
+        self.assertEqual(self.store.read_workstream(self.lane).version, 2)
+
+    def test_transient_final_post_cas_read_recovers_without_repeating_cas(self) -> None:
+        self.store.final_lane_read_failures = 1
+        saved = self.store.compare_and_swap_workstream(
+            self.lane,
+            1,
+            runtime_record(self.lane),
+        )
+        self.assertEqual(saved.version, 2)
+        self.assertEqual(self.transport.update_calls, 1)
+        self.assertEqual(self.store.final_lane_read_failures, 0)
+
+    def test_persistent_final_post_cas_read_fails_closed_without_repeating_cas(self) -> None:
+        self.store.final_lane_read_failures = self.store.post_cas_readback_attempts
+        with self.assertRaises(StateUnavailable):
+            self.store.compare_and_swap_workstream(
+                self.lane,
+                1,
+                runtime_record(self.lane),
+            )
+        self.assertEqual(self.transport.update_calls, 1)
+        self.store.final_lane_read_failures = 0
         self.assertEqual(self.store.read_workstream(self.lane).version, 2)
 
     def test_unobserved_write_still_fails_closed_without_blind_retry(self) -> None:
