@@ -244,8 +244,8 @@ class InitialLineageRuntimeTests(unittest.TestCase):
         self.assertEqual(result["external_effects_dispatched"], 0)
         self.assertFalse(result["safe_to_blind_retry"])
 
-    def test_non_inventory_provider_error_is_not_reclassified_as_zero_effect(self):
-        outage = NetworkError("provider network request failed", operation="jules.sessions.get")
+    def test_non_inventory_provider_operation_is_not_reclassified_as_zero_effect(self):
+        outage = NetworkError("provider network request failed", operation="jules.sessions.sendMessage")
         env = {"JULES_API_KEY": "test", "GITHUB_TOKEN": "test", "UES_AUTHORITY_TRANSPORT_ACTOR": "hamad933"}
         with patch.dict(os.environ, env, clear=False), patch(
             "ues.initial_lineage_runtime.load_current_authority_json", return_value=self.initial_authority()
