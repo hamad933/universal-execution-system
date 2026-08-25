@@ -33,6 +33,7 @@ from .providers.jules import JulesClient
 from .state_store import StateUnavailable, WorkstreamRuntimeRecord
 
 HEALTH_WORKSTREAM = "PROVIDER-OBSERVER-HEALTH"
+_DEFAULT_OBSERVER_PROJECT_SCOPE = ("CEP", "GS")
 _READ_ERRORS = (
     AuthenticationError,
     AuthorizationError,
@@ -52,8 +53,28 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _observer_project_scope() -> tuple[str, ...]:
+    names = sorted(
+        {
+            str(project.get("project") or "").strip().upper()
+            for project in PROJECTS
+            if str(project.get("project") or "").strip()
+        }
+    )
+    if not names:
+        raise ValueError("provider observer project scope must not be empty")
+    return tuple(names)
+
+
+def _health_workstream_id() -> str:
+    scope = _observer_project_scope()
+    if scope == _DEFAULT_OBSERVER_PROJECT_SCOPE:
+        return HEALTH_WORKSTREAM
+    return f"{HEALTH_WORKSTREAM}-{'-'.join(scope)}"
+
+
 def _health_lane_id() -> str:
-    return canonical_lane_id("UES", "INTERNAL:UES", HEALTH_WORKSTREAM)
+    return canonical_lane_id("UES", "INTERNAL:UES", _health_workstream_id())
 
 
 def _error_category(exc: Exception) -> str:
@@ -63,6 +84,8 @@ def _error_category(exc: Exception) -> str:
 
 def persist_health(*, phase: str, status: str, error_category: str | None = None) -> dict[str, Any]:
     store = build_live_state_store()
+    scope = _observer_project_scope()
+    workstream_id = _health_workstream_id()
     lane_id = _health_lane_id()
     read = store.read_workstream(lane_id)
     if read.status == "MISSING":
@@ -70,7 +93,7 @@ def persist_health(*, phase: str, status: str, error_category: str | None = None
             lane_id=lane_id,
             project="UES",
             route="INTERNAL:UES",
-            workstream_id=HEALTH_WORKSTREAM,
+            workstream_id=workstream_id,
             activation_mode="SHADOW",
         )
         expected = 0
@@ -84,6 +107,7 @@ def persist_health(*, phase: str, status: str, error_category: str | None = None
     record.actor_bindings = {}
     record.authority_provenance = {
         "scope": "READ_ONLY_PROVIDER_OBSERVER_HEALTH",
+        "observer_project_scope": list(scope),
         "provider_mutation_authorized": False,
         "exception_text_persisted": False,
     }
@@ -91,6 +115,7 @@ def persist_health(*, phase: str, status: str, error_category: str | None = None
         "phase": phase,
         "status": status,
         "error_category": error_category,
+        "observer_project_scope": list(scope),
         "provider_mutation_performed": False,
         "exception_text_persisted": False,
     }
@@ -98,11 +123,14 @@ def persist_health(*, phase: str, status: str, error_category: str | None = None
         "kind": "PROVIDER_OBSERVER_HEALTH",
         "phase": phase,
         "status": status,
+        "observer_project_scope": list(scope),
         "at": _iso(_utc_now()),
     }
     saved = store.compare_and_swap_workstream(lane_id, expected, record)
     return {
         "lane_id": lane_id,
+        "workstream_id": workstream_id,
+        "observer_project_scope": list(scope),
         "version": saved.version,
         "phase": phase,
         "status": status,
