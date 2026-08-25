@@ -9,11 +9,16 @@ from typing import Any, Callable, Mapping
 from . import lifecycle_runtime as legacy
 from . import lifecycle_runtime_current as current
 from .identity import canonical_lane_id
+from .providers.base import NetworkError, RateLimitError, ServerError
 from .state_store import StateUnavailable, WorkstreamRuntimeRecord
 
 SCHEMA_VERSION = "1.0"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
+_PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
+_PROVIDER_READ_UNAVAILABLE_RESULT = "PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
+_PROVIDER_READ_UNAVAILABLE_EXIT = 75
 
 
 def _bounded_env_text(env: Mapping[str, str], key: str, *, limit: int = 512) -> str | None:
@@ -130,12 +135,39 @@ def _promote_effect_counts(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _is_pre_effect_provider_read_failure(exc: BaseException) -> bool:
+    return str(getattr(exc, "operation", "") or "") in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
+
+
+def _provider_read_unavailable_result(project: str, exc: BaseException) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project": str(project).upper(),
+        "result": _PROVIDER_READ_UNAVAILABLE_RESULT,
+        "lifecycle_state": "WAITING",
+        "provider_read_authoritative": False,
+        "provider_read_operation": str(getattr(exc, "operation", "") or "UNKNOWN"),
+        "provider_read_error_category": str(getattr(exc, "category", "") or type(exc).__name__),
+        "provider_write_attempted": False,
+        "external_effects_dispatched": 0,
+        "new_tasks_or_sessions_created": 0,
+        "retry_condition": "FRESH_AUTHORITATIVE_PROVIDER_READ_REQUIRED",
+        "safe_to_blind_retry": False,
+        "raw_session_ids_persisted": False,
+    }
+
+
 def run(project: str) -> dict[str, Any]:
     runtime_binding = runtime_binding_from_env()
     original = legacy._persist_health
     legacy._persist_health = _persist_health_with_runtime_binding(original, runtime_binding)
     try:
-        result = dict(current.run(project))
+        try:
+            result = dict(current.run(project))
+        except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
+            if not _is_pre_effect_provider_read_failure(exc):
+                raise
+            result = _provider_read_unavailable_result(project, exc)
     finally:
         legacy._persist_health = original
     _promote_effect_counts(result)
@@ -149,7 +181,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="UES current-authority lifecycle with exact runtime receipt binding")
     parser.add_argument("project", choices=["CEP", "GS", "cep", "gs"])
     args = parser.parse_args(argv)
-    print(json.dumps(run(args.project), sort_keys=True))
+    result = run(args.project)
+    print(json.dumps(result, sort_keys=True))
+    if result.get("result") == _PROVIDER_READ_UNAVAILABLE_RESULT:
+        return _PROVIDER_READ_UNAVAILABLE_EXIT
     return 0
 
 
