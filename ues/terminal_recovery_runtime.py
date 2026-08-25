@@ -142,7 +142,7 @@ def _prefetch_exact_bound_activities(
     def read_one(session_name: str) -> tuple[bool, Any]:
         try:
             return True, client.list_activities(session_name, page_size=100)
-        except BaseException as exc:  # replay the same failure on the canonical per-session path
+        except BaseException as exc:
             return False, exc
 
     if workers == 1:
@@ -298,7 +298,9 @@ def run_read_only_backfill(
     original_results_index = terminal_results.lineage_index
     original_recovery_index = recovery.lineage_index
     original_bind = recovery._bind_pending_identity_once
+    original_pending = recovery._pending_identity_candidates
     cache: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = {}
+    pending_cache: dict[tuple[str, str, str], list[dict[str, Any]]] | None = None
 
     def cached_index(live_store: Any, *, project: str, route: str) -> dict[str, list[dict[str, Any]]]:
         key = (str(project), str(route))
@@ -315,6 +317,20 @@ def run_read_only_backfill(
             }
         return value
 
+    def cached_pending(
+        live_store: Any,
+        projects: Sequence[Mapping[str, str]],
+    ) -> dict[tuple[str, str, str], list[dict[str, Any]]]:
+        nonlocal pending_cache
+        try:
+            value = original_pending(live_store, projects)
+        except StateUnavailable:
+            if pending_cache is not None:
+                return pending_cache
+            raise
+        pending_cache = value
+        return value
+
     def governed_bind(live_store: Any, *, candidate: Mapping[str, Any], session_fp: str) -> dict[str, Any]:
         return _exact_pending_operation_binding(
             live_store,
@@ -325,13 +341,13 @@ def run_read_only_backfill(
 
     terminal_results.lineage_index = cached_index
     recovery.lineage_index = cached_index
+    recovery._pending_identity_candidates = cached_pending
     recovery._bind_pending_identity_once = governed_bind
     prefetched_count = 0
     activity_workers = 0
     effective_store = store
     effective_client = client
     try:
-        # Establish authoritative StateStore identities before any provider content read.
         if effective_store is None:
             try:
                 effective_store = recovery.build_live_state_store()
@@ -352,6 +368,7 @@ def run_read_only_backfill(
                 )
                 for item in projects
             }
+            cached_pending(effective_store, projects)
         except StateUnavailable:
             return recovery.run_read_only_backfill(
                 project_names,
@@ -412,4 +429,5 @@ def run_read_only_backfill(
     finally:
         terminal_results.lineage_index = original_results_index
         recovery.lineage_index = original_recovery_index
+        recovery._pending_identity_candidates = original_pending
         recovery._bind_pending_identity_once = original_bind
