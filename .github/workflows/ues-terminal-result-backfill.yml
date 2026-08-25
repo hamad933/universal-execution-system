@@ -11,10 +11,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ues-terminal-result-backfill
-  cancel-in-progress: false
-
 jobs:
   discover-projects:
     runs-on: ubuntu-latest
@@ -51,6 +47,9 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    concurrency:
+      group: ues-terminal-result-backfill-${{ matrix.project }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -100,6 +99,9 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: ues-terminal-lifecycle-readback-${{ matrix.project }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -224,6 +226,9 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: ues-terminal-result-watchdog
+      cancel-in-progress: false
     steps:
       - name: Checkout governed default branch
         uses: actions/checkout@v4
