@@ -43,7 +43,7 @@ class InitialLineageSessionsGetOutageTests(unittest.TestCase):
         generation.assert_not_called()
         self.assertEqual(result["result"], _PROVIDER_READ_UNAVAILABLE_RESULT)
         self.assertEqual(result["provider_read_operation"], "jules.sessions.get")
-        self.assertEqual(result["provider_read_error_category"], "RATE_LIMIT")
+        self.assertEqual(result["provider_read_error_category"], "RATE_LIMITED")
         self.assertFalse(result["provider_write_attempted"])
         self.assertEqual(result["external_effects_dispatched"], 0)
         self.assertEqual(result["new_tasks_or_sessions_created"], 0)
