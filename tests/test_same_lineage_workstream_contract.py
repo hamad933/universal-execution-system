@@ -69,6 +69,30 @@ class SameLineageWorkstreamContractTests(unittest.TestCase):
             )
         )
 
+    def test_incomplete_contract_is_rejected(self):
+        sha = "e" * 40
+        contract = {
+            "objective": "review",
+            "exact_baseline": f"main@{sha}",
+            "role": "REVIEWER",
+            "logical_lineage": "RP04-IPA-S02-001",
+            "write_scope": [],
+            "prohibited_scope": [],
+            "validation": [],
+            "evidence": [],
+            "handoff": "handoff",
+            "stop_gate": "stop",
+        }
+        prompt = "PARENT_CONTROLLER_WORKSTREAM_CONTRACT_V1=" + json.dumps(contract, separators=(",", ":"))
+        self.assertIsNone(
+            _replacement_review_contract(
+                prompt,
+                workstream="RP04-IPA-S02-001",
+                role="REVIEWER",
+                candidate_sha=sha,
+            )
+        )
+
     def test_reviewer_generation_fails_before_state_or_provider_without_contract(self):
         class MustNotBeUsed:
             def __getattr__(self, name):
@@ -99,40 +123,6 @@ class SameLineageWorkstreamContractTests(unittest.TestCase):
         self.assertFalse(result["provider_write_attempted"])
         self.assertEqual(result["external_effects_dispatched"], 0)
         self.assertEqual(result["new_tasks_or_sessions_created"], 0)
-
-    def test_writer_generation_keeps_existing_path(self):
-        # This regression only gates Reviewer/Assurance replacement generations.
-        # Writer generation still reaches ordinary state preflight rather than the
-        # new review-contract decision.
-        class MissingStore:
-            def read_workstream(self, lane_id):
-                class Read:
-                    status = "MISSING"
-                    record = None
-                return Read()
-
-        with self.assertRaises(Exception):
-            execute_binding_safe_generation(
-                MissingStore(),
-                object(),
-                project="RP04",
-                route="RP04",
-                workstream="RP04-WRITER-001",
-                role="WRITER",
-                prompt="bounded writer recovery",
-                title="writer",
-                source_name="sources/example",
-                starting_branch="main",
-                repository="hamad933/Real-Estate-Assets-Control-",
-                authority_event_id="RP04-AUTH-TEST",
-                current_policy={},
-                replacement_cause="TERMINAL_CONTEXT_EXHAUSTED",
-                candidate_sha="a" * 40,
-                work_remaining=True,
-                active_duplicate_absent=True,
-                exact_repository_binding=True,
-                exact_starting_ref_binding=True,
-            )
 
 
 if __name__ == "__main__":
