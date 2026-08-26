@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 from ues.providers.base import NetworkError, ProtocolError, ServerError
-from ues.terminal_backfill import _InventorySnapshotRetryClient
+from ues.terminal_backfill import (
+    _InventorySnapshotRetryClient,
+    _backfill_provider_policy,
+    _inventory_provider_policy,
+)
 
 
 class _FakeJules:
@@ -70,12 +76,40 @@ class TerminalBackfillInventorySnapshotRetryTests(unittest.TestCase):
         self.assertEqual(delegate.session_calls, 1)
         self.assertEqual(client.session_inventory_attempts, 1)
 
-    def test_activity_reads_are_never_outer_retried(self) -> None:
-        delegate = _FakeJules()
-        client = _InventorySnapshotRetryClient(delegate, attempts=3)
+    def test_activity_reads_use_separate_delegate_and_are_never_outer_retried(self) -> None:
+        inventory = _FakeJules()
+        activity = _FakeJules()
+        client = _InventorySnapshotRetryClient(inventory, attempts=3, activity_delegate=activity)
 
+        self.assertEqual(client.list_sources(), [{"name": "sources/1"}])
+        self.assertEqual(client.list_sessions(), [{"name": "sessions/1"}])
         self.assertEqual(client.list_activities("sessions/1"), [{"name": "activities/1"}])
-        self.assertEqual(delegate.activity_calls, 1)
+        self.assertEqual(inventory.source_calls, 1)
+        self.assertEqual(inventory.session_calls, 1)
+        self.assertEqual(inventory.activity_calls, 0)
+        self.assertEqual(activity.source_calls, 0)
+        self.assertEqual(activity.session_calls, 0)
+        self.assertEqual(activity.activity_calls, 1)
+
+    def test_inventory_default_budget_is_longer_than_activity_budget(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            activity_timeout, activity_attempts = _backfill_provider_policy()
+            inventory_timeout, inventory_attempts = _inventory_provider_policy()
+        self.assertGreater(inventory_timeout, activity_timeout)
+        self.assertGreaterEqual(inventory_attempts, activity_attempts)
+
+    def test_inventory_policy_remains_bounded(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "UES_TERMINAL_BACKFILL_INVENTORY_PROVIDER_TIMEOUT_SECONDS": "999",
+                "UES_TERMINAL_BACKFILL_INVENTORY_PROVIDER_READ_ATTEMPTS": "999",
+            },
+            clear=False,
+        ):
+            timeout, attempts = _inventory_provider_policy()
+        self.assertEqual(timeout, 30.0)
+        self.assertEqual(attempts, 3)
 
 
 if __name__ == "__main__":
