@@ -15,6 +15,7 @@ from .observation_backed_health import (
 )
 from .providers.base import NetworkError, RateLimitError, ServerError
 from .rp_readonly_runtime import RP_NAMES, _load_rp_adapter
+from .stale_initial_lineage_reconciliation import reconcile_project_stale_initial_lineages
 
 
 _PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
@@ -94,16 +95,34 @@ def _initial_lineage_blocked_result(lifecycle: dict[str, Any]) -> dict[str, Any]
 def run(project: str) -> dict[str, Any]:
     """Run the shared current-authority lifecycle for an RP project.
 
-    This wrapper grants no authority. Effect-capable topology still uses the shared
-    live lifecycle runtime. A validated Current Authority envelope with no stable or
-    dynamic lineages, no authorized initial/successor generations, and no authorized
-    workflow dispatches is instead proven as a zero-effect lifecycle using the fresh
-    persisted provider-observer snapshot; it performs no redundant Jules read.
+    This wrapper grants no authority. Before any effect-capable lifecycle path and
+    only under the explicit owner-authorized same-repository StateStore transport,
+    it performs a bounded GET-only reconciliation pass for old initial-lineage
+    IN_FLIGHT/UNKNOWN operations that already have durable exact transition
+    identity. That pass may bind a uniquely proven existing provider session but
+    can never create/retry a provider session. Effect-capable topology still uses
+    the shared live lifecycle runtime. A validated Current Authority envelope with
+    no stable or dynamic lineages, no authorized initial/successor generations, and
+    no authorized workflow dispatches is instead proven as a zero-effect lifecycle
+    using the fresh persisted provider-observer snapshot.
     """
 
     project_name = str(project or "").strip().upper()
     adapter = _load_rp_adapter(project_name)
     authority = _validated_authority(adapter)
+
+    if str(os.environ.get("UES_ALLOW_PUBLIC_SAME_REPO_STATE") or "").lower() == "true":
+        stale_reconciliation = reconcile_project_stale_initial_lineages(
+            adapter,
+            authority,
+        )
+    else:
+        stale_reconciliation = {
+            "result": "STALE_INITIAL_LINEAGE_RECONCILIATION_STATESTORE_TRANSPORT_NOT_ENABLED",
+            "reconciled_count": 0,
+            "provider_write_attempted": False,
+            "results": [],
+        }
 
     if authority is not None and observation_backed_no_effect_eligible(adapter, authority):
         result = dict(run_observation_backed_no_effect_health(adapter, authority=authority))
@@ -127,6 +146,7 @@ def run(project: str) -> dict[str, Any]:
     result["project"] = project_name
     result["rp_runtime_mode"] = "CURRENT_AUTHORITY_GATED"
     result["runtime_wrapper_grants_authority"] = False
+    result["stale_initial_lineage_reconciliation"] = stale_reconciliation
     return result
 
 
