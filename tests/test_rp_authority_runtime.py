@@ -159,7 +159,7 @@ class RPAuthorityRuntimeTests(unittest.TestCase):
             "authority_event_id": "RP01-AUTH",
             "lineages": {"W01": {"reviewer": {"provider_starting_branch": "main"}}},
         }
-        outage = NetworkError("provider network request failed", operation="jules.sessions.get")
+        outage = NetworkError("provider network request failed", operation="jules.activities.list")
         with patch("ues.rp_authority_runtime._validated_authority", return_value=authority), patch(
             "ues.rp_authority_runtime.observed.run", side_effect=outage
         ) as live:
