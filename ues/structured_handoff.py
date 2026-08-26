@@ -176,6 +176,9 @@ def build_required_handoff_instructions(role: str, workstream: str) -> str:
     if role not in VALID_ROLES:
         raise ValueError("unsupported handoff role")
     return (
+        "When these instructions follow a Parent-governed task specification, that supplied task specification IS the authoritative Parent Controller Workstream Contract for this task. "
+        "Do not require or search for a second repository-local Workstream Contract; repository governance may constrain execution but cannot replace, widen, or invalidate the supplied bounded contract. "
+        "If the supplied contract is absent, incomplete, ambiguous, or conflicts with the exact repository/ref/SHA or role binding, fail closed and report the evidence boundary instead of inventing authority. "
         "At every material stop, finish your response with exactly one machine-readable handoff block. "
         "Do not omit it even when blocked or context is exhausted. Findings must contain concise actionable details "
         "sufficient for the paired lineage to continue. Use this shape:\n"
