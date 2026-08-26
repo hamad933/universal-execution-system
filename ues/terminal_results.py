@@ -4,6 +4,7 @@ import json
 from hashlib import sha256
 from typing import Any, Mapping, Sequence
 
+from .lineage_generation import _confirmed_receipt_binding
 from .operation_records import sanitize_receipt
 from .structured_handoff import START_MARKER, find_latest_structured_handoff_runtime
 
@@ -100,7 +101,29 @@ def extract_terminal_candidate(activities: Sequence[Mapping[str, Any]]) -> dict[
     return candidate
 
 
+def _lineage_identity_from_record(record: Any) -> tuple[str, str]:
+    evidence = record.evidence_bindings or {}
+    role = str(evidence.get("role") or "").strip().upper()
+    workstream = str(evidence.get("workstream") or "").strip()
+    if role and workstream:
+        return role, workstream
+    runtime_id = str(getattr(record, "workstream_id", "") or "").strip()
+    if runtime_id.startswith("LINEAGE::") and "::" in runtime_id[len("LINEAGE::"):]:
+        body = runtime_id[len("LINEAGE::"):]
+        inferred_workstream, inferred_role = body.rsplit("::", 1)
+        role = role or inferred_role.strip().upper()
+        workstream = workstream or inferred_workstream.strip()
+    return role, workstream
+
+
 def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dict[str, Any]]]:
+    """Index exact durable lineage identity, including authoritative receipt recovery.
+
+    Passive observations may clear the current session fingerprint while the original
+    CONFIRMED initial-create receipt remains authoritative. Reuse the same narrow
+    receipt proof accepted by lineage-generation recovery instead of losing terminal
+    result identity. Non-confirmed/ambiguous receipts are never indexed.
+    """
     discover = getattr(store, "discover_lane_ids", None)
     if not callable(discover):
         return {}
@@ -113,10 +136,16 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
         if record.project != project or record.route != route:
             continue
         evidence = record.evidence_bindings or {}
-        fp = str(evidence.get("session_fingerprint") or "").strip()
-        role = str(evidence.get("role") or "").strip().upper()
-        workstream = str(evidence.get("workstream") or "").strip()
+        fp = str(evidence.get("session_fingerprint") or "").strip().lower()
         generation = int(evidence.get("generation") or 0)
+        recovery_source = "EVIDENCE_BINDINGS" if fp else None
+        if not fp:
+            receipt_binding = _confirmed_receipt_binding(record)
+            if receipt_binding:
+                fp = str(receipt_binding.get("session_fingerprint") or "").strip().lower()
+                generation = generation or int(receipt_binding.get("generation") or 0)
+                recovery_source = "CONFIRMED_CREATION_RECEIPT"
+        role, workstream = _lineage_identity_from_record(record)
         if not fp or not role or not workstream or generation <= 0:
             continue
         result.setdefault(fp, []).append({
@@ -126,6 +155,7 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
             "generation": generation,
             "current_candidate_sha": evidence.get("current_candidate_sha"),
             "current_pr_number": evidence.get("current_pr_number"),
+            "identity_recovery_source": recovery_source,
         })
     return result
 
