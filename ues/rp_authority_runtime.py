@@ -18,7 +18,7 @@ from .rp_readonly_runtime import RP_NAMES, _load_rp_adapter
 from .stale_initial_lineage_reconciliation import reconcile_project_stale_initial_lineages
 
 
-_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
+_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list", "jules.sessions.get"})
 _PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
 _PROVIDER_READ_UNAVAILABLE_RESULT = "PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
 _PROVIDER_READ_UNAVAILABLE_EXIT = 75
@@ -64,10 +64,10 @@ def _provider_read_unavailable_result(
 ) -> dict[str, Any]:
     """Represent a proven pre-effect provider inventory outage without guessing state.
 
-    The RP live lifecycle performs `jules.sessions.list` before any provider mutation.
-    Only transient failures of that exact operation are converted here. Other provider
-    failures still propagate so a possible post-write condition can never be
-    mislabeled as zero-effect.
+    The RP live lifecycle finishes Jules session inventory enumeration and hydration
+    before any provider mutation. Only transient failures of the exact allowlisted
+    inventory operations are converted here. Other provider failures still propagate
+    so a possible post-write condition can never be mislabeled as zero-effect.
     """
 
     return {
@@ -119,11 +119,12 @@ def run(project: str) -> dict[str, Any]:
     no authorized workflow dispatches is instead proven as a zero-effect lifecycle
     using the fresh persisted provider-observer snapshot.
 
-    If the effect-capable path exhausts its request-level retries on the exact
-    pre-effect `jules.sessions.list` operation, the whole provider inventory snapshot
-    may be retried a small bounded number of times. This retry is admitted only for
-    the explicitly proven zero-provider-effect boundary. No other operation or
-    possible post-write failure is replayed.
+    If the effect-capable path exhausts its request-level retries on an exact
+    allowlisted pre-effect provider-inventory operation (`jules.sessions.list` or
+    per-session `jules.sessions.get` hydration), the whole provider inventory
+    snapshot may be retried a small bounded number of times. This retry is admitted
+    only for the explicitly proven zero-provider-effect boundary. No other operation
+    or possible post-write failure is replayed.
     """
 
     project_name = str(project or "").strip().upper()
