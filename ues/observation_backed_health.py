@@ -24,7 +24,14 @@ def observation_backed_no_effect_eligible(
     adapter: Mapping[str, Any],
     authority: Mapping[str, Any] | None,
 ) -> bool:
-    """Return True only when a lifecycle cycle has no provider-routing topology."""
+    """Return True only when Current Authority explicitly proves zero provider effects.
+
+    Dynamic lineage declarations are identity/reconciliation topology, not effects by
+    themselves. When such lineages are present, both generation authorization flags
+    must be explicitly false before the fresh persisted provider observation may be
+    used. Missing/ambiguous generation policy therefore stays on the live provider
+    path, preserving fail-closed behavior for any potentially effect-capable cycle.
+    """
 
     runtime = legacy._lineage_runtime(adapter) or {}
     stable = runtime.get("workstreams")
@@ -33,11 +40,22 @@ def observation_backed_no_effect_eligible(
 
     if isinstance(authority, Mapping):
         lineages = authority.get("lineages")
-        if isinstance(lineages, Mapping) and any(isinstance(value, Mapping) for value in lineages.values()):
-            return False
+        lineages_present = isinstance(lineages, Mapping) and any(
+            isinstance(value, Mapping) for value in lineages.values()
+        )
 
         generation = authority.get("generation_policy")
         generation = generation if isinstance(generation, Mapping) else {}
+        if lineages_present and not (
+            generation.get("necessary_generation_authorized") is False
+            and generation.get("generation_effect_authorized") is False
+        ):
+            return False
+
+        if generation.get("necessary_generation_authorized") is True:
+            return False
+        if generation.get("generation_effect_authorized") is True:
+            return False
         for key in ("authorized_initial_lineages", "authorized_lineages"):
             entries = generation.get(key)
             entries = entries if isinstance(entries, Mapping) else {}
