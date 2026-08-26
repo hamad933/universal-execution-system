@@ -15,7 +15,7 @@ from .state_store import StateUnavailable, StateVersionConflict, WorkstreamRunti
 SCHEMA_VERSION = "1.0"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
-_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
+_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list", "jules.sessions.get"})
 _PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
 _PROVIDER_READ_UNAVAILABLE_RESULT = "PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
 _PROVIDER_READ_UNAVAILABLE_EXIT = 75
