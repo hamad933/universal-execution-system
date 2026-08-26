@@ -93,6 +93,7 @@ jobs:
     outputs:
       runtime_sha: ${{ steps.control.outputs.runtime_sha }}
       request_file_sha: ${{ steps.control.outputs.request_file_sha }}
+      request_path: ${{ steps.control.outputs.request_path }}
       control_pr_number: ${{ steps.control.outputs.control_pr_number }}
       project: ${{ steps.metadata.outputs.project }}
       request_id: ${{ steps.metadata.outputs.request_id }}
@@ -213,9 +214,17 @@ jobs:
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           EXPECTED_REPOSITORY: ${{ github.repository }}
           CONTROL_PR_NUMBER: ${{ github.event.pull_request.number }}
-          REQUEST_PATH: .ues/parent-controller-request.json
+          REQUEST_DIR: .ues/parent-controller-requests
+          LEGACY_REQUEST_PATH: .ues/parent-controller-request.json
         run: |
           set -euo pipefail
+          is_allowed_request_path() {
+            local path="$1"
+            if [[ "$path" == "$LEGACY_REQUEST_PATH" ]]; then
+              return 0
+            fi
+            [[ "$path" =~ ^\.ues/parent-controller-requests/(GS|CEP|RP01|RP02|RP03|RP04)\.json$ ]]
+          }
           if [[ "$PR_STATE" != "open" || "$PR_DRAFT" != "true" ]]; then
             echo 'Parent Controller preflight requires the persistent OPEN/DRAFT control PR' >&2
             exit 1
@@ -235,20 +244,27 @@ jobs:
           fi
           git cat-file -e "$BASE_SHA^{commit}"
           mapfile -t pr_files < <(git diff --name-only "$BASE_SHA...$CONTROL_HEAD")
-          if [[ "${#pr_files[@]}" -ne 1 || "${pr_files[0]}" != "$REQUEST_PATH" ]]; then
-            echo 'Persistent Parent Controller PR must contain only .ues/parent-controller-request.json' >&2
+          if [[ "${#pr_files[@]}" -lt 1 ]]; then
+            echo 'Persistent Parent Controller PR must contain at least one semantic request slot' >&2
             exit 1
           fi
+          for path in "${pr_files[@]}"; do
+            if ! is_allowed_request_path "$path"; then
+              echo "Persistent Parent Controller PR contains non-transport path: $path" >&2
+              exit 1
+            fi
+          done
           read -r -a commit_line <<< "$(git rev-list --parents -n 1 "$CONTROL_HEAD")"
           if [[ "${#commit_line[@]}" -ne 2 ]]; then
             echo 'Control request commit must be a single-parent commit' >&2
             exit 1
           fi
           mapfile -t commit_files < <(git diff-tree --no-commit-id --name-only -r "$CONTROL_HEAD")
-          if [[ "${#commit_files[@]}" -ne 1 || "${commit_files[0]}" != "$REQUEST_PATH" ]]; then
-            echo 'Control request commit must change only the semantic request file' >&2
+          if [[ "${#commit_files[@]}" -ne 1 ]] || ! is_allowed_request_path "${commit_files[0]}"; then
+            echo 'Control request commit must change exactly one allowlisted semantic request slot' >&2
             exit 1
           fi
+          REQUEST_PATH="${commit_files[0]}"
           request_blob="$(git rev-parse "$CONTROL_HEAD:$REQUEST_PATH")"
           if [[ ! "$request_blob" =~ ^[0-9a-f]{40}$ ]]; then
             echo 'Unable to resolve exact request blob' >&2
@@ -266,6 +282,7 @@ jobs:
           fi
           echo "runtime_sha=$runtime_sha" >> "$GITHUB_OUTPUT"
           echo "request_file_sha=$request_blob" >> "$GITHUB_OUTPUT"
+          echo "request_path=$REQUEST_PATH" >> "$GITHUB_OUTPUT"
           echo "control_pr_number=$CONTROL_PR_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Verify Owner control commit identity
@@ -274,12 +291,15 @@ jobs:
         uses: actions/github-script@v7
         env:
           CONTROL_HEAD: ${{ github.event.pull_request.head.sha }}
+          REQUEST_PATH: ${{ steps.control.outputs.request_path }}
         with:
           script: |
             const fs = require('fs');
             const path = require('path');
             const exactHead = String(process.env.CONTROL_HEAD || '').toLowerCase();
-            const requestPath = '.ues/parent-controller-request.json';
+            const requestPath = String(process.env.REQUEST_PATH || '');
+            const legacyRequestPath = '.ues/parent-controller-request.json';
+            const projectSlot = /^\.ues\/parent-controller-requests\/(GS|CEP|RP01|RP02|RP03|RP04)\.json$/;
             const diagnosticOut = path.join(process.env.RUNNER_TEMP, 'parent-controller-owner-identity-failure.json');
             const writeDiagnostic = (decision, githubStatus = null) => {
               const receipt = {
@@ -298,6 +318,11 @@ jobs:
               };
               fs.writeFileSync(diagnosticOut, JSON.stringify(receipt, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
             };
+            if (requestPath !== legacyRequestPath && !projectSlot.test(requestPath)) {
+              writeDiagnostic('OWNER_IDENTITY_SCOPE_MISMATCH');
+              core.setFailed('Selected Parent Controller request path is not allowlisted');
+              return;
+            }
             let controlCommit;
             try {
               const response = await github.rest.repos.getCommit({
@@ -322,7 +347,7 @@ jobs:
             const changed = controlCommit.files || [];
             if (changed.length !== 1 || changed[0].filename !== requestPath) {
               writeDiagnostic('OWNER_IDENTITY_SCOPE_MISMATCH');
-              core.setFailed('GitHub commit identity readback must confirm only the semantic request file changed');
+              core.setFailed('GitHub commit identity readback must confirm only the selected semantic request slot changed');
             }
 
       - name: Materialize Owner identity failure fallback
@@ -405,6 +430,35 @@ jobs:
             --expected-runtime-sha '${{ steps.control.outputs.runtime_sha }}' \
             --authority-output current-authority.json \
             --metadata-output parent-request-metadata.json
+
+      - name: Bind validated project to selected request slot
+        if: steps.rate.outputs.deferred != 'true'
+        env:
+          REQUEST_PATH: ${{ steps.control.outputs.request_path }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          request_path = str(os.environ.get('REQUEST_PATH') or '')
+          legacy = '.ues/parent-controller-request.json'
+          match = re.fullmatch(r'\.ues/parent-controller-requests/(GS|CEP|RP01|RP02|RP03|RP04)\.json', request_path)
+          metadata_path = Path('parent-request-metadata.json')
+          metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+          project = str(metadata.get('project') or '')
+          if request_path != legacy:
+              if match is None or match.group(1) != project:
+                  raise SystemExit('Parent Controller request project does not match project-scoped transport slot')
+              scoped = True
+          else:
+              scoped = False
+          metadata['transport_request_path'] = request_path
+          metadata['project_scoped_transport_slot'] = scoped
+          metadata['transport_path_is_truth_owner'] = False
+          metadata_path.write_text(json.dumps(metadata, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+          PY
 
       - name: Export validated routing metadata
         if: steps.rate.outputs.deferred != 'true'
