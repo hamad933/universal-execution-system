@@ -14,6 +14,10 @@ _DEFAULT_PROVIDER_TIMEOUT_SECONDS = 5.0
 _MAX_PROVIDER_TIMEOUT_SECONDS = 10.0
 _DEFAULT_PROVIDER_READ_ATTEMPTS = 2
 _MAX_PROVIDER_READ_ATTEMPTS = 2
+_DEFAULT_INVENTORY_PROVIDER_TIMEOUT_SECONDS = 15.0
+_MAX_INVENTORY_PROVIDER_TIMEOUT_SECONDS = 30.0
+_DEFAULT_INVENTORY_PROVIDER_READ_ATTEMPTS = 3
+_MAX_INVENTORY_PROVIDER_READ_ATTEMPTS = 3
 _DEFAULT_INVENTORY_SNAPSHOT_ATTEMPTS = 2
 _MAX_INVENTORY_SNAPSHOT_ATTEMPTS = 3
 _TRANSIENT_INVENTORY_ERRORS = (NetworkError, RateLimitError, ServerError)
@@ -42,13 +46,12 @@ def _bounded_int_env(name: str, default: int, *, minimum: int, maximum: int) -> 
 
 
 def _backfill_provider_policy() -> tuple[float, int]:
-    """Return a bounded GET-only provider policy for terminal backfill.
+    """Return the bounded GET-only Activity policy for terminal backfill.
 
-    Terminal-result recovery already has a workflow-level deadline. Using the
-    general-purpose Jules 15-second / three-attempt read policy inside a bounded
-    worker pool can still let slow pages consume that entire deadline. Backfill
-    therefore uses a deliberately shorter read budget while retaining bounded
-    retries and the canonical per-session failure classification.
+    Activity retrieval fans out in a bounded worker pool, so it deliberately keeps
+    a short per-request budget. Provider inventory is read with a separate policy
+    because a complete paginated sources/sessions snapshot is a single prerequisite
+    for the whole backfill and must not inherit the Activity worker timeout.
     """
 
     timeout = _bounded_float_env(
@@ -66,6 +69,24 @@ def _backfill_provider_policy() -> tuple[float, int]:
     return timeout, attempts
 
 
+def _inventory_provider_policy() -> tuple[float, int]:
+    """Return a bounded provider policy dedicated to full inventory snapshots."""
+
+    timeout = _bounded_float_env(
+        "UES_TERMINAL_BACKFILL_INVENTORY_PROVIDER_TIMEOUT_SECONDS",
+        _DEFAULT_INVENTORY_PROVIDER_TIMEOUT_SECONDS,
+        minimum=5.0,
+        maximum=_MAX_INVENTORY_PROVIDER_TIMEOUT_SECONDS,
+    )
+    attempts = _bounded_int_env(
+        "UES_TERMINAL_BACKFILL_INVENTORY_PROVIDER_READ_ATTEMPTS",
+        _DEFAULT_INVENTORY_PROVIDER_READ_ATTEMPTS,
+        minimum=1,
+        maximum=_MAX_INVENTORY_PROVIDER_READ_ATTEMPTS,
+    )
+    return timeout, attempts
+
+
 def _inventory_snapshot_attempts() -> int:
     """Bound full GET-only inventory snapshot retries independently of HTTP retries."""
 
@@ -78,17 +99,24 @@ def _inventory_snapshot_attempts() -> int:
 
 
 class _InventorySnapshotRetryClient:
-    """Retry only transient full provider inventory snapshots for terminal backfill.
+    """Retry transient full inventory snapshots while keeping Activities short-bound.
 
-    JulesClient already retries individual HTTP requests. A paginated inventory can
-    still fail after those request-level retries are exhausted. Repeating that
-    complete GET-only inventory read is safe and bounded; it never retries an
-    Activity read or any provider mutation. Sources and sessions are independent so
-    a successful source snapshot is not repeated because session enumeration failed.
+    Inventory and Activity reads intentionally use separate Jules clients. A complete
+    paginated inventory may need a longer request budget than a single Activity page;
+    sharing the short Activity timeout made all-project backfill fragile. Outer retry
+    remains inventory-only and GET-only. Activity reads are delegated once to the
+    short-budget client and are never outer-retried here.
     """
 
-    def __init__(self, delegate: JulesClient, *, attempts: int) -> None:
+    def __init__(
+        self,
+        delegate: JulesClient,
+        *,
+        attempts: int,
+        activity_delegate: JulesClient | None = None,
+    ) -> None:
         self._delegate = delegate
+        self._activity_delegate = activity_delegate or delegate
         self._attempts = max(1, min(_MAX_INVENTORY_SNAPSHOT_ATTEMPTS, int(attempts)))
         self.source_inventory_attempts = 0
         self.session_inventory_attempts = 0
@@ -119,14 +147,13 @@ class _InventorySnapshotRetryClient:
         )
 
     def list_activities(self, session: str, *, page_size: int = 100) -> list[dict[str, Any]]:
-        return self._delegate.list_activities(session, page_size=page_size)
+        return self._activity_delegate.list_activities(session, page_size=page_size)
 
 
-def _backfill_provider_client() -> JulesClient | None:
+def _provider_client(timeout: float, attempts: int) -> JulesClient | None:
     key = str(os.environ.get("JULES_API_KEY") or "").strip()
     if not key:
         return None
-    timeout, attempts = _backfill_provider_policy()
     return JulesClient(
         key,
         timeout=timeout,
@@ -137,6 +164,16 @@ def _backfill_provider_client() -> JulesClient | None:
             max_retry_after_seconds=5.0,
         ),
     )
+
+
+def _backfill_provider_client() -> JulesClient | None:
+    timeout, attempts = _backfill_provider_policy()
+    return _provider_client(timeout, attempts)
+
+
+def _inventory_provider_client() -> JulesClient | None:
+    timeout, attempts = _inventory_provider_policy()
+    return _provider_client(timeout, attempts)
 
 
 def _category(exc: BaseException) -> str:
@@ -167,16 +204,24 @@ def run(projects: list[str] | None = None) -> dict[str, Any]:
             "safe_to_blind_retry": False,
         }
     timeout, attempts = _backfill_provider_policy()
+    inventory_timeout, inventory_read_attempts = _inventory_provider_policy()
     inventory_attempt_limit = _inventory_snapshot_attempts()
-    provider = _backfill_provider_client()
+    activity_provider = _backfill_provider_client()
+    inventory_provider = _inventory_provider_client()
     retrying_provider = (
-        _InventorySnapshotRetryClient(provider, attempts=inventory_attempt_limit)
-        if provider is not None
+        _InventorySnapshotRetryClient(
+            inventory_provider,
+            attempts=inventory_attempt_limit,
+            activity_delegate=activity_provider,
+        )
+        if inventory_provider is not None
         else None
     )
     result = run_read_only_backfill(projects, store=store, client=retrying_provider)
     result["terminal_backfill_provider_timeout_seconds"] = timeout
     result["terminal_backfill_provider_read_attempts"] = attempts
+    result["terminal_backfill_inventory_provider_timeout_seconds"] = inventory_timeout
+    result["terminal_backfill_inventory_provider_read_attempts"] = inventory_read_attempts
     result["terminal_backfill_inventory_snapshot_attempt_limit"] = inventory_attempt_limit
     result["terminal_backfill_source_inventory_attempts"] = (
         retrying_provider.source_inventory_attempts if retrying_provider is not None else 0
@@ -185,6 +230,7 @@ def run(projects: list[str] | None = None) -> dict[str, Any]:
         retrying_provider.session_inventory_attempts if retrying_provider is not None else 0
     )
     result["terminal_backfill_inventory_snapshot_retry_get_only"] = True
+    result["terminal_backfill_split_inventory_activity_read_policy"] = True
     return result
 
 
