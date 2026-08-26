@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 from .generation_pending import clear_pending_generation_transition, persist_pending_generation_transition
@@ -9,6 +10,10 @@ from .lineage_generation import persist_created_generation_binding
 from .lineage_registry import lineage_lane_id
 from .state_store import StateUnavailable, record_unknown_write
 from .task_budget_accounting import record_confirmed_generation
+
+
+_REVIEW_ROLES = frozenset({"REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"})
+_CONTRACT_PREFIX = "PARENT_CONTROLLER_WORKSTREAM_CONTRACT_V1="
 
 
 def _state_snapshot(store: Any, lane_id: str) -> dict[str, Any]:
@@ -31,6 +36,72 @@ def _state_snapshot(store: Any, lane_id: str) -> dict[str, Any]:
             else None
         ),
     }
+
+
+def _replacement_review_contract(
+    prompt: str,
+    *,
+    workstream: str,
+    role: str,
+    candidate_sha: str | None,
+) -> dict[str, Any] | None:
+    """Return a validated bounded contract embedded in a review replacement prompt.
+
+    Same-lineage Reviewer/Assurance replacement generations are provider effects.
+    They must not be created from a free-form recovery sentence alone. The Parent
+    prompt therefore carries one compact JSON contract line prefixed by
+    ``PARENT_CONTROLLER_WORKSTREAM_CONTRACT_V1=``. This validator is intentionally
+    closed and fail-closed at the final provider-write boundary.
+    """
+
+    raw: str | None = None
+    for line in str(prompt or "").splitlines():
+        text = line.strip()
+        if text.startswith(_CONTRACT_PREFIX):
+            if raw is not None:
+                return None
+            raw = text[len(_CONTRACT_PREFIX) :].strip()
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+
+    contract = dict(value)
+    required_text = (
+        "objective",
+        "exact_baseline",
+        "role",
+        "logical_lineage",
+        "handoff",
+        "stop_gate",
+    )
+    if any(not isinstance(contract.get(key), str) or not str(contract.get(key)).strip() for key in required_text):
+        return None
+    for key in ("write_scope", "prohibited_scope", "validation", "evidence"):
+        items = contract.get(key)
+        if not isinstance(items, list) or any(not isinstance(item, str) or not item.strip() for item in items):
+            return None
+    if contract.get("write_scope") != []:
+        return None
+    if not contract.get("validation") or not contract.get("evidence"):
+        return None
+
+    expected_role = "ASSURANCE" if str(role).upper() == "FINAL_ASSURANCE" else str(role).upper()
+    contract_role = "ASSURANCE" if str(contract.get("role") or "").upper() == "FINAL_ASSURANCE" else str(contract.get("role") or "").upper()
+    if contract_role != expected_role:
+        return None
+    if str(contract.get("logical_lineage") or "").strip() != str(workstream).strip():
+        return None
+
+    baseline = str(contract.get("exact_baseline") or "").strip()
+    _, sep, sha = baseline.rpartition("@")
+    if not sep or not candidate_sha or sha.lower() != str(candidate_sha).lower():
+        return None
+    return contract
 
 
 def execute_binding_safe_generation(
@@ -63,7 +134,22 @@ def execute_binding_safe_generation(
     blind retry.
     """
 
-    state_role = "ASSURANCE" if str(role).upper() == "FINAL_ASSURANCE" else role
+    role_name = str(role).upper()
+    if role_name in _REVIEW_ROLES and _replacement_review_contract(
+        prompt,
+        workstream=workstream,
+        role=role_name,
+        candidate_sha=candidate_sha,
+    ) is None:
+        return {
+            "decision": "NEXT_GENERATION_WORKSTREAM_CONTRACT_REQUIRED",
+            "provider_write_attempted": False,
+            "external_effects_dispatched": 0,
+            "new_tasks_or_sessions_created": 0,
+            "safe_to_blind_retry": False,
+        }
+
+    state_role = "ASSURANCE" if role_name == "FINAL_ASSURANCE" else role
     lane_id = lineage_lane_id(project, route, workstream, state_role)
     before = _state_snapshot(store, lane_id)
     current_generation = int(before.get("generation") or 0)
