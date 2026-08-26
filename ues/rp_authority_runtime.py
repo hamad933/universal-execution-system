@@ -22,6 +22,8 @@ _PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list"})
 _PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
 _PROVIDER_READ_UNAVAILABLE_RESULT = "PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
 _PROVIDER_READ_UNAVAILABLE_EXIT = 75
+_DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS = 2
+_MAX_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS = 3
 
 
 def _validated_authority(adapter: dict[str, Any]) -> dict[str, Any] | None:
@@ -41,6 +43,17 @@ def _is_pre_effect_provider_read_failure(exc: BaseException) -> bool:
     return isinstance(exc, _PRE_EFFECT_PROVIDER_READ_ERRORS) and str(
         getattr(exc, "operation", "") or ""
     ) in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
+
+
+def _provider_inventory_snapshot_attempts() -> int:
+    raw = str(os.environ.get("UES_RP_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS") or "").strip()
+    if not raw:
+        return _DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS
+    try:
+        requested = int(raw)
+    except ValueError:
+        return _DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS
+    return max(1, min(_MAX_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS, requested))
 
 
 def _provider_read_unavailable_result(
@@ -105,6 +118,12 @@ def run(project: str) -> dict[str, Any]:
     no stable or dynamic lineages, no authorized initial/successor generations, and
     no authorized workflow dispatches is instead proven as a zero-effect lifecycle
     using the fresh persisted provider-observer snapshot.
+
+    If the effect-capable path exhausts its request-level retries on the exact
+    pre-effect `jules.sessions.list` operation, the whole provider inventory snapshot
+    may be retried a small bounded number of times. This retry is admitted only for
+    the explicitly proven zero-provider-effect boundary. No other operation or
+    possible post-write failure is replayed.
     """
 
     project_name = str(project or "").strip().upper()
@@ -126,22 +145,35 @@ def run(project: str) -> dict[str, Any]:
 
     if authority is not None and observation_backed_no_effect_eligible(adapter, authority):
         result = dict(run_observation_backed_no_effect_health(adapter, authority=authority))
+        result["provider_inventory_snapshot_attempts"] = 0
+        result["provider_inventory_snapshot_attempt_limit"] = 0
     else:
         original_loader = legacy._load_adapter
         legacy._load_adapter = _load_rp_adapter
+        attempt_limit = _provider_inventory_snapshot_attempts()
+        attempt = 0
         try:
-            try:
-                result = dict(observed.run(project_name))
-            except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
-                if not _is_pre_effect_provider_read_failure(exc):
-                    raise
-                result = _provider_read_unavailable_result(
-                    project_name,
-                    authority=authority,
-                    exc=exc,
-                )
+            while attempt < attempt_limit:
+                attempt += 1
+                try:
+                    result = dict(observed.run(project_name))
+                    break
+                except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
+                    if not _is_pre_effect_provider_read_failure(exc):
+                        raise
+                    if attempt < attempt_limit:
+                        continue
+                    result = _provider_read_unavailable_result(
+                        project_name,
+                        authority=authority,
+                        exc=exc,
+                    )
+                    break
         finally:
             legacy._load_adapter = original_loader
+        result["provider_inventory_snapshot_attempts"] = attempt
+        result["provider_inventory_snapshot_attempt_limit"] = attempt_limit
+        result["provider_inventory_snapshot_retry_pre_effect_only"] = True
 
     result["project"] = project_name
     result["rp_runtime_mode"] = "CURRENT_AUTHORITY_GATED"
