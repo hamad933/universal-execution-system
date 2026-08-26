@@ -31,9 +31,10 @@ class ParentControllerInlinePipelineTests(unittest.TestCase):
         self.assertIn('PR_DRAFT: ${{ github.event.pull_request.draft }}', preflight)
         self.assertIn('git diff --name-only "$BASE_SHA...$CONTROL_HEAD"', preflight)
         self.assertIn(
-            "Persistent Parent Controller PR must contain only .ues/parent-controller-request.json",
+            "Persistent Parent Controller PR must contain at least one semantic request slot",
             preflight,
         )
+        self.assertIn("Persistent Parent Controller PR contains non-transport path", preflight)
         self.assertNotIn("github.rest.pulls.listFiles", preflight)
         self.assertIn("controlCommit.author.login !== context.repo.owner", preflight)
         self.assertIn("controlCommit.committer.login !== context.repo.owner", preflight)
@@ -53,7 +54,8 @@ class ParentControllerInlinePipelineTests(unittest.TestCase):
         preflight = self.text.split("\n  parent-controller-preflight:\n", 1)[1].split(
             "\n  parent-controller-preflight-failure:\n", 1
         )[0]
-        self.assertIn('REQUEST_PATH: .ues/parent-controller-request.json', preflight)
+        self.assertIn('LEGACY_REQUEST_PATH: .ues/parent-controller-request.json', preflight)
+        self.assertIn('.ues/parent-controller-requests', preflight)
         self.assertIn('git rev-parse "$CONTROL_HEAD:$REQUEST_PATH"', preflight)
         self.assertIn('git hash-object "$RUNNER_TEMP/parent-controller-request.json"', preflight)
         self.assertIn('git ls-remote origin "refs/heads/$DEFAULT_BRANCH"', preflight)
