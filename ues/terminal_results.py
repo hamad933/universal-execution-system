@@ -190,6 +190,8 @@ def _bound_result(*, project: str, route: str, repository: str, session: Mapping
     role = str(lineage.get("role") or "").upper()
     workstream = str(lineage.get("workstream") or "")
     current_sha = str(lineage.get("current_candidate_sha") or "") or None
+    claimed_role = str(candidate.get("role") or "").upper()
+    claimed_workstream = str(candidate.get("workstream") or "")
     base = {
         "schema_version": SCHEMA_VERSION,
         "project": project,
@@ -215,9 +217,22 @@ def _bound_result(*, project: str, route: str, repository: str, session: Mapping
     if str(session.get("source_repository") or "").casefold() != repository.casefold() or session.get("source_binding_proven") is not True:
         base["result_state"] = "RESULT_IDENTITY_UNRESOLVED"
         base["freshness_status"] = "UNBOUND"
-    elif str(candidate.get("workstream") or "") != workstream or str(candidate.get("role") or "").upper() != role:
+    elif claimed_workstream != workstream or claimed_role != role:
         base["result_state"] = "STRUCTURED_HANDOFF_UNBOUND"
         base["freshness_status"] = "UNBOUND"
+        workstream_mismatch = claimed_workstream != workstream
+        role_mismatch = claimed_role != role
+        if workstream_mismatch and role_mismatch:
+            mismatch = "ROLE_AND_WORKSTREAM_MISMATCH"
+        elif workstream_mismatch:
+            mismatch = "WORKSTREAM_MISMATCH"
+        else:
+            mismatch = "ROLE_MISMATCH"
+        base["handoff_identity_mismatch"] = mismatch
+        base["handoff_claimed_role"] = _bounded(claimed_role, 80)
+        base["handoff_expected_role"] = _bounded(role, 80)
+        base["handoff_claimed_workstream"] = _bounded(claimed_workstream, 500)
+        base["handoff_expected_workstream"] = _bounded(workstream, 500)
     elif role in {"REVIEWER", "ASSURANCE"}:
         reviewed = str(candidate.get("reviewed_sha") or "") or None
         if current_sha and reviewed != current_sha:
