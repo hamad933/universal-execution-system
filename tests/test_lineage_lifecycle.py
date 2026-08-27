@@ -25,11 +25,15 @@ class LineageRegistryTests(unittest.TestCase):
         self.assertEqual(result["status"], "PROVEN")
         self.assertEqual(result["provider_state"], "COMPLETED")
 
-    def test_optional_provider_starting_branch_is_exact_additional_constraint(self) -> None:
+    def test_provider_starting_branch_drift_is_diagnostic_after_exact_identity(self) -> None:
         expected = session_fingerprint("sessions/exact")
         sessions = [{"name":"sessions/exact","normalizedState":"COMPLETED","_source_repository":"owner/repo","_session_fingerprint":expected,"sourceStartingBranch":"provider-base"}]
-        rejected = match_lineage_session(sessions,{"known_session_fingerprints":[expected],"provider_starting_branch":"other-base"},repository="owner/repo")
-        self.assertEqual(rejected["status"], "UNBOUND")
+        result = match_lineage_session(sessions,{"known_session_fingerprints":[expected],"provider_starting_branch":"other-base"},repository="owner/repo")
+        self.assertEqual(result["status"], "PROVEN")
+        self.assertEqual(result["reason"], "EXACT_GOVERNED_LINEAGE_BINDING_BRANCH_DRIFT")
+        self.assertTrue(result["provider_starting_branch_metadata_drift"])
+        self.assertEqual(result["expected_provider_starting_branch"], "other-base")
+        self.assertEqual(result["observed_provider_starting_branch"], "provider-base")
 
     def test_labels_never_substitute_for_exact_binding(self) -> None:
         sessions = [{"name":"sessions/wrong","normalizedState":"IN_PROGRESS","_source_repository":"owner/repo","_session_fingerprint":session_fingerprint("sessions/wrong"),"sourceStartingBranch":"wrong-branch","title":"W03 Writer"}]
