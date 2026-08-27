@@ -24,11 +24,12 @@ def test_exact_fingerprint_and_repo_survive_missing_provider_branch_metadata():
     assert result["status"] == "PROVEN"
     assert result["reason"] == "EXACT_GOVERNED_LINEAGE_BINDING_BRANCH_METADATA_UNAVAILABLE"
     assert result["provider_starting_branch_metadata_missing"] is True
+    assert result["provider_starting_branch_metadata_drift"] is False
     assert result["expected_provider_starting_branch"] == "feature/candidate"
     assert result["observed_provider_starting_branch"] is None
 
 
-def test_explicit_conflicting_branch_remains_unbound():
+def test_exact_fingerprint_and_repo_survive_explicit_provider_branch_drift():
     result = match_lineage_session(
         [_session(fp="a" * 64, branch="main")],
         {
@@ -38,8 +39,12 @@ def test_explicit_conflicting_branch_remains_unbound():
         repository="hamad933/example",
     )
 
-    assert result["status"] == "UNBOUND"
-    assert result["reason"] == "NO_EXACT_GOVERNED_SESSION_FINGERPRINT_MATCH"
+    assert result["status"] == "PROVEN"
+    assert result["reason"] == "EXACT_GOVERNED_LINEAGE_BINDING_BRANCH_DRIFT"
+    assert result["provider_starting_branch_metadata_missing"] is False
+    assert result["provider_starting_branch_metadata_drift"] is True
+    assert result["expected_provider_starting_branch"] == "feature/candidate"
+    assert result["observed_provider_starting_branch"] == "main"
 
 
 def test_wrong_fingerprint_remains_unbound_even_when_repo_and_branch_match():
@@ -70,7 +75,7 @@ def test_wrong_repository_remains_unbound_even_with_exact_fingerprint():
     assert result["reason"] == "NO_EXACT_GOVERNED_SESSION_FINGERPRINT_MATCH"
 
 
-def test_matching_branch_reports_no_missing_metadata():
+def test_matching_branch_reports_no_drift_or_missing_metadata():
     result = match_lineage_session(
         [_session(fp="a" * 64, branch="main")],
         {
@@ -83,3 +88,4 @@ def test_matching_branch_reports_no_missing_metadata():
     assert result["status"] == "PROVEN"
     assert result["reason"] == "EXACT_GOVERNED_LINEAGE_BINDING"
     assert result["provider_starting_branch_metadata_missing"] is False
+    assert result["provider_starting_branch_metadata_drift"] is False
