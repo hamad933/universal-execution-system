@@ -38,7 +38,7 @@ jobs:
           UES_STATE_REF_PREFIX: ues-runtime/v2
           UES_AUTHORITY_TRANSPORT_ACTOR: hamad933
           UES_CURRENT_AUTHORITY_JSON: >-
-            {"source":"DRIVE_CURRENT_STATE","source_id":"1hLTUFh0aFZP_onYDYLNO-1rXn9EkQjmT","project":"RP04","route":"RP04","current":true,"authority_event_id":"RP04-AUTH-OWNER-LIFECYCLE-20260827-001","expires_at":"2026-08-28T17:00:00+03:00","lineages":{"RP04-IPA-S11-001":{"reviewer":{"provider_starting_branch":"feature/rp04-imp-w08-human-grade-portfolio-polish"}}},"generation_policy":{"authorized_initial_lineages":{},"authorized_lineages":{}}}
+            {"source":"DRIVE_CURRENT_STATE","source_id":"1hLTUFh0aFZP_onYDYLNO-1rXn9EkQjmT","project":"RP04","route":"RP04","current":true,"authority_event_id":"RP04-AUTH-OWNER-LIFECYCLE-20260827-001","expires_at":"2026-08-28T17:00:00+03:00","lineages":{"RP04-IPA-S11-001":{"reviewer":{"provider_starting_branch":"main"}}},"generation_policy":{"authorized_initial_lineages":{},"authorized_lineages":{}}}
         shell: bash
         run: |
           set +e
