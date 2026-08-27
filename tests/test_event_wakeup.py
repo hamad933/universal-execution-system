@@ -77,6 +77,38 @@ class EventWakeupTests(unittest.TestCase):
         self.assertFalse(second["wakeup"])
         self.assertTrue(second["coalescing_durable"])
 
+    def test_duplicate_external_reconciliation_continues_to_guarded_lifecycle(self) -> None:
+        event = {
+            "type": "EXTERNAL_RECONCILIATION_REQUEST",
+            "event_id": "rp02-review-reconcile-001",
+            "source": "github",
+            "repository": "owner/repo",
+            "workstream": "RP02-IPA-S01-001",
+        }
+        first = register_wakeup(
+            self.store,
+            project="RP02",
+            route="RP02",
+            event=event,
+        )
+        second = register_wakeup(
+            self.store,
+            project="RP02",
+            route="RP02",
+            event=event,
+        )
+        self.assertTrue(first["wakeup"])
+        self.assertEqual(
+            second["decision"],
+            "DUPLICATE_EXTERNAL_RECONCILIATION_CONTINUE_GUARDED",
+        )
+        self.assertTrue(second["wakeup"])
+        self.assertTrue(second["coalescing_durable"])
+        self.assertFalse(second["event_grants_mutation_authority"])
+        self.assertTrue(second["downstream_authority_reconstruction_required"])
+        self.assertTrue(second["downstream_idempotency_and_unknown_checks_required"])
+        self.assertFalse(second["safe_to_blind_retry"])
+
     def test_events_are_lane_local_and_do_not_freeze_unrelated_project(self) -> None:
         event = {"type": "WRITER_COMPLETED", "event_id": "jules-1", "source": "jules"}
         cep = register_wakeup(self.store, project="CEP", route="PERSONAL:CEP", event=event)
