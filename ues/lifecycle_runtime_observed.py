@@ -30,10 +30,17 @@ def _bounded_env_text(env: Mapping[str, str], key: str, *, limit: int = 512) -> 
     return value
 
 
-def _checked_out_runtime_sha() -> str | None:
-    """Return the exact checked-out Git HEAD when it can be proven locally."""
+def _checked_out_runtime_sha(repository: str) -> str | None:
+    """Return Git HEAD only when the checkout origin matches the runtime repository."""
 
     try:
+        remote = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip().lower()
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             check=True,
@@ -43,6 +50,17 @@ def _checked_out_runtime_sha() -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
+
+    normalized_remote = remote.rstrip("/")
+    if normalized_remote.endswith(".git"):
+        normalized_remote = normalized_remote[:-4]
+    repository_lower = repository.lower()
+    if not (
+        normalized_remote.endswith(f"github.com/{repository_lower}")
+        or normalized_remote.endswith(f"github.com:{repository_lower}")
+    ):
+        return None
+
     sha = completed.stdout.strip()
     if not _SHA.fullmatch(sha):
         return None
@@ -86,7 +104,7 @@ def runtime_binding_from_env(env: Mapping[str, str] | None = None) -> dict[str, 
         runtime_sha = exact_runtime_sha.lower()
         binding_source = "UES_EXACT_RUNTIME_ENV"
     elif env is None:
-        checked_out_sha = _checked_out_runtime_sha()
+        checked_out_sha = _checked_out_runtime_sha(repository)
         if checked_out_sha is not None:
             runtime_sha = checked_out_sha
             binding_source = "CHECKED_OUT_GIT_HEAD"
