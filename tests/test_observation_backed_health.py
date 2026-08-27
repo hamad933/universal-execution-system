@@ -18,9 +18,17 @@ from ues.rp_readonly_runtime import _load_rp_adapter
 from ues.state_store import DeterministicFileStateStore, WorkstreamRuntimeRecord
 
 
-def _store() -> DeterministicFileStateStore:
+class _DiscoverableFileStateStore(DeterministicFileStateStore):
+    """Expose the production discovery contract over the deterministic test document."""
+
+    def discover_lane_ids(self) -> tuple[str, ...]:
+        doc = self._read_doc()
+        return tuple(sorted(str(item) for item in doc["workstreams"]))
+
+
+def _store() -> _DiscoverableFileStateStore:
     directory = tempfile.TemporaryDirectory()
-    store = DeterministicFileStateStore(Path(directory.name) / "state.json")
+    store = _DiscoverableFileStateStore(Path(directory.name) / "state.json")
     store.initialize()
     store._test_directory = directory
     return store
