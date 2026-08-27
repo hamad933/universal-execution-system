@@ -7,8 +7,9 @@ from typing import Any, Mapping
 
 from .live_runtime import build_live_state_store
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 SUPPLEMENT_POLICY_KEY = "evidence_supplement_lineages"
+ACCEPTED_ATTESTATIONS_POLICY_KEY = "accepted_evidence_transport_attestations"
 ATTESTATION_ACTION = "evidence-transport-byte-attestation"
 ATTESTATION_RESULT = "EVIDENCE_TRANSPORT_BYTE_ATTESTATION_PASS"
 ATTESTATION_OPERATION_PREFIX = "ues-v2:evidence-transport-attestation:"
@@ -38,11 +39,19 @@ def attestation_operation_key(lane: Mapping[str, Any]) -> str:
     return ATTESTATION_OPERATION_PREFIX + _binding_digest(lane)
 
 
-def _supplement_entries(authority: Mapping[str, Any]) -> Mapping[str, Any]:
+def _generation_policy(authority: Mapping[str, Any]) -> Mapping[str, Any]:
     policy = authority.get("generation_policy")
-    policy = policy if isinstance(policy, Mapping) else {}
-    entries = policy.get(SUPPLEMENT_POLICY_KEY)
+    return policy if isinstance(policy, Mapping) else {}
+
+
+def _supplement_entries(authority: Mapping[str, Any]) -> Mapping[str, Any]:
+    entries = _generation_policy(authority).get(SUPPLEMENT_POLICY_KEY)
     return entries if isinstance(entries, Mapping) else {}
+
+
+def _accepted_attestations(authority: Mapping[str, Any]) -> Mapping[str, Any]:
+    accepted = _generation_policy(authority).get(ACCEPTED_ATTESTATIONS_POLICY_KEY)
+    return accepted if isinstance(accepted, Mapping) else {}
 
 
 def validate_attestation_record(lane: Mapping[str, Any], record: Any) -> dict[str, Any]:
@@ -102,10 +111,18 @@ def validate_attestation_record(lane: Mapping[str, Any], record: Any) -> dict[st
 
 def enforce_authority_attestations(authority: Mapping[str, Any], store: Any) -> dict[str, Any]:
     checked: list[dict[str, Any]] = []
+    accepted = _accepted_attestations(authority)
+    authority_event_id = _required_text(authority.get("authority_event_id"), "authority_event_id")
+    source_id = _required_text(authority.get("source_id"), "source_id")
     for raw_key, raw_lane in sorted(_supplement_entries(authority).items(), key=lambda item: str(item[0])):
         if not isinstance(raw_lane, Mapping) or raw_lane.get("authorized") is not True:
             continue
         key = attestation_operation_key(raw_lane)
+        accepted_key = str(accepted.get(str(raw_key)) or "").strip()
+        if accepted_key != key:
+            raise RuntimeError(
+                f"{raw_key}: the same governed Current State has not accepted the exact byte-attestation operation"
+            )
         read = store.read_operation(key)
         if read.status != "OK" or read.record is None:
             raise RuntimeError(
@@ -113,10 +130,14 @@ def enforce_authority_attestations(authority: Mapping[str, Any], store: Any) -> 
             )
         proof = validate_attestation_record(raw_lane, read.record)
         proof["authority_key"] = str(raw_key)
+        proof["accepted_by_authority_event_id"] = authority_event_id
+        proof["accepted_by_source_id"] = source_id
         checked.append(proof)
     return {
         "schema_version": SCHEMA_VERSION,
         "result": "EVIDENCE_TRANSPORT_ATTESTATION_GATE_PASS",
+        "authority_event_id": authority_event_id,
+        "source_id": source_id,
         "supplement_lanes_checked": len(checked),
         "attestations": checked,
         "provider_mutation": False,
