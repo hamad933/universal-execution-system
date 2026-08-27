@@ -1,0 +1,57 @@
+name: UES RP04 S11 Owner Reconciliation 20260827
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ues-rp04-s11-owner-reconciliation-20260827.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ues-project-lifecycle-RP04
+  cancel-in-progress: false
+
+jobs:
+  exact-current-authority-reconciliation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout governed UES runtime
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Run bounded RP04 S11 exact reconciliation
+        id: reconcile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_AUTHORITY_TRANSPORT_ACTOR: hamad933
+          UES_CURRENT_AUTHORITY_JSON: >-
+            {"source":"DRIVE_CURRENT_STATE","source_id":"1hLTUFh0aFZP_onYDYLNO-1rXn9EkQjmT","project":"RP04","route":"RP04","current":true,"authority_event_id":"RP04-AUTH-OWNER-LIFECYCLE-20260827-001","expires_at":"2026-08-28T17:00:00+03:00","lineages":{"RP04-IPA-S11-001":{"reviewer":{"provider_starting_branch":"feature/rp04-imp-w08-human-grade-portfolio-polish"}}},"generation_policy":{"authorized_initial_lineages":{},"authorized_lineages":{}}}
+        shell: bash
+        run: |
+          set +e
+          python -m ues.rp_authority_runtime RP04 2>&1 | tee rp04-s11-reconciliation.json
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Preserve bounded reconciliation receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rp04-s11-owner-reconciliation-${{ github.run_id }}
+          path: rp04-s11-reconciliation.json
+          if-no-files-found: warn
+          retention-days: 14
