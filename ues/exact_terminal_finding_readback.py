@@ -8,7 +8,6 @@ from typing import Any, Mapping
 from . import terminal_recovery as recovery
 from .identity import canonical_lane_id
 from .live_runtime import build_live_state_store
-from .terminal_results import logical_lineage_key
 
 _ALLOWED_PROJECTS = frozenset({"RP01", "RP02", "RP03", "RP04"})
 _ALLOWED_ROLES = ("REVIEWER", "ASSURANCE", "WRITER")
@@ -23,6 +22,10 @@ _FINDING_KEYS = (
     "recommended_action",
     "evidence_references",
 )
+
+
+def _logical_lineage_key(workstream: str, role: str) -> str:
+    return f"LINEAGE::{workstream}::{role}"
 
 
 def _safe_scalar(value: Any, *, limit: int = 4096) -> str | int | float | bool | None:
@@ -82,7 +85,7 @@ def _project_result(raw: Mapping[str, Any]) -> dict[str, Any]:
 def _exact_persisted_result(store: Any, *, project: str, route: str, workstream: str) -> dict[str, Any] | None:
     matches: list[dict[str, Any]] = []
     for role in _ALLOWED_ROLES:
-        lane_workstream = logical_lineage_key(workstream, role)
+        lane_workstream = _logical_lineage_key(workstream, role)
         lane_id = canonical_lane_id(project, route, lane_workstream)
         read = store.read_workstream(lane_id)
         if read.status != "OK" or read.record is None:
