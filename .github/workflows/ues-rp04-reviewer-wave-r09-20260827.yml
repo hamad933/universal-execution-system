@@ -1,0 +1,178 @@
+name: UES RP04 Complete-Contract Reviewer Wave R09 20260827
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ues-rp04-reviewer-wave-r09-20260827.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ues-project-lifecycle-RP04
+  cancel-in-progress: false
+
+jobs:
+  governed-reviewer-wave:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout governed UES runtime
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Build fresh RP04 complete-contract authority envelope
+        env:
+          RP04_CURRENT_AUTHORITY_EVENT: RP04-AUTH-OWNER-LIFECYCLE-20260827-001
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          candidate = "53c7ee4801ed76983b45a8e245f41dbe268a6ee1"
+          baseline = f"feature/rp04-imp-w08-human-grade-portfolio-polish@{candidate}"
+          pages = {
+              "S01": ("Asset Discovery", "1-ISI5WBoBamAqTq6zmjTgX0mrIqtzlEq", ""),
+              "S02": ("Search and Shortlists", "1fZWWlFsEi9bqUVSGEkgyajr6cSrf3NY2", ""),
+              "S03": ("Map and List Exploration", "1vBbziDA_8zwJTCSir1M9AEOOetdY_5zo", ""),
+              "S04": ("Asset Detail", "1kV15hXA3Po-tcji4DSjb7qCReMHxblWR", ""),
+              "S05": ("Operational Readiness", "1ky9-Ry0VshMKiapH-DJNTTCXARiZmyif", "authenticated operational surface"),
+              "S06": ("Comparison and Recommendation", "1NGfadRwOfJ3OhSTLSx2bEAucTcMfQ4CT", ""),
+              "S07": ("Inquiry and Coordination", "1DCWOKyB8k112qaO0Juk1bgoUABjnc3qY", ""),
+              "S08": ("Tenancy and Occupancy Record", "1AnwuC9jCIdLEcvaHcOkzU6c7jbArBHol", ""),
+              "S09": ("Payment and Statement Record", "1L2PdYTslJAPSzKcH6eTReh7BvNtfA9Am", ""),
+              "S10": ("Maintenance and Field Work", "1sU4nuagxIzL0Ltj_gzeZzHZ20Xf9E7X4", ""),
+              "S12": ("Contractor Assigned Work", "1emwarnkISZHGwZCum50OJ7H1gOZ75ZIW", "USER + CONTRACTOR"),
+              "S13": ("Portfolio Operations", "1R471N6kecYxd4SZHCcrXtAKMZn5eFw6H", "ADMIN ONLY"),
+          }
+          lineages = {}
+          authorized = {}
+          for surface, (name, visual_id, access_note) in pages.items():
+              lineage = f"RP04-IPA-{surface}-001"
+              contract = {
+                  "objective": f"Perform governed independent page assurance for RP04-{surface} ({name}) on the exact W08 candidate and return evidence-backed findings/verdict.",
+                  "exact_baseline": baseline,
+                  "role": "REVIEWER",
+                  "logical_lineage": lineage,
+                  "write_scope": [],
+                  "prohibited_scope": [
+                      "No code, repository, branch, PR, test, governance, StateStore, provider, release, deploy, publication, or production mutation.",
+                      "Do not widen review into unrelated pages except minimal cross-surface consistency evidence.",
+                  ],
+                  "validation": [
+                      f"Verify exact candidate SHA {candidate} before judging RP04-{surface}.",
+                      f"Review RP04-{surface} ({name}) against its frozen visual direction and governed page purpose.",
+                      "Inspect available 1440 desktop and 390 mobile rendered evidence; for S12 also inspect 820 tablet evidence when available.",
+                      "Check Arabic-first RTL/LTR behavior, responsive layout and overflow, metadata/content consistency, deterministic interactions/states, accessibility/usability signals, and truthful disabled/unavailable controls.",
+                      "Verify role/access boundaries from repository evidence where applicable and never invent unavailable evidence.",
+                  ],
+                  "evidence": [
+                      "Cite exact repository paths/routes/tests/commands and rendered observations used.",
+                      "Return UES_HANDOFF_V1 with verdict and each finding severity, exact location, reproduction/evidence, expected behavior, and minimum correction scope.",
+                      "If essential frozen visual/rendered evidence is inaccessible, identify only that unsupported dimension as MISSING_EVIDENCE/BLOCKED instead of fabricating a verdict.",
+                  ],
+                  "handoff": "Return canonical UES_HANDOFF_V1 to the RP04 Parent Controller and separate proven product findings from evidence limitations.",
+                  "stop_gate": "Stop only after the actual read-only page review and structured handoff are complete; perform no writes.",
+              }
+              contract_line = "PARENT_CONTROLLER_WORKSTREAM_CONTRACT_V1=" + json.dumps(contract, separators=(",", ":"), ensure_ascii=False)
+              access = f" Governed access note: {access_note}." if access_note else ""
+              prompt = (
+                  f"Perform the ACTUAL Independent Page Assurance for RP04-{surface} — {name}. READ_ONLY. "
+                  f"Exact reviewed candidate: {candidate}. Frozen visual baseline Drive file ID: {visual_id}. "
+                  "W08 technical evidence: Actions run 31533586574; artifact 9117922674; digest sha256:adc5b7e3acb9d78d9787e1d185cd5ae5c5b4d817cf993b7735f4280a340e96ea; Playwright 62/62; audit 0 vulnerabilities. "
+                  f"Compare the exact implementation and available rendered/test evidence against the governed page purpose and frozen direction.{access} "
+                  "Inspect hierarchy, visual consistency, responsive behavior, Arabic/RTL and LTR metadata, interactions/states, access boundaries, content realism, overflow, accessibility/usability signals, and truthful disabled/unavailable controls. "
+                  "Do not mutate anything. Do not infer unavailable evidence. If a governed visual/artifact cannot be accessed, continue every review dimension supported by repository evidence and mark only the unsupported dimension MISSING_EVIDENCE/BLOCKED.\n"
+                  + contract_line
+                  + "\nReturn canonical UES_HANDOFF_V1 with evidence-backed verdict/findings; findings must include severity, exact location, reproduction/evidence, expected behavior and minimum correction scope. Stop after handoff."
+              )
+              lineages[lineage] = {
+                  "reviewer": {
+                      "provider_starting_branch": "main",
+                      "exact_baseline": baseline,
+                      "replacement_prompt": prompt,
+                  }
+              }
+              authorized[f"{lineage}:REVIEWER"] = {
+                  "authorized": True,
+                  "replacement_cause": "STRUCTURED_HANDOFF_RECOVERY_REQUIRED",
+              }
+
+          # S11 is reconciliation-only in this wave: exact existing generation-1 identity,
+          # no new/replacement generation authorization.
+          lineages["RP04-IPA-S11-001"] = {
+              "reviewer": {
+                  "provider_starting_branch": "main",
+                  "exact_baseline": baseline,
+              }
+          }
+
+          authority = {
+              "source": "DRIVE_CURRENT_STATE",
+              "source_id": "1hLTUFh0aFZP_onYDYLNO-1rXn9EkQjmT",
+              "project": "RP04",
+              "route": "RP04",
+              "current": True,
+              "authority_event_id": os.environ["RP04_CURRENT_AUTHORITY_EVENT"],
+              "expires_at": "2026-08-28T17:00:00+03:00",
+              "task_budget": {
+                  "ceiling": 100,
+                  "reserve_target": 0,
+                  "reserve_is_hard": False,
+                  "unknown_quota_window_capacity": "DENY",
+                  "necessity_based_new_generation_authorized": True,
+              },
+              "lineages": lineages,
+              "generation_policy": {
+                  "necessary_generation_authorized": True,
+                  "generation_effect_authorized": True,
+                  "authorized_initial_lineages": {},
+                  "authorized_lineages": authorized,
+              },
+          }
+          payload = json.dumps(authority, separators=(",", ":"), ensure_ascii=False)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("UES_CURRENT_AUTHORITY_JSON<<RP04AUTH\n")
+              env.write(payload)
+              env.write("\nRP04AUTH\n")
+          with open("rp04-authority-r09.json", "w", encoding="utf-8") as out:
+              json.dump(authority, out, sort_keys=True, ensure_ascii=False)
+          PY
+
+      - name: Execute S11 reconciliation plus complete-contract Reviewer wave
+        id: execute
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_AUTHORITY_TRANSPORT_ACTOR: hamad933
+          UES_RP_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS: "3"
+        shell: bash
+        run: |
+          set +e
+          python -m ues.rp_authority_runtime RP04 2>&1 | tee rp04-reviewer-wave-r09.json
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Preserve authoritative wave receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rp04-reviewer-wave-r09-${{ github.run_id }}
+          path: |
+            rp04-authority-r09.json
+            rp04-reviewer-wave-r09.json
+            initial-lineage-result.json
+          if-no-files-found: warn
+          retention-days: 14
