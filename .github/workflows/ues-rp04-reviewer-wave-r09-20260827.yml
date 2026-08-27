@@ -88,7 +88,7 @@ jobs:
               prompt = (
                   f"Perform the ACTUAL Independent Page Assurance for RP04-{surface} — {name}. READ_ONLY. "
                   f"Exact reviewed candidate: {candidate}. Frozen visual baseline Drive file ID: {visual_id}. "
-                  "W08 technical evidence: Actions run 31533586574; artifact 9117922674; digest sha256:adc5b7e3acb9d78d9787e1d185cd5ae5c4d817cf993b7735f4280a340e96ea; Playwright 62/62; audit 0 vulnerabilities. "
+                  "W08 technical evidence: Actions run 31533586574; artifact 9117922674; digest sha256:adc5b7e3acb9d78d9787e1d185cd5ae5c5b4d817cf993b7735f4280a340e96ea; Playwright 62/62; audit 0 vulnerabilities. "
                   f"Compare the exact implementation and available rendered/test evidence against the governed page purpose and frozen direction.{access} "
                   "Inspect hierarchy, visual consistency, responsive behavior, Arabic/RTL and LTR metadata, interactions/states, access boundaries, content realism, overflow, accessibility/usability signals, and truthful disabled/unavailable controls. "
                   "Do not mutate anything. Do not infer unavailable evidence. If a governed visual/artifact cannot be accessed, continue every review dimension supported by repository evidence and mark only the unsupported dimension MISSING_EVIDENCE/BLOCKED.\n"
