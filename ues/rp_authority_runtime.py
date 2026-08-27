@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import lifecycle_runtime as legacy
 from . import lifecycle_runtime_observed as observed
@@ -20,6 +20,9 @@ from .stale_initial_lineage_reconciliation import reconcile_project_stale_initia
 
 _PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list", "jules.sessions.get"})
 _PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
+_PRE_EFFECT_PROVIDER_READ_ERROR_CATEGORIES = frozenset(
+    error.category for error in _PRE_EFFECT_PROVIDER_READ_ERRORS
+)
 _PROVIDER_READ_UNAVAILABLE_RESULT = "PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
 _PROVIDER_READ_UNAVAILABLE_EXIT = 75
 _DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS = 2
@@ -43,6 +46,25 @@ def _is_pre_effect_provider_read_failure(exc: BaseException) -> bool:
     return isinstance(exc, _PRE_EFFECT_PROVIDER_READ_ERRORS) and str(
         getattr(exc, "operation", "") or ""
     ) in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
+
+
+def _is_pre_effect_provider_read_result(result: Mapping[str, Any]) -> bool:
+    """Return whether an observed-runtime result proves the same safe retry boundary.
+
+    ``lifecycle_runtime_observed`` intentionally converts transient provider-read
+    exceptions into an explicit zero-effect result. The outer RP snapshot retry must
+    therefore recognize that structured result as equivalent to the exception path;
+    otherwise its configured retry limit is never exercised.
+    """
+
+    return (
+        str(result.get("result") or "") == _PROVIDER_READ_UNAVAILABLE_RESULT
+        and str(result.get("provider_read_operation") or "") in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
+        and str(result.get("provider_read_error_category") or "") in _PRE_EFFECT_PROVIDER_READ_ERROR_CATEGORIES
+        and result.get("provider_write_attempted") is False
+        and result.get("external_effects_dispatched") == 0
+        and result.get("new_tasks_or_sessions_created") == 0
+    )
 
 
 def _provider_inventory_snapshot_attempts() -> int:
@@ -158,7 +180,6 @@ def run(project: str) -> dict[str, Any]:
                 attempt += 1
                 try:
                     result = dict(observed.run(project_name))
-                    break
                 except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
                     if not _is_pre_effect_provider_read_failure(exc):
                         raise
@@ -170,6 +191,10 @@ def run(project: str) -> dict[str, Any]:
                         exc=exc,
                     )
                     break
+
+                if _is_pre_effect_provider_read_result(result) and attempt < attempt_limit:
+                    continue
+                break
         finally:
             legacy._load_adapter = original_loader
         result["provider_inventory_snapshot_attempts"] = attempt
