@@ -6,17 +6,24 @@ from unittest.mock import patch
 
 from ues import exact_terminal_finding_readback as target
 from ues.identity import canonical_lane_id
+from ues.terminal_results import logical_lineage_key
 
 
 class _Store:
-    def __init__(self, evidence):
+    def __init__(self, evidence, *, success_role="ASSURANCE"):
         self.evidence = evidence
+        self.success_role = success_role
         self.read_count = 0
-        self.last_lane_id = None
+        self.lane_ids = []
 
     def read_workstream(self, lane_id):
         self.read_count += 1
-        self.last_lane_id = lane_id
+        self.lane_ids.append(lane_id)
+        expected = canonical_lane_id(
+            "RP03", "RP03", logical_lineage_key("RP03-IPA-S02-EVIDENCE-SUPPLEMENT", self.success_role)
+        )
+        if lane_id != expected:
+            return SimpleNamespace(status="MISSING", record=None)
         record = SimpleNamespace(project="RP03", route="RP03", evidence_bindings=self.evidence)
         return SimpleNamespace(status="OK", record=record)
 
@@ -53,7 +60,7 @@ class ExactTerminalFindingReadbackTests(unittest.TestCase):
             ],
         }
 
-    def test_reads_only_canonical_lane_and_projects_allowlisted_findings(self) -> None:
+    def test_reads_only_bounded_canonical_role_lanes_and_projects_allowlisted_findings(self) -> None:
         stored = self._stored()
         evidence = {
             "role": "ASSURANCE",
@@ -67,11 +74,18 @@ class ExactTerminalFindingReadbackTests(unittest.TestCase):
         with patch.object(target.recovery, "load_governed_projects", return_value=({"project": "RP03", "route": "RP03", "repository": "hamad933/BOOKING-SERVICES"},)):
             result = target.run("RP03", "RP03-IPA-S02-EVIDENCE-SUPPLEMENT", store=store)
 
-        self.assertEqual(store.read_count, 1)
-        self.assertEqual(store.last_lane_id, canonical_lane_id("RP03", "RP03", "RP03-IPA-S02-EVIDENCE-SUPPLEMENT"))
+        self.assertEqual(store.read_count, 3)
+        self.assertEqual(
+            store.lane_ids,
+            [
+                canonical_lane_id("RP03", "RP03", logical_lineage_key("RP03-IPA-S02-EVIDENCE-SUPPLEMENT", role))
+                for role in target._ALLOWED_ROLES
+            ],
+        )
         self.assertEqual(result["match_count"], 1)
         self.assertTrue(result["durable_lane_direct_read"])
         self.assertTrue(result["canonical_lane_identity_used"])
+        self.assertEqual(result["bounded_role_lane_reads"], 3)
         self.assertFalse(result["lane_discovery_performed"])
         self.assertFalse(result["project_wide_lifecycle_scan_performed"])
         finding = result["results"][0]["findings"][0]
