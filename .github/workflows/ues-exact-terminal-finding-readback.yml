@@ -60,7 +60,9 @@ jobs:
     timeout-minutes: 20
     concurrency:
       group: ues-exact-terminal-finding-${{ needs.authorize.outputs.project }}-${{ needs.authorize.outputs.workstream }}
-      cancel-in-progress: false
+      # This workflow is strictly GET-only against durable state. A newer exact read
+      # supersedes an older stuck read for the same workstream and may cancel it safely.
+      cancel-in-progress: true
     steps:
       - name: Checkout governed default branch
         uses: actions/checkout@v4
