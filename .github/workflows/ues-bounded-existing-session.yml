@@ -43,7 +43,7 @@ jobs:
       group: ues-provider-observer-fallback
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Checkout governed UES runtime
         uses: actions/checkout@v4
