@@ -20,6 +20,53 @@ def _parse_time(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _latest_confirmed_lineage_effect_at(
+    store: Any,
+    *,
+    project: str,
+    route: str,
+) -> datetime | None:
+    """Return the newest exact lineage-generation provider readback timestamp.
+
+    A provider inventory snapshot that started before a confirmed physical generation
+    can be young by wall-clock age while still being logically stale. Only durable,
+    exact CONFIRMED lineage operation receipts participate here; titles, labels and
+    provider heuristics never do.
+    """
+
+    discover = getattr(store, "discover_lane_ids", None)
+    if not callable(discover):
+        return None
+    latest: datetime | None = None
+    for lane_id in discover():
+        read = store.read_workstream(lane_id)
+        if read.status != "OK" or read.record is None:
+            continue
+        record = read.record
+        if record.project != project or record.route != route:
+            continue
+        if not str(record.workstream_id or "").startswith("LINEAGE::"):
+            continue
+        receipt = record.operation_receipt if isinstance(record.operation_receipt, Mapping) else {}
+        if str(receipt.get("state") or "").upper() != "CONFIRMED":
+            continue
+        if int(receipt.get("generation") or 0) <= 0:
+            continue
+        post = receipt.get("post_condition") if isinstance(receipt.get("post_condition"), Mapping) else {}
+        if post.get("observed") is not True:
+            continue
+        read_at = str(post.get("read_at") or "").strip()
+        if not read_at:
+            continue
+        try:
+            timestamp = _parse_time(read_at)
+        except (TypeError, ValueError):
+            continue
+        if latest is None or timestamp > latest:
+            latest = timestamp
+    return latest
+
+
 def observation_backed_no_effect_eligible(
     adapter: Mapping[str, Any],
     authority: Mapping[str, Any] | None,
@@ -86,12 +133,12 @@ def run_observation_backed_no_effect_health(
     stale_seconds: int = DEFAULT_STALE_SECONDS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Expose Parent-consumable terminal results even if aggregate observation is unavailable.
+    """Expose Parent-consumable terminal results without trusting raced inventory.
 
     Durable terminal results live on exact lineage records. The aggregate provider
-    observation remains useful inventory/freshness evidence, but a failed observer
-    publication can no longer erase already-read completed work or force results=[]
-    for an independently persisted exact result.
+    observation remains useful inventory/freshness evidence, but it is eligible for
+    result materialization only when it is both age-fresh and newer than every exact
+    confirmed lineage-generation effect already present in StateStore.
     """
 
     if not observation_backed_no_effect_eligible(adapter, authority):
@@ -112,6 +159,11 @@ def run_observation_backed_no_effect_health(
         route=route,
         repository=repository,
     )
+    latest_lineage_effect_at = _latest_confirmed_lineage_effect_at(
+        store,
+        project=project,
+        route=route,
+    )
 
     observation_lane = canonical_lane_id(project, route, OBSERVATION_WORKSTREAM)
     read = store.read_workstream(observation_lane)
@@ -121,6 +173,7 @@ def run_observation_backed_no_effect_health(
     provider_observation_reason: str | None = None
     provider_observation_version: int | None = None
     provider_observation_age_seconds: float | None = None
+    provider_observation_at: datetime | None = None
     session_count: int | None = None
 
     if read.status == "OK" and read.record is not None:
@@ -138,16 +191,23 @@ def run_observation_backed_no_effect_health(
             provider_observation_version = read.version
             observed_at = str(provider_state.get("observed_at") or "").strip()
             try:
+                provider_observation_at = _parse_time(observed_at)
                 provider_observation_age_seconds = max(
                     0.0,
                     (
                         (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-                        - _parse_time(observed_at)
+                        - provider_observation_at
                     ).total_seconds(),
                 )
                 provider_observation_fresh = provider_observation_age_seconds <= stale_seconds
                 if not provider_observation_fresh:
                     provider_observation_reason = "PROVIDER_OBSERVATION_STALE"
+                elif (
+                    latest_lineage_effect_at is not None
+                    and provider_observation_at < latest_lineage_effect_at
+                ):
+                    provider_observation_fresh = False
+                    provider_observation_reason = "PROVIDER_OBSERVATION_PREDATES_LATEST_LINEAGE_EFFECT"
             except (TypeError, ValueError):
                 provider_observation_reason = "PROVIDER_OBSERVATION_TIMESTAMP_INVALID"
             raw_session_count = provider_state.get("session_count")
@@ -156,7 +216,7 @@ def run_observation_backed_no_effect_health(
             else:
                 provider_observation_reason = provider_observation_reason or "PROVIDER_OBSERVATION_SESSION_COUNT_INVALID"
             raw_results = provider_state.get("results")
-            if isinstance(raw_results, list):
+            if provider_observation_fresh and isinstance(raw_results, list):
                 provider_results = [dict(item) for item in raw_results if isinstance(item, Mapping)]
     else:
         provider_observation_reason = read.reason or f"PROVIDER_OBSERVATION_{read.status}"
@@ -180,12 +240,14 @@ def run_observation_backed_no_effect_health(
     runtime_binding = observed.runtime_binding_from_env()
     persist = observed._persist_health_with_runtime_binding(legacy._persist_health, runtime_binding)
     event_id = str((authority or {}).get("authority_event_id") or "").strip() or None
-    if provider_observation_available and persisted_results:
+    if provider_observation_fresh and persisted_results:
         inventory_source = "STATESTORE_PROVIDER_OBSERVATION_PLUS_DURABLE_LINEAGE_RESULTS"
     elif persisted_results:
         inventory_source = "STATESTORE_DURABLE_LINEAGE_RESULTS_ONLY"
-    else:
+    elif provider_observation_fresh:
         inventory_source = "STATESTORE_PROVIDER_OBSERVATION"
+    else:
+        inventory_source = "STATESTORE_PROVIDER_OBSERVATION_REJECTED_AS_STALE_RELATIVE_TO_LINEAGE"
     summary = {
         "project": project,
         "runtime": "V2_OBSERVATION_BACKED_NO_EFFECT",
@@ -197,6 +259,16 @@ def run_observation_backed_no_effect_health(
         "provider_observation_reason": provider_observation_reason,
         "provider_observation_version": provider_observation_version,
         "provider_observation_age_seconds": provider_observation_age_seconds,
+        "provider_observation_observed_at": (
+            provider_observation_at.isoformat().replace("+00:00", "Z")
+            if provider_observation_at is not None
+            else None
+        ),
+        "latest_confirmed_lineage_effect_at": (
+            latest_lineage_effect_at.isoformat().replace("+00:00", "Z")
+            if latest_lineage_effect_at is not None
+            else None
+        ),
         "provider_live_read_performed": False,
         "binding_counts": dict(sorted(state_counts.items())),
         "terminal_result_count": len(results),
