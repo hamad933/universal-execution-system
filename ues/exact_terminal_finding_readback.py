@@ -5,7 +5,9 @@ import json
 import re
 from typing import Any, Mapping
 
-from . import terminal_lifecycle
+from . import terminal_recovery as recovery
+from . import terminal_results
+from .live_runtime import build_live_state_store
 
 _ALLOWED_PROJECTS = frozenset({"RP01", "RP02", "RP03", "RP04"})
 _WORKSTREAM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -66,7 +68,6 @@ def _project_result(raw: Mapping[str, Any]) -> dict[str, Any]:
             "result_state",
             "freshness_status",
             "result_fingerprint",
-            "current_view_fingerprint",
             "parent_action_required",
             "safe_read_only_recovery_exists",
         )
@@ -76,7 +77,49 @@ def _project_result(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def run(project: str, workstream: str) -> dict[str, Any]:
+def _exact_persisted_result(store: Any, *, project: str, route: str, workstream: str) -> dict[str, Any] | None:
+    index = terminal_results.lineage_index(store, project=project, route=route)
+    lineages: list[dict[str, Any]] = []
+    for matches in index.values():
+        lineages.extend(dict(item) for item in matches if str(item.get("workstream") or "") == workstream)
+    if len(lineages) != 1:
+        return None
+
+    lane_id = str(lineages[0].get("lane_id") or "").strip()
+    if not lane_id:
+        return None
+    read = store.read_workstream(lane_id)
+    if read.status != "OK" or read.record is None:
+        return None
+    evidence = read.record.evidence_bindings or {}
+    stored = evidence.get(recovery.TERMINAL_RESULT_KEY)
+    if not isinstance(stored, Mapping):
+        return None
+
+    exact = (
+        str(stored.get("logical_workstream") or "") == workstream
+        and str(stored.get("role") or "").upper() == str(evidence.get("role") or "").upper()
+        and int(stored.get("generation") or 0) == int(evidence.get("generation") or 0)
+        and str(stored.get("session_fingerprint") or "").lower()
+        == str(evidence.get("session_fingerprint") or "").lower()
+    )
+    if not exact:
+        return None
+
+    current_sha = str(evidence.get("current_candidate_sha") or "").lower()
+    role = str(stored.get("role") or "").upper()
+    if role in {"REVIEWER", "ASSURANCE"} and current_sha:
+        if str(stored.get("reviewed_sha") or "").lower() != current_sha:
+            return None
+    elif role == "WRITER" and current_sha:
+        candidate = str(stored.get("candidate_sha") or "").lower()
+        if candidate and candidate != current_sha:
+            return None
+
+    return dict(stored)
+
+
+def run(project: str, workstream: str, *, store: Any | None = None) -> dict[str, Any]:
     project_id = str(project or "").strip().upper()
     target = str(workstream or "").strip()
     if project_id not in _ALLOWED_PROJECTS:
@@ -84,18 +127,21 @@ def run(project: str, workstream: str) -> dict[str, Any]:
     if not _WORKSTREAM.fullmatch(target):
         raise ValueError("exact terminal finding readback workstream is invalid")
 
-    lifecycle = terminal_lifecycle.run(project_id)
-    matches = [
-        item
-        for item in lifecycle.get("results") or []
-        if isinstance(item, Mapping) and str(item.get("logical_workstream") or "") == target
-    ]
+    projects = recovery.load_governed_projects([project_id])
+    if len(projects) != 1:
+        raise ValueError("exact terminal finding readback requires one governed project adapter")
+    route = str(projects[0]["route"])
+    live_store = store or build_live_state_store()
+    result = _exact_persisted_result(live_store, project=project_id, route=route, workstream=target)
+    matches = [result] if isinstance(result, Mapping) else []
     return {
-        "schema_version": "UES_EXACT_TERMINAL_FINDING_READBACK_V1",
+        "schema_version": "UES_EXACT_TERMINAL_FINDING_READBACK_V2",
         "project": project_id,
         "workstream": target,
         "match_count": len(matches),
         "results": [_project_result(item) for item in matches],
+        "durable_lane_direct_read": True,
+        "project_wide_lifecycle_scan_performed": False,
         "provider_live_read_performed": False,
         "provider_mutation_performed": False,
         "external_effects_dispatched": 0,
