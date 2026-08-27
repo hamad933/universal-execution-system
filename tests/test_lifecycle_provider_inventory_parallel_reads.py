@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
-
-import pytest
+import unittest
+from unittest.mock import patch
 
 from ues.lifecycle_runtime import _provider_inventory, _provider_inventory_read_workers
 
@@ -16,12 +17,17 @@ class FakeLifecycleClient:
         self.max_active = 0
 
     def list_sources(self, *, page_size: int = 100):
-        assert page_size == 100
+        self.assert_page_size(page_size)
         return [{"name": "sources/example", "repository": "hamad933/example"}]
 
     def list_sessions(self, *, page_size: int = 100):
-        assert page_size == 100
+        self.assert_page_size(page_size)
         return [{"name": f"sessions/{index}"} for index in range(6)]
+
+    @staticmethod
+    def assert_page_size(page_size: int) -> None:
+        if page_size != 100:
+            raise AssertionError(f"unexpected page_size={page_size}")
 
     def get_session(self, name: str):
         with self._lock:
@@ -40,31 +46,32 @@ class FakeLifecycleClient:
         raise AssertionError(f"source {name} should have come from list_sources cache")
 
 
-def test_provider_inventory_worker_count_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS", raising=False)
-    assert _provider_inventory_read_workers() == 8
-    monkeypatch.setenv("UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS", "99")
-    assert _provider_inventory_read_workers() == 8
-    monkeypatch.setenv("UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS", "1")
-    assert _provider_inventory_read_workers() == 1
-    monkeypatch.setenv("UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS", "not-an-int")
-    assert _provider_inventory_read_workers() == 8
+class ProviderInventoryParallelReadTests(unittest.TestCase):
+    def test_provider_inventory_worker_count_is_bounded(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_provider_inventory_read_workers(), 8)
+        with patch.dict(os.environ, {"UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS": "99"}, clear=False):
+            self.assertEqual(_provider_inventory_read_workers(), 8)
+        with patch.dict(os.environ, {"UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS": "1"}, clear=False):
+            self.assertEqual(_provider_inventory_read_workers(), 1)
+        with patch.dict(os.environ, {"UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS": "not-an-int"}, clear=False):
+            self.assertEqual(_provider_inventory_read_workers(), 8)
+
+    def test_provider_inventory_hydrates_sessions_in_parallel_and_preserves_order(self) -> None:
+        client = FakeLifecycleClient()
+        with patch.dict(os.environ, {"UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS": "4"}, clear=False):
+            inventory = _provider_inventory(client)
+
+        self.assertGreaterEqual(client.max_active, 2)
+        self.assertEqual([item["name"] for item in inventory], [f"sessions/{index}" for index in range(6)])
+        self.assertTrue(all(item["_source_repository"] == "hamad933/example" for item in inventory))
+
+    def test_provider_inventory_fails_closed_on_hydration_error(self) -> None:
+        client = FakeLifecycleClient(fail_name="sessions/3")
+        with patch.dict(os.environ, {"UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS": "4"}, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "synthetic GET failure"):
+                _provider_inventory(client)
 
 
-def test_provider_inventory_hydrates_sessions_in_parallel_and_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS", "4")
-    client = FakeLifecycleClient()
-
-    inventory = _provider_inventory(client)
-
-    assert client.max_active >= 2
-    assert [item["name"] for item in inventory] == [f"sessions/{index}" for index in range(6)]
-    assert all(item["_source_repository"] == "hamad933/example" for item in inventory)
-
-
-def test_provider_inventory_fails_closed_on_hydration_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS", "4")
-    client = FakeLifecycleClient(fail_name="sessions/3")
-
-    with pytest.raises(RuntimeError, match="synthetic GET failure"):
-        _provider_inventory(client)
+if __name__ == "__main__":
+    unittest.main()
