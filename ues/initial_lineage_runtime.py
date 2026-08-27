@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from . import lifecycle_runtime as legacy
 from .current_authority import load_current_authority_json
 from .generation_transition import initial_lineage_transition_key
+from .evidence_supplement_runtime import evidence_supplement_entries, run_evidence_supplements
 from .initial_lineage_effects import execute_initial_lineage_generation
 from .initial_lineage_reconciliation import reconcile_unknown_initial_lineage
 from .jules_lifecycle import JulesLifecycleClient
@@ -353,7 +354,8 @@ def run(project: str) -> dict[str, Any]:
         }
 
     entries = _authority_entries(authority)
-    if not entries:
+    supplement_entries = evidence_supplement_entries(authority)
+    if not entries and not supplement_entries:
         return {
             "schema_version": SCHEMA_VERSION,
             "project": project_id,
@@ -384,7 +386,7 @@ def run(project: str) -> dict[str, Any]:
             authority=authority,
             exc=exc,
         )
-    source_name, source_proven = _source_for_repository(jules, repository)
+    source_name, source_proven = _source_for_repository(jules, repository) if entries else (None, False)
     # Jules currently meters tasks in a rolling 24-hour window. Historical
     # sessions stay in inventory for reconciliation/marker matching but are not
     # charged against the current capacity gate.
@@ -562,6 +564,21 @@ def run(project: str) -> dict[str, Any]:
                 "current_policy": effective,
                 "effect": effect,
             }
+        )
+
+    if supplement_entries:
+        results.extend(
+            run_evidence_supplements(
+                adapter=adapter,
+                authority=authority,
+                entries=supplement_entries,
+                store=store,
+                jules=jules,
+                github=github,
+                inventory=inventory,
+                provider_observation=provider_observation,
+                actor=actor,
+            )
         )
 
     decisions = Counter(
