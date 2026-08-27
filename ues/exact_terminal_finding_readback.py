@@ -6,7 +6,7 @@ import re
 from typing import Any, Mapping
 
 from . import terminal_recovery as recovery
-from . import terminal_results
+from .identity import canonical_lane_id
 from .live_runtime import build_live_state_store
 
 _ALLOWED_PROJECTS = frozenset({"RP01", "RP02", "RP03", "RP04"})
@@ -78,20 +78,16 @@ def _project_result(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _exact_persisted_result(store: Any, *, project: str, route: str, workstream: str) -> dict[str, Any] | None:
-    index = terminal_results.lineage_index(store, project=project, route=route)
-    lineages: list[dict[str, Any]] = []
-    for matches in index.values():
-        lineages.extend(dict(item) for item in matches if str(item.get("workstream") or "") == workstream)
-    if len(lineages) != 1:
-        return None
-
-    lane_id = str(lineages[0].get("lane_id") or "").strip()
-    if not lane_id:
-        return None
+    lane_id = canonical_lane_id(project, route, workstream)
     read = store.read_workstream(lane_id)
     if read.status != "OK" or read.record is None:
         return None
-    evidence = read.record.evidence_bindings or {}
+    record = read.record
+    if str(record.project or "") != project or str(record.route or "") != route:
+        return None
+    evidence = record.evidence_bindings or {}
+    if str(evidence.get("workstream") or workstream) != workstream:
+        return None
     stored = evidence.get(recovery.TERMINAL_RESULT_KEY)
     if not isinstance(stored, Mapping):
         return None
@@ -135,12 +131,14 @@ def run(project: str, workstream: str, *, store: Any | None = None) -> dict[str,
     result = _exact_persisted_result(live_store, project=project_id, route=route, workstream=target)
     matches = [result] if isinstance(result, Mapping) else []
     return {
-        "schema_version": "UES_EXACT_TERMINAL_FINDING_READBACK_V2",
+        "schema_version": "UES_EXACT_TERMINAL_FINDING_READBACK_V3",
         "project": project_id,
         "workstream": target,
         "match_count": len(matches),
         "results": [_project_result(item) for item in matches],
         "durable_lane_direct_read": True,
+        "canonical_lane_identity_used": True,
+        "lane_discovery_performed": False,
         "project_wide_lifecycle_scan_performed": False,
         "provider_live_read_performed": False,
         "provider_mutation_performed": False,
