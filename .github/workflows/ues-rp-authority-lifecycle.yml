@@ -69,6 +69,14 @@ jobs:
             exit 2
           fi
 
+      - name: Enforce durable evidence transport byte attestation before RP lifecycle effects
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_CURRENT_AUTHORITY_JSON: ${{ github.event_name == 'repository_dispatch' && toJSON(github.event.client_payload.current_authority) || inputs.current_authority_json || '' }}
+        run: python -m ues.evidence_transport_attestation_gate
+
       - name: Run RP shared current-authority lifecycle
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -84,14 +92,6 @@ jobs:
           UES_WAKEUP_WORKSTREAM: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.workstream || '' }}
           UES_WAKEUP_SHA: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || '' }}
         run: python -m ues.rp_authority_runtime ${{ matrix.project }}
-
-      - name: Enforce durable evidence transport byte attestation before provider effects
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
-          UES_STATE_REF_PREFIX: ues-runtime/v2
-          UES_CURRENT_AUTHORITY_JSON: ${{ github.event_name == 'repository_dispatch' && toJSON(github.event.client_payload.current_authority) || inputs.current_authority_json || '' }}
-        run: python -m ues.evidence_transport_attestation_gate
 
       - name: Run guarded initial logical lineage creation/reconciliation
         env:
