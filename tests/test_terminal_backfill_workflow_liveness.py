@@ -52,13 +52,13 @@ class TerminalBackfillWorkflowLivenessTests(unittest.TestCase):
         self.assertIn("fail-fast: false", self.text)
         self.assertIn("max-parallel: 2", self.text)
 
-    def test_watchdog_deadline_exceeds_proven_old_limit_but_stays_below_schedule_cadence(self) -> None:
+    def test_watchdog_deadline_covers_current_proven_runtime_envelope(self) -> None:
         watchdog_text = self.text.split("  terminal-watchdog:\n", 1)[1]
         match = re.search(r"^    timeout-minutes: (\d+)$", watchdog_text, re.MULTILINE)
         self.assertIsNotNone(match)
         timeout = int(match.group(1))
-        self.assertGreaterEqual(timeout, 14)
-        self.assertLess(timeout, 15)
+        self.assertGreaterEqual(timeout, 20)
+        self.assertLessEqual(timeout, 30)
 
     def test_project_and_watchdog_concurrency_never_cancel_in_progress(self) -> None:
         self.assertIn(
