@@ -110,11 +110,21 @@ def validate_attestation_record(lane: Mapping[str, Any], record: Any) -> dict[st
 
 
 def enforce_authority_attestations(authority: Mapping[str, Any], store: Any) -> dict[str, Any]:
+    entries = _supplement_entries(authority)
+    if not any(isinstance(lane, Mapping) and lane.get("authorized") is True for lane in entries.values()):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "result": "EVIDENCE_TRANSPORT_ATTESTATION_GATE_NOT_REQUIRED",
+            "supplement_lanes_checked": 0,
+            "attestations": [],
+            "provider_mutation": False,
+        }
+
     checked: list[dict[str, Any]] = []
     accepted = _accepted_attestations(authority)
     authority_event_id = _required_text(authority.get("authority_event_id"), "authority_event_id")
     source_id = _required_text(authority.get("source_id"), "source_id")
-    for raw_key, raw_lane in sorted(_supplement_entries(authority).items(), key=lambda item: str(item[0])):
+    for raw_key, raw_lane in sorted(entries.items(), key=lambda item: str(item[0])):
         if not isinstance(raw_lane, Mapping) or raw_lane.get("authorized") is not True:
             continue
         key = attestation_operation_key(raw_lane)
