@@ -209,10 +209,11 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    # Keep the watchdog bounded below the 15-minute schedule cadence while
-    # allowing the current ~102-lane StateStore scan to finish instead of being
-    # killed by the former 10-minute job deadline after successful backfills.
-    timeout-minutes: 14
+    # The current StateStore scan has now directly exceeded the 14-minute envelope.
+    # Keep a bounded 20-minute watchdog deadline and rely on this watchdog's
+    # non-cancelling concurrency group to serialize overlapping scheduled audits
+    # without replaying or cancelling already completed project backfill cells.
+    timeout-minutes: 20
     concurrency:
       group: ues-terminal-result-watchdog
       cancel-in-progress: false
