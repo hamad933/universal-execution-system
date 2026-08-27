@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 from typing import Any, Callable, Mapping
 
 from . import lifecycle_runtime as legacy
@@ -29,26 +30,73 @@ def _bounded_env_text(env: Mapping[str, str], key: str, *, limit: int = 512) -> 
     return value
 
 
+def _checked_out_runtime_sha() -> str | None:
+    """Return the exact checked-out Git HEAD when it can be proven locally."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = completed.stdout.strip()
+    if not _SHA.fullmatch(sha):
+        return None
+    return sha.lower()
+
+
 def runtime_binding_from_env(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Return sanitized execution telemetry; it never grants mutation authority."""
 
     source = os.environ if env is None else env
     repository = _bounded_env_text(source, "GITHUB_REPOSITORY", limit=200)
-    sha = _bounded_env_text(source, "GITHUB_SHA", limit=40)
+    trigger_sha = _bounded_env_text(source, "GITHUB_SHA", limit=40)
     github_actions = str(source.get("GITHUB_ACTIONS") or "").strip().lower() == "true"
 
-    if not github_actions or repository is None or sha is None or not _REPOSITORY.fullmatch(repository) or not _SHA.fullmatch(sha):
+    if (
+        not github_actions
+        or repository is None
+        or trigger_sha is None
+        or not _REPOSITORY.fullmatch(repository)
+        or not _SHA.fullmatch(trigger_sha)
+    ):
         return {
             "status": "UNBOUND",
             "source": "GITHUB_ACTIONS_RUNTIME_ENV",
             "telemetry_grants_no_authority": True,
         }
 
+    explicit_exact_present = "UES_EXACT_RUNTIME_SHA" in source
+    exact_runtime_sha = _bounded_env_text(source, "UES_EXACT_RUNTIME_SHA", limit=40)
+    binding_source = "GITHUB_ACTIONS_TRIGGER_ENV"
+    runtime_sha = trigger_sha.lower()
+
+    if explicit_exact_present:
+        if exact_runtime_sha is None or not _SHA.fullmatch(exact_runtime_sha):
+            return {
+                "status": "UNBOUND",
+                "source": "UES_EXACT_RUNTIME_ENV",
+                "trigger_sha": trigger_sha.lower(),
+                "telemetry_grants_no_authority": True,
+            }
+        runtime_sha = exact_runtime_sha.lower()
+        binding_source = "UES_EXACT_RUNTIME_ENV"
+    elif env is None:
+        checked_out_sha = _checked_out_runtime_sha()
+        if checked_out_sha is not None:
+            runtime_sha = checked_out_sha
+            binding_source = "CHECKED_OUT_GIT_HEAD"
+
     result: dict[str, Any] = {
         "status": "BOUND",
         "repository": repository,
-        "sha": sha.lower(),
-        "source": "GITHUB_ACTIONS_RUNTIME_ENV",
+        "sha": runtime_sha,
+        "trigger_sha": trigger_sha.lower(),
+        "source": binding_source,
         "telemetry_grants_no_authority": True,
     }
     for env_key, output_key, limit in (
