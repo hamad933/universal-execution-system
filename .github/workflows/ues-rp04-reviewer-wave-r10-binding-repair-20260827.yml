@@ -1,0 +1,173 @@
+name: UES RP04 Reviewer Wave R10 Binding Repair 20260827
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ues-rp04-reviewer-wave-r10-binding-repair-20260827.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ues-project-lifecycle-RP04
+  cancel-in-progress: false
+
+jobs:
+  repair-and-continue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Repair exact R07 generation-3 durable bindings
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from ues.live_runtime import build_live_state_store
+          from ues.lineage_registry import lineage_lane_id
+          from ues.state_store import WorkstreamRuntimeRecord
+
+          repo = "hamad933/Real-Estate-Assets-Control-"
+          bindings = {
+            "RP04-IPA-S01-001": ("ae1b45db697ce548ddb3999fe493590fddb07da3825debae51d621cf07f7ad4d", "4066b12a7583b0645a92cd62740d496454a6d00cf173459ed5f5921d41213922", "ues-v2:create-session-generation:2fd3805c0a1349b8e2e84ccf232630d139b69480a50ac8ac1131de7a8d5bba85"),
+            "RP04-IPA-S02-001": ("4f22414b25df746e5ca24c42a1662fd965b55cd785928d188fb25c7bde799a6b", "234e4325cd93e667976531be293907f1f25d2cbb1dda8a645669023c37243cbf", "ues-v2:create-session-generation:cc5ef246e6144e369339f20ecd74d7c847c8e5bcd9ff39300a227d60a6a1aeff"),
+            "RP04-IPA-S03-001": ("12c136b9f03b8d2505f00091cab3e943dac8c261dbc43b55c40ecce085fbc44c", "e33d4122272048ac5de54a27f07bdef3aefcf7bc07d3bdb89235860517d3f506", "ues-v2:create-session-generation:4eb2d21fe06c664879f779fdda8c7c105cafa9296682b0cebd913fd07a57a196"),
+            "RP04-IPA-S04-001": ("f230b904a27eb1dfba8562d14c8677b8651228963de2045ade1a7c54fdfa8936", "c67561cf2f1e531f2de0a3ffea7703a70ac516e376d78c5cc0fc7499b1145a45", "ues-v2:create-session-generation:7f5489129ff8a8b98c7c546e735d5ef46f8a38ee9e77af3443b8bc14f858cf66"),
+            "RP04-IPA-S05-001": ("d72ea1435d49e249b9e1553df45dd3cd8391b67e6653da12c960b56a064ec794", "6853bd3ac889a345750ca6d933213e109ca50f48fa8b1caaf653e6f45a998db9", "ues-v2:create-session-generation:bf97dc496fdd4087af6b6d4fc132249991d2bd6a75c451f972e6b53c4140fb09"),
+            "RP04-IPA-S06-001": ("8cbbd1b82c3c9441cdd9cbb6881ce302306cd7d695cce501c0ef30ac5d130202", "0fe064103cc1c6c77a8705cb6966f4cde7c2c991506e870147699fe7bb1cbec5", "ues-v2:create-session-generation:777fb209fe8afb3a48d7e2371f05bce8cc655e23d8415ce56f1df4d94a5a5e31"),
+            "RP04-IPA-S07-001": ("06028d27b37a071c06f6286d11ad6a4ad34b002322ce4687518c5010505ec1c3", "517594630b3369f08f53621f7b39357048e6e08d217bf0aa48d497058916af27", "ues-v2:create-session-generation:3016d7bb5f80223f24c57c7b725f923b570725fcef1c72f7226e5eededd3b3ed"),
+            "RP04-IPA-S08-001": ("f9d18f86234d64b81c998421cd33bed7c55a7cf7d3b09bc129c3a601c252d80e", "e47e5fbef7cdbb71c16f57c2612d569447cfe487401d83199ca5f74145a22979", "ues-v2:create-session-generation:5ebeedd8d228b2744e1aa854197845dcd4340bd1ee506a5c22123abf202a0670"),
+            "RP04-IPA-S09-001": ("da5c68e185e913d25e24a796504c796fc7906556aa660516ddbe7e34bf386c94", "46fd677ea188b269a0ed384dc9b1c7d80d7ae2a38a96bfa604ff587eee14bbdf", "ues-v2:create-session-generation:a3a76d998fb8932ca8a2704b24a06c2403851e910db28d146ac9b139adcb4498"),
+            "RP04-IPA-S10-001": ("62ed58af85570c5a80e3d359a757a1572410e2abbf59edced59f47eba6722639", "e9e4c2b1e2d755ae12a9980a9f08433d0f1916233ebb142da561821d97f87478", "ues-v2:create-session-generation:f4ad92374c8f9215cbcd5418a0d2b1fb532b1e983451b44022b3f9dad46b5a31"),
+            "RP04-IPA-S12-001": ("f2192362c7811f58132c22f9d3d027407f1b36b093926d8bc16376e1de6f59d9", "ec5ec8741da5a91732ce3d73bd21592bc17c449de8bb7a02190f80a5ccb22093", "ues-v2:create-session-generation:ee409d6e6cfe725258a775e8bea5275481561576702f3375780d210b42794f98"),
+            "RP04-IPA-S13-001": ("027514ca7042edd4f9e454507a4a60653e5db3c441b693d5f9b121f4db41ecc0", "16b15d61d71b7fe63d3d8213d7f3de9126ae446cf7923c94751c48bb2c92f33f", "ues-v2:create-session-generation:fe758f896c4e3c9d656082e2f898d9dbad7e3ebadd731c53ef8f34b679442de1"),
+          }
+          store = build_live_state_store()
+          out = []
+          for workstream, (fp, transition, operation) in bindings.items():
+              lane = lineage_lane_id("RP04", "RP04", workstream, "REVIEWER")
+              read = store.read_workstream(lane)
+              if read.status != "OK" or read.record is None:
+                  raise RuntimeError(f"missing durable lane: {workstream}")
+              record = WorkstreamRuntimeRecord.from_dict(read.record.to_dict())
+              evidence = dict(record.evidence_bindings or {})
+              generation = int(evidence.get("generation") or 0)
+              current_fp = str(evidence.get("session_fingerprint") or "").strip().lower()
+              if generation != 3:
+                  raise RuntimeError(f"unexpected generation for {workstream}: {generation}")
+              if current_fp and current_fp != fp:
+                  raise RuntimeError(f"conflicting durable fingerprint for {workstream}")
+              known = {str(x).strip().lower() for x in evidence.get("known_session_fingerprints") or [] if str(x).strip()}
+              known.add(fp)
+              record.evidence_bindings = {
+                  **evidence,
+                  "generation": 3,
+                  "session_fingerprint": fp,
+                  "known_session_fingerprints": sorted(known),
+                  "source_repository": repo,
+                  "provider_starting_branch": "main",
+                  "generation_transition_key": transition,
+                  "generation_operation_key": operation,
+                  "binding_status": "PROVEN_DURABLE_EFFECT_RECEIPT_REPAIRED",
+                  "binding_reason": "AUTHORITATIVE_R07_GENERATION3_EFFECT_RECEIPT",
+                  "raw_session_id_persisted": False,
+              }
+              saved = store.compare_and_swap_workstream(lane, read.version, record)
+              if saved.status != "OK" or saved.record is None:
+                  raise RuntimeError(f"CAS repair failed: {workstream}: {saved.reason}")
+              check = store.read_workstream(lane)
+              ce = dict((check.record.evidence_bindings if check.record else {}) or {})
+              if check.status != "OK" or int(ce.get("generation") or 0) != 3 or str(ce.get("session_fingerprint") or "").lower() != fp:
+                  raise RuntimeError(f"repair readback failed: {workstream}")
+              out.append({"workstream": workstream, "generation": 3, "session_fingerprint": fp, "version": check.version})
+          json.dump({"schema_version":"RP04_R07_BINDING_REPAIR_V1","repairs":out}, open("rp04-r10-binding-repair.json","w"), sort_keys=True)
+          PY
+
+      - name: Build exact complete-contract Current Authority
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          candidate = "53c7ee4801ed76983b45a8e245f41dbe268a6ee1"
+          baseline = f"feature/rp04-imp-w08-human-grade-portfolio-polish@{candidate}"
+          pages = {
+            "S01": ("Asset Discovery","1-ISI5WBoBamAqTq6zmjTgX0mrIqtzlEq","ae1b45db697ce548ddb3999fe493590fddb07da3825debae51d621cf07f7ad4d"),
+            "S02": ("Search and Shortlists","1fZWWlFsEi9bqUVSGEkgyajr6cSrf3NY2","4f22414b25df746e5ca24c42a1662fd965b55cd785928d188fb25c7bde799a6b"),
+            "S03": ("Map and List Exploration","1vBbziDA_8zwJTCSir1M9AEOOetdY_5zo","12c136b9f03b8d2505f00091cab3e943dac8c261dbc43b55c40ecce085fbc44c"),
+            "S04": ("Asset Detail","1kV15hXA3Po-tcji4DSjb7qCReMHxblWR","f230b904a27eb1dfba8562d14c8677b8651228963de2045ade1a7c54fdfa8936"),
+            "S05": ("Operational Readiness","1ky9-Ry0VshMKiapH-DJNTTCXARiZmyif","d72ea1435d49e249b9e1553df45dd3cd8391b67e6653da12c960b56a064ec794"),
+            "S06": ("Comparison and Recommendation","1NGfadRwOfJ3OhSTLSx2bEAucTcMfQ4CT","8cbbd1b82c3c9441cdd9cbb6881ce302306cd7d695cce501c0ef30ac5d130202"),
+            "S07": ("Inquiry and Coordination","1DCWOKyB8k112qaO0Juk1bgoUABjnc3qY","06028d27b37a071c06f6286d11ad6a4ad34b002322ce4687518c5010505ec1c3"),
+            "S08": ("Tenancy and Occupancy Record","1AnwuC9jCIdLEcvaHcOkzU6c7jbArBHol","f9d18f86234d64b81c998421cd33bed7c55a7cf7d3b09bc129c3a601c252d80e"),
+            "S09": ("Payment and Statement Record","1L2PdYTslJAPSzKcH6eTReh7BvNtfA9Am","da5c68e185e913d25e24a796504c796fc7906556aa660516ddbe7e34bf386c94"),
+            "S10": ("Maintenance and Field Work","1sU4nuagxIzL0Ltj_gzeZzHZ20Xf9E7X4","62ed58af85570c5a80e3d359a757a1572410e2abbf59edced59f47eba6722639"),
+            "S12": ("Contractor Assigned Work","1emwarnkISZHGwZCum50OJ7H1gOZ75ZIW","f2192362c7811f58132c22f9d3d027407f1b36b093926d8bc16376e1de6f59d9"),
+            "S13": ("Portfolio Operations","1R471N6kecYxd4SZHCcrXtAKMZn5eFw6H","027514ca7042edd4f9e454507a4a60653e5db3c441b693d5f9b121f4db41ecc0"),
+          }
+          lineages, authz = {}, {}
+          for surface,(name,visual,fp) in pages.items():
+              ws=f"RP04-IPA-{surface}-001"
+              contract={
+                "objective":f"Perform the actual governed independent page assurance for RP04-{surface} ({name}) on exact W08 and return evidence-backed verdict/findings.",
+                "exact_baseline":baseline,"role":"REVIEWER","logical_lineage":ws,"write_scope":[],
+                "prohibited_scope":["No code/repository/branch/PR/test/governance/StateStore/provider/release/deploy/publication/production mutation.","No unrelated-page scope widening except minimal cross-surface consistency evidence."],
+                "validation":[f"Verify exact candidate SHA {candidate}.",f"Review RP04-{surface} ({name}) against governed page purpose and frozen visual Drive ID {visual}.","Inspect available desktop/mobile evidence, RTL/LTR, responsive overflow, hierarchy/spacing/typography, interactions/states, accessibility/usability, content/data consistency and role/access boundaries.","Do not invent unavailable evidence; mark only unsupported dimensions MISSING_EVIDENCE/BLOCKED."],
+                "evidence":["Cite exact repository paths/routes/tests/commands/rendered observations used.","Return UES_HANDOFF_V1 with verdict and each finding severity, exact location, reproduction/evidence, expected behavior and minimum correction scope."],
+                "handoff":"Return canonical UES_HANDOFF_V1 to RP04 Parent Controller; separate proven product findings from evidence limitations.",
+                "stop_gate":"Stop only after the actual READ_ONLY page review and structured handoff are complete; perform no writes."
+              }
+              prompt=(f"Perform ACTUAL Independent Page Assurance for RP04-{surface} — {name}. READ_ONLY. Exact candidate {candidate}. Frozen visual Drive ID {visual}. W08 evidence run 31533586574, artifact 9117922674, digest sha256:adc5b7e3acb9d78d9787e1d185cd5ae5c5b4d817cf993b7735f4280a340e96ea, Playwright 62/62, audit 0. Continue supported review dimensions even if some visual evidence is inaccessible; never fabricate evidence.\nPARENT_CONTROLLER_WORKSTREAM_CONTRACT_V1="+json.dumps(contract,separators=(",",":"),ensure_ascii=False)+"\nReturn canonical UES_HANDOFF_V1 and stop.")
+              lineages[ws]={"reviewer":{"provider_starting_branch":"main","exact_baseline":baseline,"known_session_fingerprints":[fp],"replacement_prompt":prompt}}
+              authz[f"{ws}:REVIEWER"]={"authorized":True,"replacement_cause":"STRUCTURED_HANDOFF_RECOVERY_REQUIRED"}
+          lineages["RP04-IPA-S11-001"]={"reviewer":{"provider_starting_branch":"main","exact_baseline":baseline,"known_session_fingerprints":["672614b5c8e3c6ec233c8b3f0a7904a23347116c273396df6362d537d055173f"]}}
+          authority={
+            "source":"DRIVE_CURRENT_STATE","source_id":"1hLTUFh0aFZP_onYDYLNO-1rXn9EkQjmT","project":"RP04","route":"RP04","current":True,
+            "authority_event_id":"RP04-AUTH-OWNER-LIFECYCLE-20260827-001","expires_at":"2026-08-28T17:00:00+03:00",
+            "task_budget":{"ceiling":100,"reserve_target":0,"reserve_is_hard":False,"unknown_quota_window_capacity":"DENY","necessity_based_new_generation_authorized":True},
+            "lineages":lineages,
+            "generation_policy":{"necessary_generation_authorized":True,"generation_effect_authorized":True,"authorized_initial_lineages":{},"authorized_lineages":authz}
+          }
+          payload=json.dumps(authority,separators=(",",":"),ensure_ascii=False)
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as f:
+              f.write("UES_CURRENT_AUTHORITY_JSON<<RP04AUTH\n"+payload+"\nRP04AUTH\n")
+          json.dump(authority,open("rp04-r10-authority.json","w"),sort_keys=True,ensure_ascii=False)
+          PY
+
+      - name: Execute repaired same-lineage Reviewer recovery
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_AUTHORITY_TRANSPORT_ACTOR: hamad933
+          UES_RP_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS: "3"
+        shell: bash
+        run: |
+          set +e
+          python -m ues.rp_authority_runtime RP04 2>&1 | tee rp04-r10-lifecycle.json
+          code=${PIPESTATUS[0]}
+          exit "$code"
+
+      - name: Preserve authoritative R10 receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rp04-reviewer-wave-r10-${{ github.run_id }}
+          path: |
+            rp04-r10-binding-repair.json
+            rp04-r10-authority.json
+            rp04-r10-lifecycle.json
+            initial-lineage-result.json
+          if-no-files-found: warn
+          retention-days: 14
