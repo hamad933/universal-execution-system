@@ -21,6 +21,7 @@ from .stale_initial_lineage_reconciliation import reconcile_project_stale_initia
 _PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list", "jules.sessions.get"})
 _PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
 _PROVIDER_READ_UNAVAILABLE_RESULT = "PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
+_STALE_INITIAL_PROVIDER_READ_UNAVAILABLE_RESULT = "STALE_INITIAL_LINEAGE_PROVIDER_READ_UNAVAILABLE"
 _PROVIDER_READ_UNAVAILABLE_EXIT = 75
 _DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS = 2
 _MAX_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS = 3
@@ -54,6 +55,32 @@ def _provider_inventory_snapshot_attempts() -> int:
     except ValueError:
         return _DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS
     return max(1, min(_MAX_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS, requested))
+
+
+def _run_stale_initial_reconciliation_with_retry(
+    adapter: dict[str, Any],
+    authority: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Retry only the GET-only stale-initial provider inventory snapshot.
+
+    Stale initial-lineage reconciliation never creates or retries a provider
+    session. A transient provider inventory outage can therefore safely restart
+    the complete GET-only snapshot before any provider effect. Unique identity
+    binding, once proven, terminates the loop immediately so StateStore handoff
+    cannot be replayed merely to obtain another observation.
+    """
+
+    attempt_limit = _provider_inventory_snapshot_attempts()
+    attempt = 0
+    while attempt < attempt_limit:
+        attempt += 1
+        result = dict(reconcile_project_stale_initial_lineages(adapter, authority))
+        if result.get("result") != _STALE_INITIAL_PROVIDER_READ_UNAVAILABLE_RESULT:
+            break
+    result["provider_inventory_snapshot_attempts"] = attempt
+    result["provider_inventory_snapshot_attempt_limit"] = attempt_limit
+    result["provider_inventory_snapshot_retry_get_only"] = True
+    return result
 
 
 def _provider_read_unavailable_result(
@@ -119,12 +146,14 @@ def run(project: str) -> dict[str, Any]:
     no authorized workflow dispatches is instead proven as a zero-effect lifecycle
     using the fresh persisted provider-observer snapshot.
 
-    If the effect-capable path exhausts its request-level retries on an exact
-    allowlisted pre-effect provider-inventory operation (`jules.sessions.list` or
-    per-session `jules.sessions.get` hydration), the whole provider inventory
-    snapshot may be retried a small bounded number of times. This retry is admitted
-    only for the explicitly proven zero-provider-effect boundary. No other operation
-    or possible post-write failure is replayed.
+    If the stale GET-only reconciliation or the effect-capable path exhausts its
+    request-level retries on provider inventory hydration, the whole provider
+    inventory snapshot may be retried a small bounded number of times. Stale
+    reconciliation retries are admitted only because that path performs no
+    provider mutation. Effect-capable retries remain admitted only for the exact
+    allowlisted pre-effect provider-inventory operations (`jules.sessions.list` or
+    per-session `jules.sessions.get` hydration). No other operation or possible
+    post-write failure is replayed.
     """
 
     project_name = str(project or "").strip().upper()
@@ -132,7 +161,7 @@ def run(project: str) -> dict[str, Any]:
     authority = _validated_authority(adapter)
 
     if str(os.environ.get("UES_ALLOW_PUBLIC_SAME_REPO_STATE") or "").lower() == "true":
-        stale_reconciliation = reconcile_project_stale_initial_lineages(
+        stale_reconciliation = _run_stale_initial_reconciliation_with_retry(
             adapter,
             authority,
         )
@@ -142,6 +171,9 @@ def run(project: str) -> dict[str, Any]:
             "reconciled_count": 0,
             "provider_write_attempted": False,
             "results": [],
+            "provider_inventory_snapshot_attempts": 0,
+            "provider_inventory_snapshot_attempt_limit": 0,
+            "provider_inventory_snapshot_retry_get_only": True,
         }
 
     if authority is not None and observation_backed_no_effect_eligible(adapter, authority):
