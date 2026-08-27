@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from ues import exact_terminal_finding_readback as target
 from ues.identity import canonical_lane_id
-from ues.terminal_results import logical_lineage_key
 
 
 class _Store:
@@ -20,7 +19,7 @@ class _Store:
         self.read_count += 1
         self.lane_ids.append(lane_id)
         expected = canonical_lane_id(
-            "RP03", "RP03", logical_lineage_key("RP03-IPA-S02-EVIDENCE-SUPPLEMENT", self.success_role)
+            "RP03", "RP03", target._logical_lineage_key("RP03-IPA-S02-EVIDENCE-SUPPLEMENT", self.success_role)
         )
         if lane_id != expected:
             return SimpleNamespace(status="MISSING", record=None)
@@ -78,7 +77,7 @@ class ExactTerminalFindingReadbackTests(unittest.TestCase):
         self.assertEqual(
             store.lane_ids,
             [
-                canonical_lane_id("RP03", "RP03", logical_lineage_key("RP03-IPA-S02-EVIDENCE-SUPPLEMENT", role))
+                canonical_lane_id("RP03", "RP03", target._logical_lineage_key("RP03-IPA-S02-EVIDENCE-SUPPLEMENT", role))
                 for role in target._ALLOWED_ROLES
             ],
         )
