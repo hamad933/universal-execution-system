@@ -3,7 +3,7 @@ name: Apply Issue72 Evidence Supplement Patch
 on:
   push:
     branches:
-      - fix/issue72-evidence-supplement-runtime
+      - fix/issue72-evidence-supplement-runtime-v2
     paths:
       - tools/apply_issue72_evidence_supplement_patch.py
       - .github/workflows/apply-issue72-evidence-supplement-patch.yml
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: issue72-evidence-supplement-patch
+  group: issue72-evidence-supplement-patch-v2
   cancel-in-progress: false
 
 jobs:
@@ -23,7 +23,7 @@ jobs:
       - name: Checkout exact feature head
         uses: actions/checkout@v4
         with:
-          ref: fix/issue72-evidence-supplement-runtime
+          ref: fix/issue72-evidence-supplement-runtime-v2
           fetch-depth: 0
 
       - name: Setup Python
@@ -50,4 +50,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add ues/initial_lineage_runtime.py
           git commit -m "UES: integrate governed evidence supplements into initial lineage runtime (#72)"
-          git push origin HEAD:fix/issue72-evidence-supplement-runtime
+          git push origin HEAD:fix/issue72-evidence-supplement-runtime-v2
