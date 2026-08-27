@@ -18,6 +18,9 @@ RP_PROJECTS: tuple[dict[str, str], ...] = (
     {"project": "RP04", "route": "RP04", "repository": "hamad933/Real-Estate-Assets-Control-"},
 )
 RP_NAMES = frozenset(project["project"] for project in RP_PROJECTS)
+_TRANSIENT_OBSERVER_ERRORS = frozenset({"NETWORK_ERROR", "RATE_LIMITED", "SERVER_ERROR"})
+_DEFAULT_OBSERVER_ATTEMPTS = 2
+_MAX_OBSERVER_ATTEMPTS = 3
 
 
 def _load_rp_adapter(project: str) -> dict[str, Any]:
@@ -53,10 +56,49 @@ def _with_rp_observer_projects(action: Callable[[], dict[str, Any]]) -> dict[str
     return result
 
 
-def observe_provider() -> dict[str, Any]:
-    """Observe only RP Jules sources/sessions through the shared GET-only observer."""
+def _observer_attempt_limit() -> int:
+    raw = str(os.environ.get("UES_RP_PROVIDER_OBSERVER_ATTEMPTS") or "").strip()
+    if not raw:
+        return _DEFAULT_OBSERVER_ATTEMPTS
+    try:
+        requested = int(raw)
+    except ValueError:
+        return _DEFAULT_OBSERVER_ATTEMPTS
+    return max(1, min(_MAX_OBSERVER_ATTEMPTS, requested))
 
-    return _with_rp_observer_projects(provider_runtime.observe)
+
+def _retryable_pre_snapshot_failure(result: dict[str, Any]) -> bool:
+    return bool(
+        result.get("result") == "JULES_PROVIDER_OBSERVATION_FAILED"
+        and str(result.get("error_category") or "").upper() in _TRANSIENT_OBSERVER_ERRORS
+        and result.get("provider_read_complete") is not True
+        and "sanitized_recovery_snapshot" not in result
+    )
+
+
+def observe_provider() -> dict[str, Any]:
+    """Observe RP Jules state with a bounded retry only before a snapshot exists.
+
+    The shared observer is GET-only for provider access. Per-session Activity read
+    failures are already contained inside the snapshot and are never retried here.
+    A second whole-observer attempt is therefore permitted only for a transient
+    failure that escaped before provider_read_complete / recovery snapshot evidence
+    exists. Persistence or post-snapshot failures remain single-attempt fail-closed.
+    """
+
+    limit = _observer_attempt_limit()
+    result: dict[str, Any] = {}
+    for attempt in range(1, limit + 1):
+        result = _with_rp_observer_projects(provider_runtime.observe)
+        if not _retryable_pre_snapshot_failure(result) or attempt >= limit:
+            result["observer_attempt_count"] = attempt
+            result["observer_attempt_limit"] = limit
+            result["observer_recovered_after_retry"] = bool(
+                attempt > 1 and result.get("result") == "JULES_PROVIDER_OBSERVATION_COMPLETE"
+            )
+            result["safe_to_blind_retry"] = False
+            return result
+    raise AssertionError("bounded RP provider observer retry loop did not return")
 
 
 def audit_provider(*, stale_seconds: int = 45 * 60) -> dict[str, Any]:
