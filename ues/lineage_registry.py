@@ -61,18 +61,13 @@ def match_lineage_session(
     *,
     repository: str,
 ) -> dict[str, Any]:
-    """Bind only from exact governed provider identity.
+    """Bind passive lifecycle reuse only from exact governed provider identity.
 
-    Repository and provider starting branch are constraints, not logical-lineage
-    identity. A governed session fingerprint is required for passive lifecycle
-    reuse. First-generation sessions that are not yet fingerprint-bound are
-    reconciled separately from their deterministic UES title marker by the guarded
-    initial-lineage runtime.
-
-    An explicit conflicting provider branch remains fail-closed. When the provider
-    omits branch metadata entirely, however, that absence must not erase an exact
-    durable session fingerprint + exact repository identity. The missing secondary
-    metadata is surfaced as diagnostic evidence instead of becoming false UNBOUND.
+    Exact durable session fingerprint + exact repository are decisive identity.
+    Provider starting branch is secondary provenance/diagnostic metadata: changed or
+    missing branch metadata must never erase an otherwise exact governed binding.
+    First-generation sessions not yet fingerprint-bound are reconciled separately
+    from deterministic UES transition identity; branch-only adoption is prohibited.
     """
 
     expected_repo = str(repository or "").strip().casefold()
@@ -98,10 +93,7 @@ def match_lineage_session(
         if repo != expected_repo:
             continue
         fp = str(session.get("_session_fingerprint") or "").strip().lower()
-        actual_provider_branch = str(session.get("sourceStartingBranch") or "").strip()
         if fp not in fingerprints:
-            continue
-        if provider_branch and actual_provider_branch and actual_provider_branch != provider_branch:
             continue
         candidates.append(session)
 
@@ -116,8 +108,10 @@ def match_lineage_session(
 
     if len(candidates) > 1:
         active = [
-            item for item in candidates
-            if str(item.get("normalizedState") or item.get("state") or "").upper() not in TERMINAL_SESSION_STATES
+            item
+            for item in candidates
+            if str(item.get("normalizedState") or item.get("state") or "").upper()
+            not in TERMINAL_SESSION_STATES
         ]
         if len(active) == 1:
             candidates = active
@@ -138,20 +132,28 @@ def match_lineage_session(
     state = str(session.get("normalizedState") or session.get("state") or "UNKNOWN").upper()
     actual_provider_branch = str(session.get("sourceStartingBranch") or "").strip()
     provider_branch_metadata_missing = bool(provider_branch and not actual_provider_branch)
+    provider_branch_metadata_drift = bool(
+        provider_branch
+        and actual_provider_branch
+        and actual_provider_branch != provider_branch
+    )
+    if provider_branch_metadata_drift:
+        reason = "EXACT_GOVERNED_LINEAGE_BINDING_BRANCH_DRIFT"
+    elif provider_branch_metadata_missing:
+        reason = "EXACT_GOVERNED_LINEAGE_BINDING_BRANCH_METADATA_UNAVAILABLE"
+    else:
+        reason = "EXACT_GOVERNED_LINEAGE_BINDING"
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "PROVEN",
-        "reason": (
-            "EXACT_GOVERNED_LINEAGE_BINDING_BRANCH_METADATA_UNAVAILABLE"
-            if provider_branch_metadata_missing
-            else "EXACT_GOVERNED_LINEAGE_BINDING"
-        ),
+        "reason": reason,
         "session": session,
         "candidate_count": 1,
         "session_fingerprint": str(session.get("_session_fingerprint") or ""),
         "provider_state": state,
         "continuation_disposition": continuation_disposition(state),
         "provider_starting_branch_metadata_missing": provider_branch_metadata_missing,
+        "provider_starting_branch_metadata_drift": provider_branch_metadata_drift,
         "expected_provider_starting_branch": provider_branch or None,
         "observed_provider_starting_branch": actual_provider_branch or None,
     }
@@ -163,7 +165,11 @@ def _legacy_branch_only_adoption(prior: Mapping[str, Any], record: WorkstreamRun
     return bool(
         str(prior.get("replacement_reason") or "") == "INITIAL_ADOPTION"
         and str(prior.get("session_fingerprint") or "").strip()
-        and not [item for item in prior.get("known_session_fingerprints") or [] if str(item).strip()]
+        and not [
+            item
+            for item in prior.get("known_session_fingerprints") or []
+            if str(item).strip()
+        ]
         and not str(prior.get("initial_lineage_transition_key") or "").strip()
         and not str(prior.get("task_spec_digest") or "").strip()
         and record.unknown_write_state is None
@@ -215,6 +221,11 @@ def upsert_lineage_observation(
     generation = previous_generation
     replacement_reason: str | None = None
     revoked_legacy_fp: str | None = None
+    governed_fingerprints = {
+        str(item).strip().lower()
+        for item in policy.get("known_session_fingerprints") or []
+        if str(item).strip()
+    }
 
     if status != "PROVEN" and previous_fp and _legacy_branch_only_adoption(prior, record):
         revoked_legacy_fp = previous_fp
@@ -225,11 +236,24 @@ def upsert_lineage_observation(
         replacement_reason = "LEGACY_BRANCH_ONLY_ADOPTION_REVOKED"
         status = "UNBOUND"
     elif current_fp and current_fp != previous_fp:
-        generation = max(1, previous_generation + 1)
-        replacement_reason = "INITIAL_ADOPTION" if previous_fp is None else "PROVIDER_SESSION_GENERATION_CHANGED"
+        if (
+            previous_fp is None
+            and previous_generation > 0
+            and current_fp.lower() in governed_fingerprints
+        ):
+            generation = previous_generation
+            replacement_reason = "DURABLE_FINGERPRINT_REBOUND"
+        else:
+            generation = max(1, previous_generation + 1)
+            replacement_reason = (
+                "INITIAL_ADOPTION"
+                if previous_fp is None
+                else "PROVIDER_SESSION_GENERATION_CHANGED"
+            )
     elif current_fp and generation == 0:
         generation = 1
 
+    durable_fp = current_fp or previous_fp
     provider_state = str(binding.get("provider_state") or "UNKNOWN").upper()
     record.actor_bindings = (
         {
@@ -261,12 +285,16 @@ def upsert_lineage_observation(
         "role": role,
         "workstream": workstream,
         "generation": generation,
-        "session_fingerprint": current_fp,
+        "session_fingerprint": durable_fp,
         "previous_session_fingerprint": previous_fp,
         "replacement_reason": replacement_reason,
         "binding_status": status,
         "binding_reason": binding.get("reason"),
-        "known_session_fingerprints": sorted(str(item) for item in policy.get("known_session_fingerprints") or [] if str(item)),
+        "known_session_fingerprints": sorted(
+            str(item)
+            for item in policy.get("known_session_fingerprints") or []
+            if str(item)
+        ),
         "expected_provider_starting_branch": policy.get("provider_starting_branch"),
         "expected_pr_head_branch": policy.get("pr_head_branch"),
         "current_pr_number": current_pr_number,
@@ -274,11 +302,24 @@ def upsert_lineage_observation(
         "raw_session_id_persisted": False,
     }
     if binding.get("provider_starting_branch_metadata_missing") is not None:
-        evidence["provider_starting_branch_metadata_missing"] = bool(binding.get("provider_starting_branch_metadata_missing"))
-        evidence["observed_provider_starting_branch"] = binding.get("observed_provider_starting_branch")
+        evidence["provider_starting_branch_metadata_missing"] = bool(
+            binding.get("provider_starting_branch_metadata_missing")
+        )
+        evidence["observed_provider_starting_branch"] = binding.get(
+            "observed_provider_starting_branch"
+        )
+    if binding.get("provider_starting_branch_metadata_drift") is not None:
+        evidence["provider_starting_branch_metadata_drift"] = bool(
+            binding.get("provider_starting_branch_metadata_drift")
+        )
+        evidence["observed_provider_starting_branch"] = binding.get(
+            "observed_provider_starting_branch"
+        )
     if revoked_legacy_fp:
         evidence["revoked_legacy_session_fingerprint"] = revoked_legacy_fp
-        evidence["legacy_binding_reconciliation"] = "LOCAL_BINDING_REVOKED_PROVIDER_SESSION_UNTOUCHED"
+        evidence["legacy_binding_reconciliation"] = (
+            "LOCAL_BINDING_REVOKED_PROVIDER_SESSION_UNTOUCHED"
+        )
     record.evidence_bindings = evidence
     record.last_observed_provider_state = {
         "state": provider_state,
@@ -294,7 +335,9 @@ def upsert_lineage_observation(
         "at": _iso_now(),
     }
     if revoked_legacy_fp:
-        record.last_successful_transition["repair"] = "LEGACY_BRANCH_ONLY_ADOPTION_REVOKED"
+        record.last_successful_transition["repair"] = (
+            "LEGACY_BRANCH_ONLY_ADOPTION_REVOKED"
+        )
     saved = store.compare_and_swap_workstream(lane_id, expected, record)
     if saved.status != "OK" or saved.record is None:
         raise StateUnavailable(saved.reason or f"failed to persist lineage state: {lane_id}")
