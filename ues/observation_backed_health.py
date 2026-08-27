@@ -114,6 +114,22 @@ def observation_backed_no_effect_eligible(
         if any(isinstance(value, Mapping) and value.get("authorized") is True for value in dispatches.values()):
             return False
 
+        # Controller-resolvable waiting responses are provider-routing authority:
+        # lifecycle_runtime_current may turn one into a bounded same-session Jules
+        # message.  Treat only entries that satisfy that runtime's exact response
+        # preconditions as effect-capable; malformed, empty, scope-expanding, or
+        # non-controller-resolvable entries do not manufacture authority.
+        waiting = authority.get("waiting_responses")
+        waiting = waiting if isinstance(waiting, Mapping) else {}
+        if any(
+            isinstance(entry, Mapping)
+            and entry.get("controller_resolvable") is True
+            and entry.get("scope_expansion") is not True
+            and bool(str(entry.get("response") or "").strip())
+            for entry in waiting.values()
+        ):
+            return False
+
     return True
 
 
