@@ -8,8 +8,10 @@ from typing import Any, Mapping
 from . import terminal_recovery as recovery
 from .identity import canonical_lane_id
 from .live_runtime import build_live_state_store
+from .terminal_results import logical_lineage_key
 
 _ALLOWED_PROJECTS = frozenset({"RP01", "RP02", "RP03", "RP04"})
+_ALLOWED_ROLES = ("REVIEWER", "ASSURANCE", "WRITER")
 _WORKSTREAM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _FINDING_KEYS = (
     "finding_id",
@@ -78,41 +80,46 @@ def _project_result(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _exact_persisted_result(store: Any, *, project: str, route: str, workstream: str) -> dict[str, Any] | None:
-    lane_id = canonical_lane_id(project, route, workstream)
-    read = store.read_workstream(lane_id)
-    if read.status != "OK" or read.record is None:
-        return None
-    record = read.record
-    if str(record.project or "") != project or str(record.route or "") != route:
-        return None
-    evidence = record.evidence_bindings or {}
-    if str(evidence.get("workstream") or workstream) != workstream:
-        return None
-    stored = evidence.get(recovery.TERMINAL_RESULT_KEY)
-    if not isinstance(stored, Mapping):
-        return None
+    matches: list[dict[str, Any]] = []
+    for role in _ALLOWED_ROLES:
+        lane_workstream = logical_lineage_key(workstream, role)
+        lane_id = canonical_lane_id(project, route, lane_workstream)
+        read = store.read_workstream(lane_id)
+        if read.status != "OK" or read.record is None:
+            continue
+        record = read.record
+        if str(record.project or "") != project or str(record.route or "") != route:
+            continue
+        evidence = record.evidence_bindings or {}
+        if str(evidence.get("workstream") or "") != workstream:
+            continue
+        if str(evidence.get("role") or "").upper() != role:
+            continue
+        stored = evidence.get(recovery.TERMINAL_RESULT_KEY)
+        if not isinstance(stored, Mapping):
+            continue
 
-    exact = (
-        str(stored.get("logical_workstream") or "") == workstream
-        and str(stored.get("role") or "").upper() == str(evidence.get("role") or "").upper()
-        and int(stored.get("generation") or 0) == int(evidence.get("generation") or 0)
-        and str(stored.get("session_fingerprint") or "").lower()
-        == str(evidence.get("session_fingerprint") or "").lower()
-    )
-    if not exact:
-        return None
+        exact = (
+            str(stored.get("logical_workstream") or "") == workstream
+            and str(stored.get("role") or "").upper() == role
+            and int(stored.get("generation") or 0) == int(evidence.get("generation") or 0)
+            and str(stored.get("session_fingerprint") or "").lower()
+            == str(evidence.get("session_fingerprint") or "").lower()
+        )
+        if not exact:
+            continue
 
-    current_sha = str(evidence.get("current_candidate_sha") or "").lower()
-    role = str(stored.get("role") or "").upper()
-    if role in {"REVIEWER", "ASSURANCE"} and current_sha:
-        if str(stored.get("reviewed_sha") or "").lower() != current_sha:
-            return None
-    elif role == "WRITER" and current_sha:
-        candidate = str(stored.get("candidate_sha") or "").lower()
-        if candidate and candidate != current_sha:
-            return None
+        current_sha = str(evidence.get("current_candidate_sha") or "").lower()
+        if role in {"REVIEWER", "ASSURANCE"} and current_sha:
+            if str(stored.get("reviewed_sha") or "").lower() != current_sha:
+                continue
+        elif role == "WRITER" and current_sha:
+            candidate = str(stored.get("candidate_sha") or "").lower()
+            if candidate and candidate != current_sha:
+                continue
+        matches.append(dict(stored))
 
-    return dict(stored)
+    return matches[0] if len(matches) == 1 else None
 
 
 def run(project: str, workstream: str, *, store: Any | None = None) -> dict[str, Any]:
@@ -138,6 +145,7 @@ def run(project: str, workstream: str, *, store: Any | None = None) -> dict[str,
         "results": [_project_result(item) for item in matches],
         "durable_lane_direct_read": True,
         "canonical_lane_identity_used": True,
+        "bounded_role_lane_reads": len(_ALLOWED_ROLES),
         "lane_discovery_performed": False,
         "project_wide_lifecycle_scan_performed": False,
         "provider_live_read_performed": False,
