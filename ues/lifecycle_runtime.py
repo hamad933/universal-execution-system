@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -27,6 +28,8 @@ from .structured_handoff import build_required_handoff_instructions, find_latest
 
 SCHEMA_VERSION = "1.1"
 HEALTH_WORKSTREAM = "LIFECYCLE-RUNTIME-HEALTH"
+_MAX_PROVIDER_INVENTORY_READ_WORKERS = 8
+_PROVIDER_INVENTORY_READ_WORKERS_ENV = "UES_LIFECYCLE_PROVIDER_INVENTORY_READ_WORKERS"
 
 
 def _iso_now() -> str:
@@ -91,18 +94,41 @@ def _source_repository(source: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _provider_inventory_read_workers() -> int:
+    raw = str(os.environ.get(_PROVIDER_INVENTORY_READ_WORKERS_ENV) or "").strip()
+    if not raw:
+        return _MAX_PROVIDER_INVENTORY_READ_WORKERS
+    try:
+        requested = int(raw)
+    except ValueError:
+        return _MAX_PROVIDER_INVENTORY_READ_WORKERS
+    return max(1, min(requested, _MAX_PROVIDER_INVENTORY_READ_WORKERS))
+
+
 def _provider_inventory(client: JulesLifecycleClient) -> list[dict[str, Any]]:
     source_by_name: dict[str, dict[str, Any]] = {}
     for source in client.list_sources(page_size=100):
         name = str(source.get("name") or "").strip().strip("/")
         if name:
             source_by_name[name] = source
-    sessions: list[dict[str, Any]] = []
+
+    names: list[str] = []
     for listed in client.list_sessions(page_size=100):
         name = str(listed.get("name") or "").strip().strip("/")
-        if not name:
-            continue
-        full = client.get_session(name)
+        if name:
+            names.append(name)
+    if not names:
+        return []
+
+    worker_count = min(_provider_inventory_read_workers(), len(names))
+    if worker_count == 1:
+        hydrated = [client.get_session(name) for name in names]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ues-provider-inventory") as pool:
+            hydrated = list(pool.map(client.get_session, names))
+
+    sessions: list[dict[str, Any]] = []
+    for name, full in zip(names, hydrated):
         source_name = str(full.get("sourceIdentifier") or "").strip().strip("/")
         source = source_by_name.get(source_name)
         if source is None and source_name:
