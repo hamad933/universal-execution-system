@@ -67,7 +67,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     concurrency:
-      group: ues-terminal-result-backfill-${{ needs.authorize.outputs.project }}
+      # Whole-project targeted reads keep the canonical project serialization.
+      # Exact-workstream reads use their own lane-specific group so a newer
+      # scheduled/project-wide pending job cannot evict a Parent consumption
+      # request before it starts. Exact terminal persistence is per-lineage CAS
+      # with authoritative post-readback, so concurrent different-lineage reads
+      # do not grant mutation authority or replay provider effects.
+      group: ${{ needs.authorize.outputs.workstream != '' && format('ues-terminal-exact-readback-{0}-{1}', needs.authorize.outputs.project, needs.authorize.outputs.workstream) || format('ues-terminal-result-backfill-{0}', needs.authorize.outputs.project) }}
       cancel-in-progress: false
     steps:
       - name: Checkout governed default branch
