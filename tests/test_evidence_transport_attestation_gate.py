@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 from ues.evidence_transport_attestation_gate import (
+    ACCEPTED_ATTESTATIONS_POLICY_KEY,
     ATTESTATION_ACTION,
     ATTESTATION_OPERATION_PREFIX,
     ATTESTATION_RESULT,
@@ -17,6 +18,7 @@ from ues.evidence_transport_attestation_gate import (
 REPO_FP = "sha256:" + "a" * 64
 HEAD = "b" * 40
 EVIDENCE_SHA = "c" * 64
+AUTHORITY_KEY = "RP03-IPA-S02-EVIDENCE-SUPPLEMENT:ASSURANCE"
 
 
 def lane() -> dict:
@@ -54,6 +56,17 @@ def record(**overrides):
     return SimpleNamespace(**values)
 
 
+def authority(*, accept: bool) -> dict:
+    policy = {"evidence_supplement_lineages": {AUTHORITY_KEY: lane()}}
+    if accept:
+        policy[ACCEPTED_ATTESTATIONS_POLICY_KEY] = {AUTHORITY_KEY: attestation_operation_key(lane())}
+    return {
+        "authority_event_id": "RP03-CE-TEST",
+        "source_id": "drive-current-state-test",
+        "generation_policy": policy,
+    }
+
+
 class FakeStore:
     def __init__(self, value=None, *, status="OK"):
         self.value = value
@@ -78,20 +91,27 @@ class EvidenceTransportAttestationGateTests(unittest.TestCase):
         self.assertEqual(proof["decoded_evidence_byte_count"], 14128)
         self.assertFalse(proof["provider_mutation"])
         self.assertFalse(proof["private_source_identity_persisted"])
-        self.assertNotIn("repository", repr(proof).casefold().replace("transport_repository_fingerprint", ""))
+        self.assertNotIn("private-evidence", repr(proof).casefold())
+
+    def test_current_state_must_accept_exact_operation_before_store_receipt_is_considered(self) -> None:
+        store = FakeStore(record())
+        with self.assertRaisesRegex(RuntimeError, "same governed Current State has not accepted"):
+            enforce_authority_attestations(authority(accept=False), store)
+        self.assertEqual(store.requested, [])
 
     def test_request_local_metadata_cannot_substitute_for_state_store_receipt(self) -> None:
-        authority = {
-            "generation_policy": {
-                "evidence_supplement_lineages": {
-                    "RP03-IPA-S02-EVIDENCE-SUPPLEMENT:ASSURANCE": lane()
-                }
-            }
-        }
         store = FakeStore(None, status="MISSING")
         with self.assertRaisesRegex(RuntimeError, "independent byte-attestation receipt is required"):
-            enforce_authority_attestations(authority, store)
+            enforce_authority_attestations(authority(accept=True), store)
         self.assertEqual(store.requested, [attestation_operation_key(lane())])
+
+    def test_same_current_state_acceptance_plus_confirmed_receipt_passes(self) -> None:
+        result = enforce_authority_attestations(authority(accept=True), FakeStore(record()))
+        self.assertEqual(result["result"], "EVIDENCE_TRANSPORT_ATTESTATION_GATE_PASS")
+        self.assertEqual(result["supplement_lanes_checked"], 1)
+        self.assertEqual(result["authority_event_id"], "RP03-CE-TEST")
+        self.assertEqual(result["attestations"][0]["decoded_evidence_byte_count"], 14128)
+        self.assertFalse(result["provider_mutation"])
 
     def test_receipt_must_match_exact_transport_head_and_digest(self) -> None:
         bad_head = record(receipt={"transport_head_sha": "d" * 40})
@@ -115,6 +135,7 @@ class EvidenceTransportAttestationGateTests(unittest.TestCase):
 
     def test_no_supplement_lanes_is_noop_pass(self) -> None:
         result = enforce_authority_attestations({"generation_policy": {}}, FakeStore())
+        self.assertEqual(result["result"], "EVIDENCE_TRANSPORT_ATTESTATION_GATE_NOT_REQUIRED")
         self.assertEqual(result["supplement_lanes_checked"], 0)
         self.assertFalse(result["provider_mutation"])
 
