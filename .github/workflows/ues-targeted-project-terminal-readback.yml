@@ -21,7 +21,7 @@ permissions:
 jobs:
   authorize:
     if: >-
-      (github.event_name == 'issue_comment' && github.event.issue.number == 191 && github.actor == 'hamad933') ||
+      (github.event_name == 'issue_comment' && github.event.issue.number == 191 && github.actor == 'hamad933' && startsWith(github.event.comment.body, '/ues-terminal-readback ')) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
@@ -42,11 +42,11 @@ jobs:
           workstream_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
           if os.environ["EVENT_NAME"] == "issue_comment":
               match = re.fullmatch(
-                  r"/(?:ues-terminal-readback|ues-exact-terminal-readback) (RP01|RP02|RP03|RP04)(?: ([A-Za-z0-9][A-Za-z0-9._:-]{0,127}))?",
+                  r"/ues-terminal-readback (RP01|RP02|RP03|RP04)(?: ([A-Za-z0-9][A-Za-z0-9._:-]{0,127}))?",
                   os.environ["COMMENT_BODY"].strip(),
               )
               if not match:
-                  raise SystemExit("exact owner readback command required")
+                  raise SystemExit("exact owner targeted-project readback command required")
               project = match.group(1)
               workstream = match.group(2) or ""
           else:
