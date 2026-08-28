@@ -42,7 +42,7 @@ jobs:
           workstream_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
           if os.environ["EVENT_NAME"] == "issue_comment":
               match = re.fullmatch(
-                  r"/ues-terminal-readback (RP01|RP02|RP03|RP04)(?: ([A-Za-z0-9][A-Za-z0-9._:-]{0,127}))?",
+                  r"/(?:ues-terminal-readback|ues-exact-terminal-readback) (RP01|RP02|RP03|RP04)(?: ([A-Za-z0-9][A-Za-z0-9._:-]{0,127}))?",
                   os.environ["COMMENT_BODY"].strip(),
               )
               if not match:
