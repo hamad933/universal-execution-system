@@ -40,10 +40,13 @@ jobs:
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
           UES_PROVIDER_ACTIVITY_READ_WORKERS: "8"
+          UES_PROVIDER_OBSERVER_INNER_TIMEOUT: "24m"
         run: |
           set +e
-          python -m ues.rp_readonly_runtime observe-provider > "$RUNNER_TEMP/rp-provider-observer-runtime.json"
+          timeout --signal=TERM --kill-after=15s "$UES_PROVIDER_OBSERVER_INNER_TIMEOUT" \
+            python -m ues.rp_readonly_runtime observe-provider > "$RUNNER_TEMP/rp-provider-observer-runtime.json"
           status=$?
+          export UES_OBSERVER_COMMAND_STATUS="$status"
           set -e
           python - <<'PY'
           import json
@@ -52,6 +55,7 @@ jobs:
 
           source = Path(os.environ["RUNNER_TEMP"]) / "rp-provider-observer-runtime.json"
           destination = Path(os.environ["RUNNER_TEMP"]) / "rp-provider-observer-public-receipt.json"
+          command_status = int(os.environ.get("UES_OBSERVER_COMMAND_STATUS", "1"))
           allowed = (
               "schema_version",
               "result",
@@ -70,10 +74,19 @@ jobs:
                   payload = {key: raw.get(key) for key in allowed if key in raw}
           except Exception:
               payload = {}
+          internal_deadline_exceeded = command_status == 124
           receipt = {
               "schema_version": "UES_RP_PROVIDER_OBSERVER_PUBLIC_RECEIPT_V1",
-              "runtime_result": payload.get("result", "RUNTIME_OUTPUT_UNAVAILABLE"),
-              "error_category": payload.get("error_category"),
+              "runtime_result": (
+                  "RUNTIME_INTERNAL_DEADLINE_EXCEEDED"
+                  if internal_deadline_exceeded and not payload
+                  else payload.get("result", "RUNTIME_OUTPUT_UNAVAILABLE")
+              ),
+              "error_category": (
+                  "PROVIDER_OBSERVER_INTERNAL_DEADLINE_EXCEEDED"
+                  if internal_deadline_exceeded and not payload
+                  else payload.get("error_category")
+              ),
               "provider_read_complete": payload.get("provider_read_complete"),
               "state_persistence_complete": payload.get("state_persistence_complete"),
               "provider_mutation_performed": bool(payload.get("provider_mutation_performed", False)),
@@ -102,6 +115,7 @@ jobs:
           if-no-files-found: error
 
   lifecycle-health:
+    if: always()
     needs: provider-observer
     strategy:
       fail-fast: false
