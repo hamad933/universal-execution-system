@@ -36,15 +36,15 @@ permissions:
 jobs:
   rp-current-authority-cycle:
     if: >-
-      (github.event_name == 'workflow_dispatch' && (inputs.project == 'ALL' || inputs.project == matrix.project)) ||
-      (github.event_name == 'repository_dispatch' && github.event.client_payload.project == matrix.project)
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["ALL","RP01","RP02","RP03","RP04"]'), inputs.project)) ||
+      (github.event_name == 'repository_dispatch' && contains(fromJSON('["RP01","RP02","RP03","RP04"]'), github.event.client_payload.project))
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix:
-        project: [RP01, RP02, RP03, RP04]
+        project: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.project == 'ALL' && '["RP01","RP02","RP03","RP04"]' || format('["{0}"]', github.event_name == 'repository_dispatch' && github.event.client_payload.project || inputs.project)) }}
     concurrency:
-      group: ues-rp-authority-${{ matrix.project }}
+      group: ues-project-lifecycle-${{ matrix.project }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 25
