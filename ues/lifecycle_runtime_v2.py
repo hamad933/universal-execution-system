@@ -10,6 +10,7 @@ from . import lifecycle_runtime as legacy
 from .binding_safe_generation import execute_binding_safe_generation
 from .current_authority import dynamic_lineages, exact_lineage_authority, load_current_authority_json
 from .event_wakeup import register_wakeup
+from .handoff_adjudication import exact_invalid_review_handoff_adjudication
 from .jules_lifecycle import JulesLifecycleClient
 from .lineage_generation import recover_lineage_policy_from_state
 from .lineage_registry import DIRECT_CONTINUATION_STATES, lineage_lane_id, match_lineage_session, upsert_lineage_observation
@@ -223,6 +224,7 @@ def _structured_handoff_recovery_ready(
     binding: Mapping[str, Any],
     handoff: Mapping[str, Any] | None,
     state_snapshot: Mapping[str, Any],
+    handoff_invalidated: bool = False,
 ) -> bool:
     role_name = str(role).upper()
     provider_state = str(binding.get("provider_state") or "UNKNOWN").upper()
@@ -230,7 +232,7 @@ def _structured_handoff_recovery_ready(
         role_name in {"REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"}
         and binding.get("status") == "PROVEN"
         and provider_state == "COMPLETED"
-        and handoff is None
+        and (handoff is None or handoff_invalidated)
         and int(state_snapshot.get("generation") or 0) >= 1
         and str(state_snapshot.get("session_fingerprint") or "").strip()
         and not state_snapshot.get("unknown_write_state")
@@ -415,11 +417,23 @@ def run(project: str) -> dict[str, Any]:
             generation_requested = bool(lane_authority and cause)
             if generation_requested:
                 provider_state = str(binding.get("provider_state") or "UNKNOWN").upper()
+                handoff_invalidated = exact_invalid_review_handoff_adjudication(
+                    authority_event_id=str((authority or {}).get("authority_event_id") or ""),
+                    lane_authority=lane_authority,
+                    project=project_id,
+                    route=route,
+                    workstream=workstream,
+                    role=role,
+                    handoff=handoff,
+                    binding=binding,
+                    state_snapshot=state_snapshot,
+                )
                 if cause == _STRUCTURED_HANDOFF_RECOVERY_CAUSE and not _structured_handoff_recovery_ready(
                     role=role,
                     binding=binding,
                     handoff=handoff,
                     state_snapshot=state_snapshot,
+                    handoff_invalidated=handoff_invalidated,
                 ):
                     effect = {
                         "decision": "STRUCTURED_HANDOFF_RECOVERY_PRECONDITIONS_REQUIRED",
@@ -427,6 +441,7 @@ def run(project: str) -> dict[str, Any]:
                         "binding_status": binding.get("status"),
                         "provider_state": provider_state,
                         "structured_handoff_present": handoff is not None,
+                        "structured_handoff_explicitly_invalidated": handoff_invalidated,
                         "safe_to_blind_retry": False,
                     }
                 else:
