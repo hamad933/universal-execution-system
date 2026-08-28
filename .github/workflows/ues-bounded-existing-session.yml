@@ -38,11 +38,12 @@ permissions:
 
 jobs:
   provider-observer-fallback:
+    if: github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     concurrency:
       group: ues-provider-observer-fallback
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Checkout governed UES runtime
         uses: actions/checkout@v4
@@ -66,17 +67,15 @@ jobs:
 
   project-lineage-cycle:
     if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.project == 'ALL' || inputs.project == matrix.project)) ||
-      (github.event_name == 'repository_dispatch' && github.event.client_payload.project == matrix.project)
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["ALL","CEP","GS"]'), inputs.project)) ||
+      (github.event_name == 'repository_dispatch' && contains(fromJSON('["CEP","GS"]'), github.event.client_payload.project))
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        project: [CEP, GS]
+        project: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.project == 'ALL' && '["CEP","GS"]' || format('["{0}"]', github.event_name == 'repository_dispatch' && github.event.client_payload.project || inputs.project)) }}
     concurrency:
-      group: ues-lineage-lifecycle-${{ matrix.project }}
+      group: ues-project-lifecycle-${{ matrix.project }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
