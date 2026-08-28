@@ -136,6 +136,36 @@ class GenerationTransitionTests(unittest.TestCase):
         second = self.assess(candidate_sha="c" * 40)
         self.assertNotEqual(first["transition_key"], second["transition_key"])
 
+    def test_stale_review_current_sha_rereview_is_remaining_review_work(self) -> None:
+        result = self.assess(
+            project="RP02",
+            route="RP02",
+            workstream="RP02-IPA-S01-001",
+            role="REVIEWER",
+            replacement_cause="STALE_REVIEW_REQUIRES_CURRENT_SHA_REREVIEW",
+            work_remaining=False,
+        )
+        self.assertTrue(result["allowed"])
+        self.assertNotIn("NO_REMAINING_WORK", result["failures"])
+        self.assertEqual(result["next_generation"], 2)
+
+    def test_non_stale_cause_still_requires_remaining_work(self) -> None:
+        result = self.assess(
+            replacement_cause="IRRECOVERABLY_INVALID_BINDING",
+            work_remaining=False,
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("NO_REMAINING_WORK", result["failures"])
+
+    def test_noncanonical_correction_rereview_alias_remains_rejected(self) -> None:
+        result = self.assess(
+            role="REVIEWER",
+            replacement_cause="CORRECTION_REREVIEW_REQUIRED",
+            work_remaining=True,
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("REPLACEMENT_CAUSE_NOT_GOVERNED", result["failures"])
+
     def test_terminal_state_alone_is_not_replacement_cause(self) -> None:
         result = self.assess(replacement_cause="FAILED")
         self.assertFalse(result["allowed"])

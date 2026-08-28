@@ -1,0 +1,46 @@
+name: UES Jules Private Source Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ues/jules_source_probe.py
+      - tests/test_jules_source_probe.py
+      - .github/workflows/ues-jules-private-source-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ues-jules-private-source-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout governed UES runtime
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Probe candidate Jules sources GET-only
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          # Opaque SHA-256 fingerprints only. No private repository names or
+          # Jules source identifiers are persisted in this public workflow.
+          UES_JULES_SOURCE_PROBE_HASHES: >-
+            e15627d5b1034cfdca6f7abc37b1c114fff26612980b67553e1c219141575638,
+            3bd914c3ed1154fb2dc79077b20fdb44e1bb048a2f96d45c50c4a891b2724866,
+            c3a108f1af77d6a4c6fca88e32c663c1cb7d56857d8e305a299b5ecb8f43d0a2,
+            9d979cb9ac538c22f1c5609a67607d7d61d51df0559ca3b87f90cf863f0df818
+        run: python -m ues.jules_source_probe

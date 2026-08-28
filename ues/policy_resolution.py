@@ -15,14 +15,19 @@ class ResolvedExecutionPolicy:
     project: str
     route: str
     authority_event_id: str | None
-    ceiling: int
+    ceiling: int | None
     reserve_target: int
     reserve_is_hard: bool
-    unknown_lifetime_policy: str
+    unknown_quota_window_policy: str
     necessary_generation_authorized: bool
     generation_effect_authorized: bool
     budget: Mapping[str, Any]
     provenance: Mapping[str, Any]
+
+    @property
+    def unknown_lifetime_policy(self) -> str:
+        """Compatibility alias; policy now applies to current quota window only."""
+        return self.unknown_quota_window_policy
 
     @property
     def generation_budget_safe(self) -> bool:
@@ -39,14 +44,16 @@ class ResolvedExecutionPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "project": self.project,
             "route": self.route,
             "authority_event_id": self.authority_event_id,
             "ceiling": self.ceiling,
             "reserve_target": self.reserve_target,
             "reserve_is_hard": self.reserve_is_hard,
-            "unknown_lifetime_policy": self.unknown_lifetime_policy,
+            "unknown_quota_window_policy": self.unknown_quota_window_policy,
+            # Compatibility output; semantics are no longer lifetime-based.
+            "unknown_lifetime_policy": self.unknown_quota_window_policy,
             "necessary_generation_authorized": self.necessary_generation_authorized,
             "generation_effect_authorized": self.generation_effect_authorized,
             "generation_budget_safe": self.generation_budget_safe,
@@ -88,15 +95,13 @@ def resolve_execution_policy(
 ) -> ResolvedExecutionPolicy:
     """Resolve mutable execution policy for one cycle from current truth owners.
 
+    Capacity is evaluated against the provider's *current quota window* only.
+    Historical task/session inventory is audit/reconciliation evidence and must
+    never reduce current-window headroom.
+
     Precedence is intentionally asymmetric:
     stable adapter defaults < current governed project authority < direct provider
     observation < durable StateStore effect state.
-
-    Adapter values are never interpreted as proof of a current Owner decision.
-    A governed authority payload may override mutable ceilings, reserve semantics,
-    unknown-history policy and necessity-based generation authorization without
-    editing the committed adapter. Provider hard-limit evidence always wins.
-    StateStore UNKNOWN/in-flight state never grants a new effect.
     """
 
     project = str(adapter.get("project") or "").strip()
@@ -116,12 +121,13 @@ def resolve_execution_policy(
     ).strip() or None
     authority_is_current = bool(authority and authority.get("current", True) and authority_event_id)
 
-    ceiling_source = "adapter.default"
     ceiling_value = stable_budget.get("ceiling")
+    ceiling_source = "adapter.default" if ceiling_value is not None else "unresolved"
     if authority_is_current and current_budget.get("ceiling") is not None:
         ceiling_value = current_budget.get("ceiling")
         ceiling_source = "governed_authority.task_budget.ceiling"
-    ceiling = _integer(ceiling_value, "ceiling")
+    ceiling = _integer(ceiling_value, "ceiling") if ceiling_value is not None else None
+    ceiling_resolved = ceiling is not None
 
     reserve_source = "adapter.default"
     reserve_value = _first(stable_budget.get("reserve_target"), stable_budget.get("reserve"), default=0)
@@ -131,7 +137,7 @@ def resolve_execution_policy(
         reserve_value = _first(current_budget.get("reserve_target"), current_budget.get("reserve"), default=0)
         reserve_source = "governed_authority.task_budget.reserve"
     reserve_target = _integer(reserve_value, "reserve_target")
-    if reserve_target > ceiling:
+    if ceiling is not None and reserve_target > ceiling:
         raise PolicyResolutionError("reserve_target cannot exceed ceiling")
 
     reserve_is_hard = bool(
@@ -142,11 +148,27 @@ def resolve_execution_policy(
         )
     )
 
+    # New name wins; legacy name remains a compatibility alias for existing
+    # adapters/current-authority payloads during migration.
     unknown_source = "adapter.default"
-    unknown_policy = str(stable_budget.get("unknown_lifetime_capacity") or "DENY").strip().upper()
-    if authority_is_current and current_budget.get("unknown_lifetime_capacity") is not None:
-        unknown_policy = str(current_budget.get("unknown_lifetime_capacity") or "").strip().upper()
-        unknown_source = "governed_authority.task_budget.unknown_lifetime_capacity"
+    stable_unknown = _first(
+        stable_budget.get("unknown_quota_window_capacity"),
+        stable_budget.get("unknown_lifetime_capacity"),
+        default="DENY",
+    )
+    unknown_policy = str(stable_unknown or "DENY").strip().upper()
+    if authority_is_current:
+        authority_unknown = _first(
+            current_budget.get("unknown_quota_window_capacity"),
+            current_budget.get("unknown_lifetime_capacity"),
+        )
+        if authority_unknown is not None:
+            unknown_policy = str(authority_unknown or "").strip().upper()
+            unknown_source = (
+                "governed_authority.task_budget.unknown_quota_window_capacity"
+                if current_budget.get("unknown_quota_window_capacity") is not None
+                else "governed_authority.task_budget.unknown_lifetime_capacity[compat]"
+            )
 
     necessity_source = "adapter.default_denied"
     necessary_generation_authorized = False
@@ -167,17 +189,25 @@ def resolve_execution_policy(
             generation_policy.get("automatic_next_generation_authorized"),
             generation_policy.get("provider_generation_authorized"),
         )
-        # A current authority that explicitly authorizes a necessary generation
-        # is sufficient for the guarded runtime effect; it does not enable any
-        # unrelated mutation and still requires every binding/idempotency guard.
         generation_effect_authorized = bool(
             explicit_effect if explicit_effect is not None else necessary_generation_authorized
         )
         effect_source = "governed_authority.generation_policy"
 
-    lifetime_known = bool(provider.get("lifetime_consumption_known", False))
-    proven_lifetime_used = provider.get("proven_lifetime_used")
-    current_enumerated = provider.get("current_enumerated_tasks")
+    window_known_raw = _first(
+        provider.get("quota_window_consumption_known"),
+        provider.get("lifetime_consumption_known"),
+        default=False,
+    )
+    window_known = bool(window_known_raw)
+    proven_window_used = _first(
+        provider.get("proven_quota_window_used"),
+        provider.get("proven_lifetime_used"),
+    )
+    current_window_enumerated = _first(
+        provider.get("current_window_enumerated_tasks"),
+        provider.get("current_enumerated_tasks"),
+    )
     direct_hard_limit = bool(
         provider.get("hard_ceiling_reached")
         or provider.get("hard_provider_limit_reached")
@@ -189,10 +219,10 @@ def resolve_execution_policy(
         project=project,
         ceiling=ceiling,
         reserve=hard_reserve,
-        lifetime_consumption_known=lifetime_known,
-        proven_lifetime_used=proven_lifetime_used,
-        current_enumerated_tasks=current_enumerated,
-        unknown_lifetime_policy=unknown_policy,
+        quota_window_consumption_known=window_known,
+        proven_quota_window_used=proven_window_used,
+        current_window_enumerated_tasks=current_window_enumerated,
+        unknown_quota_window_policy=unknown_policy,
         hard_ceiling_reached=direct_hard_limit,
     )
 
@@ -215,7 +245,12 @@ def resolve_execution_policy(
         "authority_current": authority_is_current,
         "authority_event_id": authority_event_id,
         "ceiling": ceiling_source,
+        "ceiling_resolved": ceiling_resolved,
         "reserve": reserve_source,
+        "budget_basis": "CURRENT_QUOTA_WINDOW",
+        "historical_usage_affects_capacity": False,
+        "unknown_quota_window_policy": unknown_source,
+        # Compatibility provenance key retained for existing consumers.
         "unknown_lifetime_policy": unknown_source,
         "necessary_generation_authorized": necessity_source,
         "generation_effect_authorized": effect_source,
@@ -231,7 +266,7 @@ def resolve_execution_policy(
         ceiling=ceiling,
         reserve_target=reserve_target,
         reserve_is_hard=reserve_is_hard,
-        unknown_lifetime_policy=unknown_policy,
+        unknown_quota_window_policy=unknown_policy,
         necessary_generation_authorized=necessary_generation_authorized,
         generation_effect_authorized=generation_effect_authorized,
         budget=budget,

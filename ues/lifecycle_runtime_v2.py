@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from typing import Any, Mapping
 
@@ -9,6 +10,7 @@ from . import lifecycle_runtime as legacy
 from .binding_safe_generation import execute_binding_safe_generation
 from .current_authority import dynamic_lineages, exact_lineage_authority, load_current_authority_json
 from .event_wakeup import register_wakeup
+from .handoff_adjudication import exact_invalid_review_handoff_adjudication
 from .jules_lifecycle import JulesLifecycleClient
 from .lineage_generation import recover_lineage_policy_from_state
 from .lineage_registry import DIRECT_CONTINUATION_STATES, lineage_lane_id, match_lineage_session, upsert_lineage_observation
@@ -17,9 +19,14 @@ from .policy_resolution import resolve_execution_policy
 from .providers.github import GitHubClient
 from .recovery_catalog import plan_recovery
 from .state_store import StateUnavailable
-from .structured_handoff import find_latest_structured_handoff_runtime
+from .structured_handoff import build_exact_review_handoff_instructions, build_required_handoff_instructions, find_latest_structured_handoff_runtime
+from .task_budget import observe_rolling_quota_window
 
 SCHEMA_VERSION = "2.0"
+JULES_TASK_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
+_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
+_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+_STRUCTURED_HANDOFF_RECOVERY_CAUSE = "STRUCTURED_HANDOFF_RECOVERY_REQUIRED"
 
 
 def _role_policy(config: Mapping[str, Any], role: str) -> Mapping[str, Any] | None:
@@ -132,23 +139,105 @@ def _replacement_cause(lane_authority: Mapping[str, Any] | None) -> str | None:
     return value or None
 
 
+def _policy_exact_baseline(policy: Mapping[str, Any]) -> tuple[str, str] | None:
+    raw = str(policy.get("exact_baseline") or "").strip()
+    if not raw:
+        return None
+    ref, sep, sha = raw.rpartition("@")
+    ref = ref.strip()
+    sha = sha.strip().lower()
+    if ref.startswith("refs/heads/"):
+        ref = ref[len("refs/heads/") :]
+    elif ref.startswith("refs/"):
+        raise StateUnavailable("lineage exact_baseline must reference a branch")
+    if (
+        not sep
+        or not ref
+        or not _REF.fullmatch(ref)
+        or ref.startswith("/")
+        or ref.endswith("/")
+        or ".." in ref
+        or "@{" in ref
+        or not _SHA.fullmatch(sha)
+    ):
+        raise StateUnavailable("lineage exact_baseline must be branch@40hex-sha")
+    return ref, sha
+
+
+def _candidate_sha(policy: Mapping[str, Any], pr_state: Mapping[str, Any]) -> str | None:
+    explicit = _policy_exact_baseline(policy)
+    if explicit is not None:
+        return explicit[1]
+    value = str(pr_state.get("current_sha") or "").strip().lower()
+    return value or None
+
+
 def _generation_preconditions(
     *,
     github: GitHubClient,
     repository: str,
     pr_state: Mapping[str, Any],
+    policy: Mapping[str, Any],
     source_proven: bool,
-) -> tuple[str | None, bool, bool]:
+) -> tuple[str | None, str | None, bool, bool]:
+    owner, repo = legacy._repo_parts(repository)
+    explicit = _policy_exact_baseline(policy)
+    if explicit is not None:
+        head_ref, candidate_sha = explicit
+        pr = pr_state.get("pr") if isinstance(pr_state.get("pr"), Mapping) else None
+        pr_sha = str(pr_state.get("current_sha") or "").strip().lower()
+        pr_ref = str((pr or {}).get("head_ref") or "").strip()
+        if pr_sha and pr_sha != candidate_sha:
+            return head_ref, candidate_sha, source_proven, False
+        if pr_ref and pr_ref != head_ref:
+            return head_ref, candidate_sha, source_proven, False
+        exact = github.verify_exact_head(owner, repo, head_ref, candidate_sha)
+        return head_ref, candidate_sha, source_proven, bool(exact.get("exact_head_match"))
+
     pr = pr_state.get("pr") if isinstance(pr_state.get("pr"), Mapping) else None
-    current_sha = str(pr_state.get("current_sha") or "")
+    current_sha = str(pr_state.get("current_sha") or "").strip().lower()
     if pr is None or not current_sha:
-        return None, source_proven, False
+        return None, None, source_proven, False
     head_ref = str(pr.get("head_ref") or "").strip()
     if not head_ref:
-        return None, source_proven, False
-    owner, repo = legacy._repo_parts(repository)
+        return None, current_sha, source_proven, False
     exact = github.verify_exact_head(owner, repo, head_ref, current_sha)
-    return head_ref, source_proven, bool(exact.get("exact_head_match"))
+    return head_ref, current_sha, source_proven, bool(exact.get("exact_head_match"))
+
+
+def _replacement_prompt(role: str, workstream: str, policy: Mapping[str, Any], current_sha: str | None) -> str | None:
+    template = str(policy.get("replacement_prompt") or "").strip()
+    if not template:
+        return None
+    role_name = "ASSURANCE" if str(role).upper() == "FINAL_ASSURANCE" else str(role).upper()
+    base = template.replace("{workstream}", workstream).replace("{current_sha}", current_sha or "UNKNOWN")
+    if role_name in {"REVIEWER", "ASSURANCE"}:
+        if not current_sha:
+            return None
+        return base + "\n\n" + build_exact_review_handoff_instructions(role_name, workstream, current_sha)
+    return base + "\n\n" + build_required_handoff_instructions(role_name, workstream)
+
+
+def _structured_handoff_recovery_ready(
+    *,
+    role: str,
+    binding: Mapping[str, Any],
+    handoff: Mapping[str, Any] | None,
+    state_snapshot: Mapping[str, Any],
+    handoff_invalidated: bool = False,
+) -> bool:
+    role_name = str(role).upper()
+    provider_state = str(binding.get("provider_state") or "UNKNOWN").upper()
+    return bool(
+        role_name in {"REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"}
+        and binding.get("status") == "PROVEN"
+        and provider_state == "COMPLETED"
+        and (handoff is None or handoff_invalidated)
+        and int(state_snapshot.get("generation") or 0) >= 1
+        and str(state_snapshot.get("session_fingerprint") or "").strip()
+        and not state_snapshot.get("unknown_write_state")
+        and not state_snapshot.get("action_in_flight")
+    )
 
 
 def _load_wakeup_env() -> dict[str, Any] | None:
@@ -254,13 +343,18 @@ def run(project: str) -> dict[str, Any]:
                 role=state_role,
                 binding=binding,
                 policy=policy,
-                current_candidate_sha=pr_states[workstream].get("current_sha"),
+                current_candidate_sha=_candidate_sha(raw_policy, pr_states[workstream]),
                 current_pr_number=int(raw_policy.get("pr_number") or 0) or None,
             )
 
+    # Jules currently meters tasks in a rolling 24-hour window. Keep the full
+    # inventory for lineage/reconciliation, but feed only current-window usage to
+    # the budget gate. No provider task-limit number is hard-coded here.
     provider_observation = {
-        "lifetime_consumption_known": False,
-        "current_enumerated_tasks": len(inventory),
+        **observe_rolling_quota_window(
+            inventory,
+            window_seconds=JULES_TASK_QUOTA_WINDOW_SECONDS,
+        ),
         "hard_provider_limit_reached": False,
     }
 
@@ -283,23 +377,25 @@ def run(project: str) -> dict[str, Any]:
             lane_authority = exact_lineage_authority(authority, workstream=workstream, role=role)
             governed = _governed_for_lane(authority, lane_authority)
             state_role = "ASSURANCE" if role == "FINAL_ASSURANCE" else role
+            state_snapshot = _state_snapshot(store, project=project_id, route=route, workstream=workstream, role=role)
             resolved = resolve_execution_policy(
                 adapter=adapter,
                 governed_authority=governed,
                 provider_observation=provider_observation,
-                state_snapshot=_state_snapshot(store, project=project_id, route=route, workstream=workstream, role=role),
+                state_snapshot=state_snapshot,
             )
             effective = resolved.to_dict()
             effective_policies[(workstream, role)] = effective
 
-            replacement_prompt = legacy._replacement_prompt(state_role, workstream, raw_policy, pr_state.get("current_sha"))
+            candidate_sha = _candidate_sha(raw_policy, pr_state)
+            replacement_prompt = _replacement_prompt(state_role, workstream, raw_policy, candidate_sha)
             observation = {
                 "binding_status": binding.get("status"),
                 "provider_state": binding.get("provider_state"),
                 "role": state_role,
                 "handoff": handoff or {},
-                "candidate_sha": pr_state.get("current_sha") if state_role == "WRITER" else None,
-                "current_sha": pr_state.get("current_sha"),
+                "candidate_sha": candidate_sha if state_role == "WRITER" else None,
+                "current_sha": candidate_sha,
                 "ci_reason": ci.get("reason"),
                 "ci_verdict": ci.get("verdict"),
                 "pr_branch_match": legacy._pr_branch_match(pr_state, raw_policy),
@@ -310,7 +406,7 @@ def run(project: str) -> dict[str, Any]:
                 "replacement_prompt_ready": bool(replacement_prompt),
                 "replacement_required_proven": bool(lane_authority),
                 "active_duplicate_absent": False,
-                "unknown_write_state": bool(_state_snapshot(store, project=project_id, route=route, workstream=workstream, role=role).get("unknown_write_state")),
+                "unknown_write_state": bool(state_snapshot.get("unknown_write_state")),
             }
 
             recovery = dict(plan_recovery(observation))
@@ -320,62 +416,91 @@ def run(project: str) -> dict[str, Any]:
             cause = _replacement_cause(lane_authority)
             generation_requested = bool(lane_authority and cause)
             if generation_requested:
-                source_name, source_proven = _source_for_repository(jules, repository)
-                start_ref, repo_proven, ref_proven = _generation_preconditions(
-                    github=github,
-                    repository=repository,
-                    pr_state=pr_state,
-                    source_proven=source_proven,
-                )
-                active_absent = bool(
-                    start_ref
-                    and _active_duplicate_absent(
-                        inventory,
-                        repository=repository,
-                        starting_branch=start_ref,
-                        current_session_fingerprint=str(binding.get("session_fingerprint") or "") or None,
-                    )
-                )
-                observation["active_duplicate_absent"] = active_absent
-
-                # Reuse-first remains binding: an active exact-bound session must
-                # not be replaced merely because a generation is authorized.
                 provider_state = str(binding.get("provider_state") or "UNKNOWN").upper()
-                active_exact_session = binding.get("status") == "PROVEN" and provider_state in DIRECT_CONTINUATION_STATES
-                if active_exact_session:
+                handoff_invalidated = exact_invalid_review_handoff_adjudication(
+                    authority_event_id=str((authority or {}).get("authority_event_id") or ""),
+                    lane_authority=lane_authority,
+                    project=project_id,
+                    route=route,
+                    workstream=workstream,
+                    role=role,
+                    handoff=handoff,
+                    binding=binding,
+                    state_snapshot=state_snapshot,
+                )
+                if cause == _STRUCTURED_HANDOFF_RECOVERY_CAUSE and not _structured_handoff_recovery_ready(
+                    role=role,
+                    binding=binding,
+                    handoff=handoff,
+                    state_snapshot=state_snapshot,
+                    handoff_invalidated=handoff_invalidated,
+                ):
                     effect = {
-                        "decision": "REUSE_ACTIVE_EXACT_SESSION",
+                        "decision": "STRUCTURED_HANDOFF_RECOVERY_PRECONDITIONS_REQUIRED",
                         "provider_write_attempted": False,
+                        "binding_status": binding.get("status"),
+                        "provider_state": provider_state,
+                        "structured_handoff_present": handoff is not None,
+                        "structured_handoff_explicitly_invalidated": handoff_invalidated,
                         "safe_to_blind_retry": False,
                     }
-                elif source_name and start_ref and replacement_prompt:
-                    effect = execute_binding_safe_generation(
-                        store,
-                        jules,
-                        project=project_id,
-                        route=route,
-                        workstream=workstream,
-                        role=role,
-                        prompt=replacement_prompt,
-                        title=f"{project_id} {workstream} {role}",
-                        source_name=source_name,
-                        starting_branch=start_ref,
-                        repository=repository,
-                        authority_event_id=str((authority or {}).get("authority_event_id") or ""),
-                        current_policy=effective,
-                        replacement_cause=cause,
-                        candidate_sha=str(pr_state.get("current_sha") or "") or None,
-                        work_remaining=observation["work_remaining"],
-                        active_duplicate_absent=active_absent,
-                        exact_repository_binding=repo_proven,
-                        exact_starting_ref_binding=ref_proven,
-                    )
                 else:
-                    effect = {
-                        "decision": "NEXT_GENERATION_EXACT_SOURCE_REF_OR_TASK_SPEC_REQUIRED",
-                        "provider_write_attempted": False,
-                        "safe_to_blind_retry": False,
-                    }
+                    source_name, source_proven = _source_for_repository(jules, repository)
+                    start_ref, generation_sha, repo_proven, ref_proven = _generation_preconditions(
+                        github=github,
+                        repository=repository,
+                        pr_state=pr_state,
+                        policy=raw_policy,
+                        source_proven=source_proven,
+                    )
+                    active_absent = bool(
+                        start_ref
+                        and _active_duplicate_absent(
+                            inventory,
+                            repository=repository,
+                            starting_branch=start_ref,
+                            current_session_fingerprint=str(binding.get("session_fingerprint") or "") or None,
+                        )
+                    )
+                    observation["active_duplicate_absent"] = active_absent
+
+                    # Reuse-first remains binding: an active exact-bound session must
+                    # not be replaced merely because a generation is authorized.
+                    active_exact_session = binding.get("status") == "PROVEN" and provider_state in DIRECT_CONTINUATION_STATES
+                    if active_exact_session:
+                        effect = {
+                            "decision": "REUSE_ACTIVE_EXACT_SESSION",
+                            "provider_write_attempted": False,
+                            "safe_to_blind_retry": False,
+                        }
+                    elif source_name and start_ref and generation_sha and replacement_prompt:
+                        effect = execute_binding_safe_generation(
+                            store,
+                            jules,
+                            project=project_id,
+                            route=route,
+                            workstream=workstream,
+                            role=role,
+                            prompt=replacement_prompt,
+                            title=f"{project_id} {workstream} {role}",
+                            source_name=source_name,
+                            starting_branch=start_ref,
+                            repository=repository,
+                            authority_event_id=str((authority or {}).get("authority_event_id") or ""),
+                            current_policy=effective,
+                            replacement_cause=cause,
+                            candidate_sha=generation_sha,
+                            work_remaining=observation["work_remaining"],
+                            active_duplicate_absent=active_absent,
+                            exact_repository_binding=repo_proven,
+                            exact_starting_ref_binding=ref_proven,
+                        )
+                    else:
+                        effect = {
+                            "decision": "NEXT_GENERATION_EXACT_SOURCE_REF_OR_TASK_SPEC_REQUIRED",
+                            "provider_write_attempted": False,
+                            "safe_to_blind_retry": False,
+                        }
             else:
                 # Legacy same-session / completed-output routing is retained, but
                 # automatic generation is forcibly disabled here; V2 owns it.
@@ -406,7 +531,7 @@ def run(project: str) -> dict[str, Any]:
                     "binding_status": binding.get("status"),
                     "provider_state": binding.get("provider_state"),
                     "generation": lineage_state.get("generation"),
-                    "current_sha": pr_state.get("current_sha"),
+                    "current_sha": candidate_sha,
                     "ci_verdict": ci.get("verdict"),
                     "handoff": handoff,
                     "current_policy": effective,
@@ -422,6 +547,7 @@ def run(project: str) -> dict[str, Any]:
         "runtime": "V2",
         "lineage_count": len(results),
         "provider_session_count": len(inventory),
+        "provider_quota_window": provider_observation,
         "binding_counts": dict(sorted(Counter(str(item.get("binding_status") or "UNKNOWN") for item in results).items())),
         "recovery_action_counts": dict(sorted(action_counts.items())),
         "effect_decision_counts": dict(sorted(effect_counts.items())),
@@ -433,6 +559,7 @@ def run(project: str) -> dict[str, Any]:
         "adapter_mutable_snapshot_is_authority": False,
         "state_store_generation_recovery_enabled": True,
         "same_session_reuse_first": True,
+        "structured_handoff_recovery_is_same_logical_lineage": True,
     }
     health = legacy._persist_health(store, project=project_id, route=route, status="PASS", summary=summary)
     return {

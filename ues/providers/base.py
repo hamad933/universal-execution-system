@@ -104,11 +104,12 @@ class RetryPolicy:
     max_attempts: int = 3
     base_delay_seconds: float = 0.25
     max_delay_seconds: float = 2.0
+    max_retry_after_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
-        if self.base_delay_seconds < 0 or self.max_delay_seconds < 0:
+        if self.base_delay_seconds < 0 or self.max_delay_seconds < 0 or self.max_retry_after_seconds < 0:
             raise ValueError("retry delays must be non-negative")
 
 
@@ -190,7 +191,7 @@ def read_json_with_retries(
     for attempt in range(1, retry_policy.max_attempts + 1):
         try:
             response = transport.request(method, url, headers=headers, body=None, timeout=timeout)
-        except NetworkError as exc:
+        except NetworkError:
             last_error = NetworkError("provider network request failed", operation=operation)
         else:
             if 200 <= response.status <= 299:
@@ -214,6 +215,8 @@ def read_json_with_retries(
             retry_policy.base_delay_seconds * (2 ** (attempt - 1)),
         )
         if isinstance(last_error, RateLimitError) and last_error.retry_after is not None:
+            if last_error.retry_after > retry_policy.max_retry_after_seconds:
+                raise last_error
             delay = last_error.retry_after
         sleeper(delay)
 

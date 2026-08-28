@@ -15,6 +15,7 @@ VALID_REPLACEMENT_CAUSES = frozenset(
         "REPEATED_PROVEN_INEFFECTIVENESS",
         "FINAL_ASSURANCE_AUTHORIZED",
         "STALE_REVIEW_REQUIRES_CURRENT_SHA_REREVIEW",
+        "STRUCTURED_HANDOFF_RECOVERY_REQUIRED",
         "OTHER_GOVERNED_REPLACEMENT_CAUSE",
     }
 )
@@ -183,8 +184,21 @@ def assess_generation_transition(
         failures.append("ROLE_NOT_SUPPORTED")
     if cause not in VALID_REPLACEMENT_CAUSES:
         failures.append("REPLACEMENT_CAUSE_NOT_GOVERNED")
-    if not work_remaining and cause != "FINAL_ASSURANCE_AUTHORIZED":
+    # A stale exact-SHA review is itself remaining review work: candidate movement
+    # invalidates the prior evidence even when the implementation PR is already
+    # closed/merged. Do not make current-SHA rereview depend on PR-open topology.
+    if not work_remaining and cause not in {
+        "FINAL_ASSURANCE_AUTHORIZED",
+        "STRUCTURED_HANDOFF_RECOVERY_REQUIRED",
+        "STALE_REVIEW_REQUIRES_CURRENT_SHA_REREVIEW",
+    }:
         failures.append("NO_REMAINING_WORK")
+    if cause == "STRUCTURED_HANDOFF_RECOVERY_REQUIRED" and role_name not in {
+        "REVIEWER",
+        "ASSURANCE",
+        "FINAL_ASSURANCE",
+    }:
+        failures.append("STRUCTURED_HANDOFF_RECOVERY_REQUIRES_REVIEW_ROLE")
     if not bool(current_policy.get("necessary_generation_authorized")):
         failures.append("CURRENT_PROJECT_AUTHORITY_REQUIRED")
     if not bool(current_policy.get("generation_effect_authorized")):

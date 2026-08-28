@@ -11,17 +11,26 @@ from typing import Any, Mapping
 from . import lifecycle_runtime as legacy
 from .current_authority import load_current_authority_json
 from .generation_transition import initial_lineage_transition_key
+from .evidence_supplement_runtime import evidence_supplement_entries, run_evidence_supplements
 from .initial_lineage_effects import execute_initial_lineage_generation
 from .initial_lineage_reconciliation import reconcile_unknown_initial_lineage
 from .jules_lifecycle import JulesLifecycleClient
 from .lineage_registry import lineage_lane_id
 from .live_runtime import build_live_state_store
 from .policy_resolution import resolve_execution_policy
+from .providers.base import NetworkError, RateLimitError, ServerError
 from .providers.github import GitHubClient
+from .structured_handoff import build_required_handoff_instructions
+from .task_budget import observe_rolling_quota_window
 
 SCHEMA_VERSION = "1.0"
 SUPPORTED_PROJECTS = frozenset({"GS", "CEP", "RP01", "RP02", "RP03", "RP04"})
 SUPPORTED_ROLES = frozenset({"WRITER", "REVIEWER", "ASSURANCE", "FINAL_ASSURANCE"})
+JULES_TASK_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
+_PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list", "jules.sessions.get"})
+_PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
+_PROVIDER_READ_UNAVAILABLE_RESULT = "INITIAL_LINEAGE_PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
+_PROVIDER_READ_UNAVAILABLE_EXIT = 75
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _ALLOWED_TASK_FIELDS = frozenset(
@@ -182,13 +191,38 @@ def _parse_exact_baseline(task_spec: Mapping[str, Any]) -> tuple[str, str]:
     return ref, sha
 
 
-def _task_prompt(task_spec: Mapping[str, Any]) -> str:
+def _task_prompt(
+    task_spec: Mapping[str, Any],
+    *,
+    role: str | None = None,
+    workstream: str | None = None,
+) -> str:
     canonical = json.dumps(dict(task_spec), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return (
+    base = (
         "Execute exactly the following Parent-governed task specification. "
         "Do not widen scope or perform any action prohibited by it. Return the required evidence and stop at its stop_gate.\n\n"
         + canonical
     )
+    if role is None and workstream is None:
+        return base
+    if role is None or workstream is None:
+        raise ValueError("role and workstream are both required for machine-actionable handoff enforcement")
+
+    state_role = _state_role(role)
+    instructions = build_required_handoff_instructions(state_role, workstream)
+    if state_role in {"REVIEWER", "ASSURANCE"}:
+        _, candidate_sha = _parse_exact_baseline(task_spec)
+        instructions = instructions.replace(
+            '"candidate_sha": null', f'"candidate_sha": "{candidate_sha}"'
+        ).replace(
+            '"reviewed_sha": null', f'"reviewed_sha": "{candidate_sha}"'
+        )
+        instructions += (
+            "\nFor this READ_ONLY review/assurance task, candidate_sha and reviewed_sha MUST both remain exactly "
+            f"{candidate_sha}. If that exact SHA was not actually reviewed, do not claim a verdict; return a blocked or "
+            "UNKNOWN handoff that states the evidence boundary instead."
+        )
+    return base + "\n\n" + instructions
 
 
 def _source_for_repository(client: JulesLifecycleClient, repository: str) -> tuple[str | None, bool]:
@@ -266,6 +300,37 @@ def _authority_entries(authority: Mapping[str, Any]) -> Mapping[str,Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _is_pre_effect_provider_read_failure(exc: BaseException) -> bool:
+    return isinstance(exc, _PRE_EFFECT_PROVIDER_READ_ERRORS) and str(
+        getattr(exc, "operation", "") or ""
+    ) in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
+
+
+def _provider_read_unavailable_result(
+    project: str,
+    route: str,
+    *,
+    authority: Mapping[str, Any],
+    exc: BaseException,
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project": project,
+        "route": route,
+        "result": _PROVIDER_READ_UNAVAILABLE_RESULT,
+        "authority_event_id": authority.get("authority_event_id"),
+        "provider_read_authoritative": False,
+        "provider_read_operation": getattr(exc, "operation", None),
+        "provider_read_error_category": getattr(exc, "category", "PROVIDER_READ_ERROR"),
+        "provider_write_attempted": False,
+        "external_effects_dispatched": 0,
+        "new_tasks_or_sessions_created": 0,
+        "retry_condition": "FRESH_AUTHORITATIVE_PROVIDER_READ_REQUIRED",
+        "raw_session_ids_persisted": False,
+        "safe_to_blind_retry": False,
+    }
+
+
 def run(project: str) -> dict[str, Any]:
     adapter = _load_adapter(project)
     project_id = str(adapter.get("project") or project.upper())
@@ -289,7 +354,8 @@ def run(project: str) -> dict[str, Any]:
         }
 
     entries = _authority_entries(authority)
-    if not entries:
+    supplement_entries = evidence_supplement_entries(authority)
+    if not entries and not supplement_entries:
         return {
             "schema_version": SCHEMA_VERSION,
             "project": project_id,
@@ -309,12 +375,25 @@ def run(project: str) -> dict[str, Any]:
     store = build_live_state_store()
     jules = JulesLifecycleClient(key)
     github = GitHubClient(github_token)
-    inventory = legacy._provider_inventory(jules)
-    source_name, source_proven = _source_for_repository(jules, repository)
-    provider_observation = {
-        "lifetime_consumption_known": False,
-        "current_enumerated_tasks": len(inventory),
-    }
+    try:
+        inventory = legacy._provider_inventory(jules)
+    except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
+        if not _is_pre_effect_provider_read_failure(exc):
+            raise
+        return _provider_read_unavailable_result(
+            project_id,
+            route,
+            authority=authority,
+            exc=exc,
+        )
+    source_name, source_proven = _source_for_repository(jules, repository) if entries else (None, False)
+    # Jules currently meters tasks in a rolling 24-hour window. Historical
+    # sessions stay in inventory for reconciliation/marker matching but are not
+    # charged against the current capacity gate.
+    provider_observation = observe_rolling_quota_window(
+        inventory,
+        window_seconds=JULES_TASK_QUOTA_WINDOW_SECONDS,
+    )
     owner, repo = legacy._repo_parts(repository)
     event_id = str(authority.get("authority_event_id") or "").strip()
 
@@ -465,7 +544,7 @@ def run(project: str) -> dict[str, Any]:
                 workstream=workstream,
                 role=role,
                 task_spec=task_spec,
-                prompt=_task_prompt(task_spec),
+                prompt=_task_prompt(task_spec, role=role, workstream=workstream),
                 title=f"{project_id} {workstream} {role} G1",
                 source_name=source_name,
                 starting_branch=starting_branch,
@@ -487,6 +566,21 @@ def run(project: str) -> dict[str, Any]:
             }
         )
 
+    if supplement_entries:
+        results.extend(
+            run_evidence_supplements(
+                adapter=adapter,
+                authority=authority,
+                entries=supplement_entries,
+                store=store,
+                jules=jules,
+                github=github,
+                inventory=inventory,
+                provider_observation=provider_observation,
+                actor=actor,
+            )
+        )
+
     decisions = Counter(
         str((item.get("effect") or item).get("decision") or "NO_EFFECT") for item in results
     )
@@ -499,6 +593,7 @@ def run(project: str) -> dict[str, Any]:
         "result": "INITIAL_LINEAGE_RUNTIME_COMPLETE",
         "authority_event_id": event_id,
         "lineage_count": len(results),
+        "provider_quota_window": provider_observation,
         "effect_decision_counts": dict(sorted(decisions.items())),
         "external_effects_dispatched": external,
         "new_tasks_or_sessions_created": created,
@@ -512,7 +607,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="UES guarded initial logical lineage runtime")
     parser.add_argument("project", choices=sorted(SUPPORTED_PROJECTS))
     args = parser.parse_args(argv)
-    print(json.dumps(run(args.project), sort_keys=True))
+    result = run(args.project)
+    print(json.dumps(result, sort_keys=True))
+    if result.get("result") == _PROVIDER_READ_UNAVAILABLE_RESULT:
+        return _PROVIDER_READ_UNAVAILABLE_EXIT
     return 0
 
 

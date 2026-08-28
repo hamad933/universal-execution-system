@@ -278,12 +278,17 @@ def recover_if_stale(
             observation = None
         else:
             observation = observe()
-            outcome = (
-                "PROVIDER_OBSERVER_FALLBACK_RECOVERED"
-                if observation.get("result") == "JULES_PROVIDER_OBSERVATION_COMPLETE"
-                else "PROVIDER_OBSERVER_FALLBACK_FAILED"
-            )
             snapshot = freshness_snapshot(store, now=now, stale_seconds=stale_seconds)
+            if observation.get("result") == "JULES_PROVIDER_OBSERVATION_COMPLETE":
+                outcome = "PROVIDER_OBSERVER_FALLBACK_RECOVERED"
+            elif not snapshot["recovery_required"]:
+                # The local fallback may lose a transient provider race while a
+                # concurrent canonical observer has already persisted the fresh
+                # authoritative state. The post-readback, not the local attempt,
+                # owns the final liveness decision.
+                outcome = "PROVIDER_OBSERVER_FALLBACK_SUPERSEDED_BY_FRESH_READBACK"
+            else:
+                outcome = "PROVIDER_OBSERVER_FALLBACK_FAILED"
     finally:
         store.release_lease(coordination_lane, lease.lease.lease_id)
 
@@ -303,6 +308,9 @@ def recover_if_stale(
     }
     if outcome == "PROVIDER_OBSERVER_FALLBACK_SUPERSEDED_BY_FRESH_READBACK":
         result["after_lease"] = snapshot
+        if observation is not None:
+            result["observation"] = observation
+            result["after"] = snapshot
     elif observation is not None:
         result["observation"] = observation
         result["after"] = snapshot

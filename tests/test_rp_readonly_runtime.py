@@ -4,7 +4,6 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from ues import lifecycle_runtime as legacy
 from ues import provider_observer, provider_observer_runtime
 from ues.rp_readonly_runtime import (
     RP_NAMES,
@@ -43,28 +42,34 @@ class RPReadOnlyRuntimeTests(unittest.TestCase):
         self.assertEqual(result["rp_runtime_mode"], "READ_ONLY_SHADOW")
         self.assertFalse(result["provider_mutation_performed"])
 
-    def test_lifecycle_composition_only_replaces_adapter_loader_during_call(self):
-        original_loader = legacy._load_adapter
-
-        def fake_observed_run(project: str):
-            adapter = legacy._load_adapter(project)
-            self.assertEqual(adapter["project"], "RP03")
-            self.assertFalse(adapter["activation"]["mutation_allowed"])
-            return {
-                "project": project,
-                "external_effects_dispatched": 0,
-                "new_tasks_or_sessions_created": 0,
-                "current_authority_loaded": False,
-            }
-
-        with patch("ues.rp_readonly_runtime.observed.run", side_effect=fake_observed_run):
+    def test_lifecycle_health_uses_observation_backed_no_effect_path(self):
+        expected = {
+            "project": "RP03",
+            "external_effects_dispatched": 0,
+            "new_tasks_or_sessions_created": 0,
+            "current_authority_loaded": False,
+            "provider_live_read_performed": False,
+        }
+        with patch.dict("os.environ", {"UES_CURRENT_AUTHORITY_JSON": ""}, clear=False), patch(
+            "ues.rp_readonly_runtime.run_observation_backed_no_effect_health",
+            return_value=expected,
+        ) as health:
             result = lifecycle_health("RP03")
 
-        self.assertIs(legacy._load_adapter, original_loader)
+        health.assert_called_once()
+        adapter = health.call_args.args[0]
+        self.assertEqual(adapter["project"], "RP03")
+        self.assertIsNone(health.call_args.kwargs["authority"])
         self.assertEqual(result["project"], "RP03")
         self.assertEqual(result["external_effects_dispatched"], 0)
         self.assertEqual(result["new_tasks_or_sessions_created"], 0)
+        self.assertFalse(result["provider_live_read_performed"])
         self.assertFalse(result["runtime_wrapper_grants_authority"])
+
+    def test_readonly_health_rejects_authority_transport(self):
+        with patch.dict("os.environ", {"UES_CURRENT_AUTHORITY_JSON": '{"current":true}'}, clear=False):
+            with self.assertRaises(ValueError):
+                lifecycle_health("RP01")
 
     def test_workflow_is_authority_neutral_and_has_no_provider_mutation_command(self):
         text = Path(".github/workflows/ues-rp-readonly-runtime.yml").read_text(encoding="utf-8")

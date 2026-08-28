@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from ues import lifecycle_runtime as legacy
 from ues.lifecycle_runtime_observed import (
+    _PROVIDER_READ_UNAVAILABLE_EXIT,
+    _PROVIDER_READ_UNAVAILABLE_RESULT,
     _persist_health_with_runtime_binding,
+    main,
+    run,
     runtime_binding_from_env,
 )
+from ues.providers.base import NetworkError, RateLimitError, ServerError
 from ues.state_store import DeterministicFileStateStore
 
 
@@ -121,6 +130,48 @@ class LifecycleRuntimeObservedTests(unittest.TestCase):
         self.assertEqual(record.last_observed_github_state["status"], "UNBOUND")
         self.assertNotIn("sha", record.last_observed_github_state)
         self.assertEqual(record.last_observed_provider_state["summary"]["phase"], "NEW")
+
+    def test_pre_effect_inventory_outages_become_structured_zero_effect_results(self) -> None:
+        for error_type in (NetworkError, RateLimitError, ServerError):
+            with self.subTest(error_type=error_type.__name__):
+                error = error_type("provider read unavailable", operation="jules.sessions.list")
+                with patch("ues.lifecycle_runtime_observed.current.run", side_effect=error):
+                    result = run("CEP")
+
+                self.assertEqual(result["result"], _PROVIDER_READ_UNAVAILABLE_RESULT)
+                self.assertEqual(result["lifecycle_state"], "WAITING")
+                self.assertFalse(result["provider_read_authoritative"])
+                self.assertEqual(result["provider_read_operation"], "jules.sessions.list")
+                self.assertEqual(result["provider_read_error_category"], error.category)
+                self.assertFalse(result["provider_write_attempted"])
+                self.assertEqual(result["external_effects_dispatched"], 0)
+                self.assertEqual(result["new_tasks_or_sessions_created"], 0)
+                self.assertEqual(result["retry_condition"], "FRESH_AUTHORITATIVE_PROVIDER_READ_REQUIRED")
+                self.assertFalse(result["safe_to_blind_retry"])
+                self.assertFalse(result["raw_session_ids_persisted"])
+                self.assertFalse(result["runtime_binding_grants_authority"])
+                self.assertEqual(result["observability_schema_version"], "1.0")
+
+    def test_non_inventory_provider_failure_is_not_reclassified(self) -> None:
+        error = NetworkError("write readback unavailable", operation="jules.sessions.sendMessage")
+        with patch("ues.lifecycle_runtime_observed.current.run", side_effect=error):
+            with self.assertRaises(NetworkError) as raised:
+                run("GS")
+        self.assertIs(raised.exception, error)
+
+    def test_cli_keeps_provider_outage_fail_closed_with_structured_output(self) -> None:
+        result = {
+            "result": _PROVIDER_READ_UNAVAILABLE_RESULT,
+            "external_effects_dispatched": 0,
+            "new_tasks_or_sessions_created": 0,
+            "safe_to_blind_retry": False,
+        }
+        output = io.StringIO()
+        with patch("ues.lifecycle_runtime_observed.run", return_value=result), redirect_stdout(output):
+            exit_code = main(["CEP"])
+
+        self.assertEqual(exit_code, _PROVIDER_READ_UNAVAILABLE_EXIT)
+        self.assertEqual(json.loads(output.getvalue())["result"], _PROVIDER_READ_UNAVAILABLE_RESULT)
 
 
 if __name__ == "__main__":

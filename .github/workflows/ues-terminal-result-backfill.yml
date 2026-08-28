@@ -1,0 +1,238 @@
+name: UES Terminal Result Backfill
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "11,26,41,56 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  discover-projects:
+    runs-on: ubuntu-latest
+    outputs:
+      projects: ${{ steps.projects.outputs.projects }}
+    steps:
+      - name: Checkout governed default branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Discover governed repository-backed projects
+        id: projects
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from ues.terminal_recovery import load_governed_projects
+
+          projects = [item["project"] for item in load_governed_projects()]
+          if not projects:
+              raise SystemExit("no governed repository-backed projects discovered")
+          print("projects=" + json.dumps(projects, separators=(",", ":")))
+          PY
+
+  backfill:
+    needs: discover-projects
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    concurrency:
+      group: ues-terminal-result-backfill-${{ matrix.project }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      # Jules source/session inventory is account-global. Each project cell must
+      # independently preserve its StateStore/CAS lane, but unconstrained matrix
+      # fan-out duplicates the same provider inventory scan and can exhaust the
+      # bounded GET budget before any Activity read starts. Keep two project lanes
+      # progressing concurrently while bounding only this shared provider resource.
+      max-parallel: 2
+      matrix:
+        project: ${{ fromJSON(needs.discover-projects.outputs.projects) }}
+    steps:
+      - name: Checkout governed default branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Read-only project-scoped terminal backfill
+        id: backfill
+        timeout-minutes: 45
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          # At matrix width two, four GET-only Activity workers per project cap the
+          # aggregate Activity fan-out at eight, matching the proven observer bound.
+          UES_TERMINAL_BACKFILL_ACTIVITY_READ_WORKERS: "4"
+          UES_BACKFILL_PROJECT: ${{ matrix.project }}
+        run: |
+          set +e
+          python -m ues.terminal_backfill "$UES_BACKFILL_PROJECT" > "$RUNNER_TEMP/ues-terminal-backfill-$UES_BACKFILL_PROJECT.json"
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/ues-terminal-backfill-$UES_BACKFILL_PROJECT.json"
+          exit "$status"
+
+      - name: Preserve project terminal backfill receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-terminal-backfill-${{ matrix.project }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ues-terminal-backfill-${{ matrix.project }}.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Read this project lifecycle immediately after its backfill
+        if: always()
+        timeout-minutes: 20
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_LIFECYCLE_PROJECT: ${{ matrix.project }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from ues.terminal_lifecycle import run
+
+          name = os.environ["UES_LIFECYCLE_PROJECT"]
+          failures = {}
+          outputs = {}
+          try:
+              result = run(name)
+          except Exception as exc:
+              failures[name] = {
+                  "error_category": str(getattr(exc, "category", None) or type(exc).__name__).upper(),
+                  "exception_text_persisted": False,
+              }
+          else:
+              summary = result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
+              safe_results = []
+              for item in result.get("results", []):
+                  if not isinstance(item, dict):
+                      continue
+                  safe_results.append({
+                      key: item.get(key)
+                      for key in (
+                          "project", "route", "logical_workstream", "role", "generation",
+                          "session_fingerprint", "repository", "status", "verdict",
+                          "candidate_sha", "reviewed_sha", "finding_count", "result_state",
+                          "freshness_status", "result_fingerprint", "current_view_fingerprint",
+                          "parent_action_required", "safe_read_only_recovery_exists",
+                      )
+                      if key in item
+                  })
+              outputs[name] = {
+                  "result": result.get("result"),
+                  "results": safe_results,
+                  "summary": {
+                      key: summary.get(key)
+                      for key in (
+                          "lineage_count", "provider_session_count", "provider_inventory_source",
+                          "provider_observation_available", "provider_observation_fresh",
+                          "provider_observation_reason", "terminal_result_count",
+                          "durable_lineage_terminal_result_count", "parent_consumable_result_count",
+                          "terminal_unconsumed_result_count", "blocked_lane_freezes_independent_lanes",
+                      )
+                      if key in summary
+                  },
+                  "provider_mutation_performed": False,
+                  "new_tasks_or_sessions_created": 0,
+                  "safe_to_blind_retry": False,
+                  "findings_persisted_in_artifact": False,
+                  "raw_activity_content_persisted": False,
+                  "raw_session_ids_persisted": False,
+                  "raw_titles_persisted": False,
+              }
+          receipt = {
+              "schema_version": "UES_TERMINAL_LIFECYCLE_READBACK_V1",
+              "project": name,
+              "projects": outputs,
+              "failures": failures,
+              "blocked_lane_freezes_independent_lanes": False,
+              "provider_mutation_performed": False,
+              "new_tasks_or_sessions_created": 0,
+              "safe_to_blind_retry": False,
+              "findings_persisted_in_artifact": False,
+              "raw_activity_content_persisted": False,
+              "raw_session_ids_persisted": False,
+              "raw_titles_persisted": False,
+          }
+          path = Path(os.environ["RUNNER_TEMP"]) / f"ues-terminal-lifecycle-readback-{name}.json"
+          path.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps({
+              "project": name,
+              "failure_count": len(failures),
+              "parent_consumable_result_count": sum(
+                  int((value.get("summary") or {}).get("parent_consumable_result_count") or 0)
+                  for value in outputs.values()
+              ),
+              "blocked_lane_freezes_independent_lanes": False,
+          }, sort_keys=True))
+          if not outputs:
+              raise SystemExit(2)
+          PY
+
+      - name: Preserve this project lifecycle readback receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-terminal-lifecycle-readback-${{ matrix.project }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ues-terminal-lifecycle-readback-${{ matrix.project }}.json
+          retention-days: 7
+          if-no-files-found: error
+
+  terminal-watchdog:
+    if: always()
+    needs: [discover-projects, backfill]
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    # The current StateStore scan has now directly exceeded the 14-minute envelope.
+    # Keep a bounded 20-minute watchdog deadline and rely on this watchdog's
+    # non-cancelling concurrency group to serialize overlapping scheduled audits
+    # without replaying or cancelling already completed project backfill cells.
+    timeout-minutes: 20
+    concurrency:
+      group: ues-terminal-result-watchdog
+      cancel-in-progress: false
+    steps:
+      - name: Checkout governed default branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Audit terminal-result liveness without freezing independent lanes
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: python -m ues.terminal_watchdog

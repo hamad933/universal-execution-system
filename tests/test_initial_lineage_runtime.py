@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from ues.initial_lineage_runtime import (
+    _PROVIDER_READ_UNAVAILABLE_EXIT,
+    _PROVIDER_READ_UNAVAILABLE_RESULT,
     _dynamic_provider_starting_branch,
     _dynamic_role_config,
     _marker_matches,
@@ -12,8 +14,10 @@ from ues.initial_lineage_runtime import (
     _parse_lane_key,
     _task_prompt,
     _validate_task_spec,
+    main,
     run,
 )
+from ues.providers.base import NetworkError, RateLimitError
 
 
 class InitialLineageRuntimeTests(unittest.TestCase):
@@ -27,6 +31,21 @@ class InitialLineageRuntimeTests(unittest.TestCase):
             "evidence": ["exact-head-ci"],
             "handoff": "Return exact SHA and validation evidence",
             "stop_gate": "DRAFT_PR_AND_EXACT_HEAD_CI",
+        }
+
+    def initial_authority(self):
+        return {
+            "source": "DRIVE_CURRENT_STATE",
+            "source_id": "authority-source",
+            "project": "RP02",
+            "route": "RP02",
+            "current": True,
+            "authority_event_id": "RP02-AUTH-OUTAGE",
+            "generation_policy": {
+                "authorized_initial_lineages": {
+                    "RP02-IPA-S03:ASSURANCE": {"authorized": True, "task_spec": {}},
+                }
+            },
         }
 
     def test_exact_baseline_is_branch_and_full_sha_only(self):
@@ -190,6 +209,65 @@ class InitialLineageRuntimeTests(unittest.TestCase):
         self.assertEqual(result["external_effects_dispatched"], 0)
         self.assertEqual(result["new_tasks_or_sessions_created"], 0)
         self.assertFalse(result["safe_to_blind_retry"])
+
+    def test_sessions_list_network_outage_is_structured_before_any_lineage_write(self):
+        outage = NetworkError("provider network request failed", operation="jules.sessions.list")
+        env = {"JULES_API_KEY": "test", "GITHUB_TOKEN": "test", "UES_AUTHORITY_TRANSPORT_ACTOR": "hamad933"}
+        with patch.dict(os.environ, env, clear=False), patch(
+            "ues.initial_lineage_runtime.load_current_authority_json", return_value=self.initial_authority()
+        ), patch("ues.initial_lineage_runtime.build_live_state_store", return_value=object()), patch(
+            "ues.initial_lineage_runtime.legacy._provider_inventory", side_effect=outage
+        ), patch("ues.initial_lineage_runtime.execute_initial_lineage_generation") as generation:
+            result = run("RP02")
+
+        generation.assert_not_called()
+        self.assertEqual(result["result"], _PROVIDER_READ_UNAVAILABLE_RESULT)
+        self.assertEqual(result["provider_read_operation"], "jules.sessions.list")
+        self.assertEqual(result["provider_read_error_category"], "NETWORK_ERROR")
+        self.assertFalse(result["provider_write_attempted"])
+        self.assertEqual(result["external_effects_dispatched"], 0)
+        self.assertEqual(result["new_tasks_or_sessions_created"], 0)
+        self.assertEqual(result["retry_condition"], "FRESH_AUTHORITATIVE_PROVIDER_READ_REQUIRED")
+        self.assertFalse(result["safe_to_blind_retry"])
+        self.assertEqual(result["authority_event_id"], "RP02-AUTH-OUTAGE")
+
+    def test_sessions_list_rate_limit_outage_is_also_structured_pre_effect(self):
+        outage = RateLimitError("provider rate limited", operation="jules.sessions.list")
+        env = {"JULES_API_KEY": "test", "GITHUB_TOKEN": "test", "UES_AUTHORITY_TRANSPORT_ACTOR": "hamad933"}
+        with patch.dict(os.environ, env, clear=False), patch(
+            "ues.initial_lineage_runtime.load_current_authority_json", return_value=self.initial_authority()
+        ), patch("ues.initial_lineage_runtime.build_live_state_store", return_value=object()), patch(
+            "ues.initial_lineage_runtime.legacy._provider_inventory", side_effect=outage
+        ):
+            result = run("RP02")
+        self.assertEqual(result["result"], _PROVIDER_READ_UNAVAILABLE_RESULT)
+        self.assertEqual(result["external_effects_dispatched"], 0)
+        self.assertFalse(result["safe_to_blind_retry"])
+
+    def test_non_inventory_provider_operation_is_not_reclassified_as_zero_effect(self):
+        outage = NetworkError("provider network request failed", operation="jules.sessions.sendMessage")
+        env = {"JULES_API_KEY": "test", "GITHUB_TOKEN": "test", "UES_AUTHORITY_TRANSPORT_ACTOR": "hamad933"}
+        with patch.dict(os.environ, env, clear=False), patch(
+            "ues.initial_lineage_runtime.load_current_authority_json", return_value=self.initial_authority()
+        ), patch("ues.initial_lineage_runtime.build_live_state_store", return_value=object()), patch(
+            "ues.initial_lineage_runtime.legacy._provider_inventory", side_effect=outage
+        ):
+            with self.assertRaises(NetworkError):
+                run("RP02")
+
+    def test_cli_returns_fail_closed_exit_after_materializing_zero_effect_json(self):
+        result = {
+            "schema_version": "1.0",
+            "project": "RP02",
+            "route": "RP02",
+            "result": _PROVIDER_READ_UNAVAILABLE_RESULT,
+            "external_effects_dispatched": 0,
+            "new_tasks_or_sessions_created": 0,
+            "safe_to_blind_retry": False,
+        }
+        with patch("ues.initial_lineage_runtime.run", return_value=result):
+            rc = main(["RP02"])
+        self.assertEqual(rc, _PROVIDER_READ_UNAVAILABLE_EXIT)
 
 
 if __name__ == "__main__":

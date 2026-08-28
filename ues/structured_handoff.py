@@ -176,6 +176,9 @@ def build_required_handoff_instructions(role: str, workstream: str) -> str:
     if role not in VALID_ROLES:
         raise ValueError("unsupported handoff role")
     return (
+        "When these instructions follow a Parent-governed task specification, that supplied task specification IS the authoritative Parent Controller Workstream Contract for this task. "
+        "Do not require or search for a second repository-local Workstream Contract. Repository governance remains separately binding and may further constrain execution, but it cannot replace or widen the supplied bounded contract. "
+        "If the supplied contract is absent, incomplete, ambiguous, conflicts with repository governance, or conflicts with the exact repository/ref/SHA or role binding, fail closed and report the evidence boundary instead of inventing authority. "
         "At every material stop, finish your response with exactly one machine-readable handoff block. "
         "Do not omit it even when blocked or context is exhausted. Findings must contain concise actionable details "
         "sufficient for the paired lineage to continue. Use this shape:\n"
@@ -191,4 +194,32 @@ def build_required_handoff_instructions(role: str, workstream: str) -> str:
         '  "findings": [{"id":"F-001","severity":"HIGH","path":"optional/path","detail":"actionable finding"}]\n'
         "}\n"
         f"{END_MARKER}"
+    )
+
+
+def build_exact_review_handoff_instructions(role: str, workstream: str, candidate_sha: str) -> str:
+    """Require a review/assurance handoff bound to one exact reviewed SHA.
+
+    This helper only shapes provider instructions. It grants no review, generation,
+    mutation, merge, or release authority. Callers must separately prove the exact
+    repository/ref binding and all effect gates before using the prompt.
+    """
+
+    role_name = str(role or "").strip().upper()
+    sha = str(candidate_sha or "").strip().lower()
+    if role_name not in {"REVIEWER", "ASSURANCE"}:
+        raise ValueError("exact reviewed-SHA handoff is only valid for REVIEWER or ASSURANCE")
+    if not FULL_SHA.fullmatch(sha):
+        raise ValueError("exact reviewed-SHA handoff requires a full candidate SHA")
+    instructions = build_required_handoff_instructions(role_name, workstream)
+    instructions = instructions.replace(
+        '"candidate_sha": null', f'"candidate_sha": "{sha}"'
+    ).replace(
+        '"reviewed_sha": null', f'"reviewed_sha": "{sha}"'
+    )
+    return (
+        instructions
+        + "\nThe candidate_sha and reviewed_sha fields above are immutable exact bindings for this READ_ONLY task. "
+        + f"They MUST both remain exactly {sha}. If that exact SHA was not actually reviewed, do not claim PASS, FAIL, or FINDINGS; "
+        + "return a BLOCKED/UNKNOWN handoff that states the evidence boundary."
     )
