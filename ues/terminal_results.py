@@ -129,19 +129,21 @@ def _confirmed_generation_operation_bindings(
     project: str,
     route: str,
 ) -> dict[str, list[tuple[str, int, str, str, str]]]:
-    """Recover exact historical generations from durable provider-write receipts only."""
+    """Recover exact historical generations from confirmed provider-write receipts only."""
 
     discover = getattr(store, "discover_operation_keys", None)
     if not callable(discover):
         return {}
 
     bindings: dict[str, list[tuple[str, int, str, str, str]]] = {}
+    supported_actions = {"create-session-generation", "create-initial-lineage-session"}
     for operation_key in discover():
         read = store.read_operation(operation_key)
         if read.status != "OK" or read.record is None:
             continue
         record = read.record
-        if str(getattr(record, "action", "") or "") != "create-session-generation":
+        action = str(getattr(record, "action", "") or "")
+        if action not in supported_actions:
             continue
         if str(getattr(record, "state", "") or "").upper() != "CONFIRMED":
             continue
@@ -156,7 +158,7 @@ def _confirmed_generation_operation_bindings(
             or str(effect.get("route") or "") != route
             or str(effect.get("lane_id") or "") != lane_id
             or str(effect.get("workstream_id") or "") != workstream_id
-            or str(effect.get("action") or "") != "create-session-generation"
+            or str(effect.get("action") or "") != action
         ):
             continue
         if not workstream_id.startswith("LINEAGE::") or "::" not in workstream_id[len("LINEAGE::"):]:
@@ -177,6 +179,11 @@ def _confirmed_generation_operation_bindings(
             continue
         if generation <= 0:
             continue
+        if action == "create-initial-lineage-session" and (
+            generation != 1
+            or str(target.get("creation_kind") or "") != "INITIAL_LOGICAL_LINEAGE"
+        ):
+            continue
 
         readback = getattr(record, "authoritative_readback", None)
         if not isinstance(readback, Mapping) or readback.get("observed") is not True:
@@ -191,9 +198,16 @@ def _confirmed_generation_operation_bindings(
             continue
         if fp is None or observed_generation != generation:
             continue
+        if action == "create-initial-lineage-session" and str(evidence.get("creation_kind") or "") != "INITIAL_LOGICAL_LINEAGE":
+            continue
 
+        recovery_source = (
+            "CONFIRMED_INITIAL_LINEAGE_OPERATION"
+            if action == "create-initial-lineage-session"
+            else "CONFIRMED_GENERATION_OPERATION"
+        )
         bindings.setdefault(lane_id, []).append(
-            (fp, generation, "CONFIRMED_GENERATION_OPERATION", workstream, role)
+            (fp, generation, recovery_source, workstream, role)
         )
     return bindings
 
@@ -201,12 +215,11 @@ def _confirmed_generation_operation_bindings(
 def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dict[str, Any]]]:
     """Index every exact durable lineage generation still proven by StateStore.
 
-    Current evidence, the immediately previous durable generation, confirmed
-    initial-create receipts, and CONFIRMED generation-operation readbacks are
-    independent exact identity proofs for the same logical lineage. Index all of
-    them without inferring from title, time, ordering, or repository membership.
-    If durable sources disagree about the fingerprint of one generation, that
-    generation is omitted entirely so materialization fails closed.
+    Confirmed operation readbacks are authoritative historical-generation proof.
+    Current evidence and confirmed lane receipts remain exact proof sources. The
+    convenience previous-session field is used only when no confirmed operation
+    proof exists for that generation. Conflicting confirmed proofs still fail
+    closed; no title, time, ordering, or repository inference is permitted.
     """
     discover = getattr(store, "discover_lane_ids", None)
     if not callable(discover):
@@ -230,19 +243,28 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
         if not role or not workstream:
             continue
 
+        lane_operations = [
+            item
+            for item in operation_bindings.get(lane_id, [])
+            if item[3] == workstream and item[4] == role
+        ]
+        operation_generations = {item[1] for item in lane_operations}
+
         bindings: list[tuple[str, int, str]] = []
         current_fp = str(evidence.get("session_fingerprint") or "").strip().lower()
         if current_fp and generation > 0:
             bindings.append((current_fp, generation, "EVIDENCE_BINDINGS"))
 
         previous_fp = str(evidence.get("previous_session_fingerprint") or "").strip().lower()
+        previous_generation = generation - 1
         if (
             previous_fp
-            and generation > 1
+            and previous_generation > 0
+            and previous_generation not in operation_generations
             and len(previous_fp) == 64
             and all(ch in "0123456789abcdef" for ch in previous_fp)
         ):
-            bindings.append((previous_fp, generation - 1, "PREVIOUS_SESSION_FINGERPRINT"))
+            bindings.append((previous_fp, previous_generation, "PREVIOUS_SESSION_FINGERPRINT"))
 
         receipt_binding = _confirmed_receipt_binding(record)
         if receipt_binding:
@@ -251,9 +273,8 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
             if receipt_fp and receipt_generation > 0:
                 bindings.append((receipt_fp, receipt_generation, "CONFIRMED_CREATION_RECEIPT"))
 
-        for fp, binding_generation, recovery_source, op_workstream, op_role in operation_bindings.get(lane_id, []):
-            if op_workstream == workstream and op_role == role:
-                bindings.append((fp, binding_generation, recovery_source))
+        for fp, binding_generation, recovery_source, _, _ in lane_operations:
+            bindings.append((fp, binding_generation, recovery_source))
 
         fingerprints_by_generation: dict[int, set[str]] = {}
         for fp, binding_generation, _ in bindings:
