@@ -122,8 +122,8 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
     Current evidence, the immediately previous durable generation, and a confirmed
     initial-create receipt are independent exact identity proofs for the same logical
     lineage. Index all of them without inferring from title, time, ordering, or
-    repository membership. Conflicting duplicate proofs remain multiple matches so
-    downstream materialization continues to fail closed.
+    repository membership. If durable sources disagree about the fingerprint of one
+    generation, that generation is omitted entirely so materialization fails closed.
     """
     discover = getattr(store, "discover_lane_ids", None)
     if not callable(discover):
@@ -163,8 +163,19 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
             if receipt_fp and receipt_generation > 0:
                 bindings.append((receipt_fp, receipt_generation, "CONFIRMED_CREATION_RECEIPT"))
 
+        fingerprints_by_generation: dict[int, set[str]] = {}
+        for fp, binding_generation, _ in bindings:
+            fingerprints_by_generation.setdefault(binding_generation, set()).add(fp)
+        conflicted_generations = {
+            binding_generation
+            for binding_generation, fingerprints in fingerprints_by_generation.items()
+            if len(fingerprints) > 1
+        }
+
         seen: set[tuple[str, int, str, str]] = set()
         for fp, binding_generation, recovery_source in bindings:
+            if binding_generation in conflicted_generations:
+                continue
             key = (fp, binding_generation, role, workstream)
             if key in seen:
                 continue
