@@ -69,6 +69,14 @@ jobs:
             exit 2
           fi
 
+      - name: Enforce durable evidence transport byte attestation before RP lifecycle effects
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_CURRENT_AUTHORITY_JSON: ${{ github.event_name == 'repository_dispatch' && toJSON(github.event.client_payload.current_authority) || inputs.current_authority_json || '' }}
+        run: python -m ues.evidence_transport_attestation_gate
+
       - name: Run RP shared current-authority lifecycle
         env:
           GITHUB_TOKEN: ${{ github.token }}
