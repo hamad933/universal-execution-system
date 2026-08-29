@@ -1,0 +1,95 @@
+name: RP03 S02 Attestation Record
+
+on:
+  push:
+    branches:
+      - ues-admin/rp03-s02-attestation-record-20260829
+
+permissions:
+  contents: write
+
+jobs:
+  record-attestation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact UES runtime
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install UES
+        run: python -m pip install -e .
+      - name: Persist independently verified transport attestation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: 'true'
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from ues.identity import canonical_lane_id
+          from ues.live_runtime import build_live_state_store
+          from ues.state_store import OperationRecord, StateVersionConflict
+
+          operation_key = 'ues-v2:evidence-transport-attestation:16d9f5cb34470f2a4320e0d921b8e9d29e999351e6d803f6f5087d32d6b9ad29'
+          request_digest = '16d9f5cb34470f2a4320e0d921b8e9d29e999351e6d803f6f5087d32d6b9ad29'
+          workstream = 'RP03-IPA-S02-EVIDENCE-SUPPLEMENT'
+          lane_id = canonical_lane_id('RP03', 'RP03', workstream)
+          now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+          receipt = {
+              'result': 'EVIDENCE_TRANSPORT_BYTE_ATTESTATION_PASS',
+              'transport_repository_fingerprint': 'sha256:e15627d5b1034cfdca6f7abc37b1c114fff26612980b67553e1c219141575638',
+              'transport_head_sha': '21516fdbce24933b869f31deb0a6c4091be43807',
+              'decoded_evidence_sha256': 'c2e8c69904a37fa472974e9ee70ed925497478cda9f0800ff6ea3a8507383384',
+              'decoded_evidence_byte_count': 14128,
+              'provider_mutation': False,
+              'private_source_identity_persisted': False,
+              'verification_method': 'exact-private-git-blob-strict-base64-sha256',
+          }
+          store = build_live_state_store()
+          current = store.read_operation(operation_key)
+          if current.status == 'OK' and current.record is not None:
+              r = current.record
+              if not (
+                  r.state == 'CONFIRMED'
+                  and r.action == 'evidence-transport-byte-attestation'
+                  and r.request_digest == request_digest
+                  and r.receipt.get('result') == receipt['result']
+                  and r.receipt.get('transport_head_sha') == receipt['transport_head_sha']
+                  and r.receipt.get('decoded_evidence_sha256') == receipt['decoded_evidence_sha256']
+                  and r.receipt.get('decoded_evidence_byte_count') == 14128
+                  and r.receipt.get('provider_mutation') is False
+                  and r.receipt.get('private_source_identity_persisted') is False
+              ):
+                  raise SystemExit('existing attestation operation conflicts with exact verified binding')
+              print(f'ATTESTATION_ALREADY_CONFIRMED operation_key={operation_key}')
+          elif current.status == 'MISSING':
+              record = OperationRecord(
+                  operation_key=operation_key,
+                  lane_id=lane_id,
+                  workstream_id=workstream,
+                  action='evidence-transport-byte-attestation',
+                  request_digest=request_digest,
+                  state='CONFIRMED',
+                  owner='RP03_PARENT_CONTROLLER_OWNER_AUTHORIZED',
+                  started_at=now,
+                  updated_at=now,
+                  receipt=receipt,
+                  reconciliation_required=False,
+              )
+              try:
+                  saved = store.compare_and_swap_operation(operation_key, 0, record)
+              except StateVersionConflict:
+                  saved = store.read_operation(operation_key)
+              if saved.status != 'OK' or saved.record is None or saved.record.state != 'CONFIRMED':
+                  raise SystemExit('attestation StateStore post-readback failed')
+              print(f'ATTESTATION_CONFIRMED operation_key={operation_key} version={saved.version}')
+          else:
+              raise SystemExit(f'attestation operation state unavailable: {current.status} {current.reason}')
+
+          post = build_live_state_store().read_operation(operation_key)
+          if post.status != 'OK' or post.record is None or post.record.state != 'CONFIRMED':
+              raise SystemExit('cross-backend attestation recovery failed')
+          print('POST_READBACK_CONFIRMED provider_mutation=false private_source_identity_persisted=false')
+          PY
