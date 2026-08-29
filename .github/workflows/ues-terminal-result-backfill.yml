@@ -80,6 +80,7 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_TERMINAL_BACKFILL_WALL_CLOCK_BUDGET_SECONDS: "2400"
           # At matrix width two, four GET-only Activity workers per project cap the
           # aggregate Activity fan-out at eight, matching the proven observer bound.
           UES_TERMINAL_BACKFILL_ACTIVITY_READ_WORKERS: "4"

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
+import queue
+import time
 from typing import Any, Callable
 
 from .live_runtime import build_live_state_store
@@ -20,6 +23,9 @@ _DEFAULT_INVENTORY_PROVIDER_READ_ATTEMPTS = 3
 _MAX_INVENTORY_PROVIDER_READ_ATTEMPTS = 3
 _DEFAULT_INVENTORY_SNAPSHOT_ATTEMPTS = 2
 _MAX_INVENTORY_SNAPSHOT_ATTEMPTS = 3
+_DEFAULT_WALL_CLOCK_BUDGET_SECONDS = 40 * 60
+_MIN_WALL_CLOCK_BUDGET_SECONDS = 30 * 60
+_MAX_WALL_CLOCK_BUDGET_SECONDS = 40 * 60
 _TRANSIENT_INVENTORY_ERRORS = (NetworkError, RateLimitError, ServerError)
 
 
@@ -43,6 +49,39 @@ def _bounded_int_env(name: str, default: int, *, minimum: int, maximum: int) -> 
     except ValueError:
         return default
     return max(minimum, min(maximum, value))
+
+
+def _backfill_wall_clock_budget_seconds() -> int:
+    return int(
+        _bounded_float_env(
+            "UES_TERMINAL_BACKFILL_WALL_CLOCK_BUDGET_SECONDS",
+            float(_DEFAULT_WALL_CLOCK_BUDGET_SECONDS),
+            minimum=float(_MIN_WALL_CLOCK_BUDGET_SECONDS),
+            maximum=float(_MAX_WALL_CLOCK_BUDGET_SECONDS),
+        )
+    )
+
+
+def _budget_exhausted_result(
+    *,
+    phase: str,
+    completed_phases: list[str],
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "result": "TERMINAL_BACKFILL_BUDGET_EXHAUSTED",
+        "budget_exhausted_phase": phase,
+        "completed_phases": list(completed_phases),
+        "elapsed_seconds": round(max(0.0, float(elapsed_seconds)), 3),
+        "provider_read_started": "provider_clients_ready" in completed_phases,
+        "provider_read_complete": False,
+        "state_persistence_complete": False,
+        "external_effects_dispatched": 0,
+        "new_tasks_or_sessions_created": 0,
+        "provider_mutation_performed": False,
+        "safe_to_blind_retry": False,
+    }
 
 
 def _backfill_provider_policy() -> tuple[float, int]:
@@ -187,7 +226,16 @@ def _category(exc: BaseException) -> str:
     return str(getattr(exc, "category", None) or type(exc).__name__).upper()[:120]
 
 
-def run(projects: list[str] | None = None) -> dict[str, Any]:
+def _emit_phase(callback: Callable[[str], None] | None, phase: str) -> None:
+    if callback is not None:
+        callback(phase)
+
+
+def run(
+    projects: list[str] | None = None,
+    *,
+    phase_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     try:
         store = build_live_state_store()
     except Exception as exc:
@@ -203,6 +251,8 @@ def run(projects: list[str] | None = None) -> dict[str, Any]:
             "provider_mutation_performed": False,
             "safe_to_blind_retry": False,
         }
+    _emit_phase(phase_callback, "state_store")
+
     timeout, attempts = _backfill_provider_policy()
     inventory_timeout, inventory_read_attempts = _inventory_provider_policy()
     inventory_attempt_limit = _inventory_snapshot_attempts()
@@ -217,7 +267,9 @@ def run(projects: list[str] | None = None) -> dict[str, Any]:
         if inventory_provider is not None
         else None
     )
+    _emit_phase(phase_callback, "provider_clients_ready")
     result = run_read_only_backfill(projects, store=store, client=retrying_provider)
+    _emit_phase(phase_callback, "read_only_recovery")
     result["terminal_backfill_provider_timeout_seconds"] = timeout
     result["terminal_backfill_provider_read_attempts"] = attempts
     result["terminal_backfill_inventory_provider_timeout_seconds"] = inventory_timeout
@@ -234,11 +286,111 @@ def run(projects: list[str] | None = None) -> dict[str, Any]:
     return result
 
 
+def _run_in_worker(
+    projects: list[str] | None,
+    result_queue: Any,
+    phase_queue: Any,
+) -> None:
+    def record_phase(phase: str) -> None:
+        phase_queue.put(phase)
+
+    try:
+        result_queue.put(run(projects, phase_callback=record_phase))
+    except BaseException as exc:
+        result_queue.put(
+            {
+                "schema_version": "1.0",
+                "result": "TERMINAL_BACKFILL_WORKER_FAILED",
+                "error_category": _category(exc),
+                "provider_read_complete": False,
+                "state_persistence_complete": False,
+                "external_effects_dispatched": 0,
+                "new_tasks_or_sessions_created": 0,
+                "provider_mutation_performed": False,
+                "safe_to_blind_retry": False,
+            }
+        )
+
+
+def _drain_completed_phases(phase_queue: Any) -> list[str]:
+    completed: list[str] = []
+    while True:
+        try:
+            phase = phase_queue.get_nowait()
+        except queue.Empty:
+            break
+        if isinstance(phase, str) and phase and phase not in completed:
+            completed.append(phase)
+    return completed
+
+
+def _run_bounded(projects: list[str] | None) -> dict[str, Any]:
+    budget = _backfill_wall_clock_budget_seconds()
+    started = time.monotonic()
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    phase_queue = context.Queue()
+    worker = context.Process(
+        target=_run_in_worker,
+        args=(projects, result_queue, phase_queue),
+        daemon=False,
+    )
+    worker.start()
+    worker.join(timeout=budget)
+
+    if worker.is_alive():
+        completed_phases = _drain_completed_phases(phase_queue)
+        worker.terminate()
+        worker.join(timeout=5)
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=5)
+        current_phase = "read_only_recovery"
+        if "provider_clients_ready" not in completed_phases:
+            current_phase = "state_store"
+        elif "read_only_recovery" in completed_phases:
+            current_phase = "post_recovery_finalize"
+        return _budget_exhausted_result(
+            phase=current_phase,
+            completed_phases=completed_phases,
+            elapsed_seconds=time.monotonic() - started,
+        )
+
+    try:
+        result = result_queue.get(timeout=5)
+    except queue.Empty:
+        return {
+            "schema_version": "1.0",
+            "result": "TERMINAL_BACKFILL_WORKER_EXITED_WITHOUT_RESULT",
+            "worker_exit_code": worker.exitcode,
+            "provider_read_complete": False,
+            "state_persistence_complete": False,
+            "external_effects_dispatched": 0,
+            "new_tasks_or_sessions_created": 0,
+            "provider_mutation_performed": False,
+            "safe_to_blind_retry": False,
+        }
+    if not isinstance(result, dict):
+        return {
+            "schema_version": "1.0",
+            "result": "TERMINAL_BACKFILL_WORKER_RETURN_INVALID",
+            "provider_read_complete": False,
+            "state_persistence_complete": False,
+            "external_effects_dispatched": 0,
+            "new_tasks_or_sessions_created": 0,
+            "provider_mutation_performed": False,
+            "safe_to_blind_retry": False,
+        }
+    result["terminal_backfill_wall_clock_budget_seconds"] = budget
+    result["terminal_backfill_wall_clock_guard_process_isolated"] = True
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="UES generic terminal-result backfill")
     parser.add_argument("projects", nargs="*", help="optional governed adapter project IDs")
     args = parser.parse_args(argv)
-    result = run(args.projects or None)
+    result = _run_bounded(args.projects or None)
     print(json.dumps(result, sort_keys=True))
     return 0 if result.get("result") == "TERMINAL_BACKFILL_COMPLETE" else 2
 
