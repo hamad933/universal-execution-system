@@ -19,7 +19,7 @@ permissions:
 jobs:
   authorize:
     if: >-
-      (github.event_name == 'issue_comment' && github.event.issue.number == 191 && github.actor == 'hamad933') ||
+      (github.event_name == 'issue_comment' && github.event.issue.number == 191 && github.actor == 'hamad933' && startsWith(github.event.comment.body, '/ues-exact-terminal-readback ')) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:

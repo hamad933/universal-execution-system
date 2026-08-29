@@ -59,12 +59,19 @@ def test_lineage_index_recovers_confirmed_creation_receipt_fingerprint():
     assert index[FP][0]["identity_recovery_source"] == "CONFIRMED_CREATION_RECEIPT"
 
 
-def test_lineage_index_prefers_current_evidence_fingerprint():
+def test_lineage_index_fails_closed_when_same_generation_proofs_disagree():
     current = "b" * 64
     index = lineage_index(FakeStore(_record(current_fp=current)), project="RP04", route="RP04")
 
-    assert list(index) == [current]
-    assert index[current][0]["identity_recovery_source"] == "EVIDENCE_BINDINGS"
+    assert index == {}
+
+
+def test_lineage_index_deduplicates_matching_same_generation_proofs():
+    index = lineage_index(FakeStore(_record(current_fp=FP)), project="RP04", route="RP04")
+
+    assert list(index) == [FP]
+    assert len(index[FP]) == 1
+    assert index[FP][0]["identity_recovery_source"] == "EVIDENCE_BINDINGS"
 
 
 def test_lineage_index_rejects_nonconfirmed_receipt_fingerprint():

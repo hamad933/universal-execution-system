@@ -117,12 +117,13 @@ def _lineage_identity_from_record(record: Any) -> tuple[str, str]:
 
 
 def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dict[str, Any]]]:
-    """Index exact durable lineage identity, including authoritative receipt recovery.
+    """Index every exact durable lineage generation still proven by StateStore.
 
-    Passive observations may clear the current session fingerprint while the original
-    CONFIRMED initial-create receipt remains authoritative. Reuse the same narrow
-    receipt proof accepted by lineage-generation recovery instead of losing terminal
-    result identity. Non-confirmed/ambiguous receipts are never indexed.
+    Current evidence, the immediately previous durable generation, and a confirmed
+    initial-create receipt are independent exact identity proofs for the same logical
+    lineage. Index all of them without inferring from title, time, ordering, or
+    repository membership. If durable sources disagree about the fingerprint of one
+    generation, that generation is omitted entirely so materialization fails closed.
     """
     discover = getattr(store, "discover_lane_ids", None)
     if not callable(discover):
@@ -136,27 +137,58 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
         if record.project != project or record.route != route:
             continue
         evidence = record.evidence_bindings or {}
-        fp = str(evidence.get("session_fingerprint") or "").strip().lower()
         generation = int(evidence.get("generation") or 0)
-        recovery_source = "EVIDENCE_BINDINGS" if fp else None
-        if not fp:
-            receipt_binding = _confirmed_receipt_binding(record)
-            if receipt_binding:
-                fp = str(receipt_binding.get("session_fingerprint") or "").strip().lower()
-                generation = generation or int(receipt_binding.get("generation") or 0)
-                recovery_source = "CONFIRMED_CREATION_RECEIPT"
         role, workstream = _lineage_identity_from_record(record)
-        if not fp or not role or not workstream or generation <= 0:
+        if not role or not workstream:
             continue
-        result.setdefault(fp, []).append({
-            "lane_id": lane_id,
-            "role": role,
-            "workstream": workstream,
-            "generation": generation,
-            "current_candidate_sha": evidence.get("current_candidate_sha"),
-            "current_pr_number": evidence.get("current_pr_number"),
-            "identity_recovery_source": recovery_source,
-        })
+
+        bindings: list[tuple[str, int, str]] = []
+        current_fp = str(evidence.get("session_fingerprint") or "").strip().lower()
+        if current_fp and generation > 0:
+            bindings.append((current_fp, generation, "EVIDENCE_BINDINGS"))
+
+        previous_fp = str(evidence.get("previous_session_fingerprint") or "").strip().lower()
+        if (
+            previous_fp
+            and generation > 1
+            and len(previous_fp) == 64
+            and all(ch in "0123456789abcdef" for ch in previous_fp)
+        ):
+            bindings.append((previous_fp, generation - 1, "PREVIOUS_SESSION_FINGERPRINT"))
+
+        receipt_binding = _confirmed_receipt_binding(record)
+        if receipt_binding:
+            receipt_fp = str(receipt_binding.get("session_fingerprint") or "").strip().lower()
+            receipt_generation = int(receipt_binding.get("generation") or 0)
+            if receipt_fp and receipt_generation > 0:
+                bindings.append((receipt_fp, receipt_generation, "CONFIRMED_CREATION_RECEIPT"))
+
+        fingerprints_by_generation: dict[int, set[str]] = {}
+        for fp, binding_generation, _ in bindings:
+            fingerprints_by_generation.setdefault(binding_generation, set()).add(fp)
+        conflicted_generations = {
+            binding_generation
+            for binding_generation, fingerprints in fingerprints_by_generation.items()
+            if len(fingerprints) > 1
+        }
+
+        seen: set[tuple[str, int, str, str]] = set()
+        for fp, binding_generation, recovery_source in bindings:
+            if binding_generation in conflicted_generations:
+                continue
+            key = (fp, binding_generation, role, workstream)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.setdefault(fp, []).append({
+                "lane_id": lane_id,
+                "role": role,
+                "workstream": workstream,
+                "generation": binding_generation,
+                "current_candidate_sha": evidence.get("current_candidate_sha"),
+                "current_pr_number": evidence.get("current_pr_number"),
+                "identity_recovery_source": recovery_source,
+            })
     return result
 
 
