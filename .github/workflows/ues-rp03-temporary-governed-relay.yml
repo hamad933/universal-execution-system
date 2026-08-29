@@ -67,19 +67,5 @@ jobs:
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: 'true'
           UES_STATE_REF_PREFIX: ues-runtime/v2
           UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.actor }}
-        run: |
-          attempt=1
-          while true; do
-            set +e
-            python -m ues.initial_lineage_runtime RP03
-            rc=$?
-            set -e
-            if [ "$rc" -eq 0 ]; then
-              exit 0
-            fi
-            if [ "$rc" -ne 75 ] || [ "$attempt" -ge 3 ]; then
-              exit "$rc"
-            fi
-            echo "Initial-lineage provider inventory read unavailable before effects; bounded retry $((attempt + 1))/3."
-            attempt=$((attempt + 1))
-          done
+          UES_INITIAL_LINEAGE_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS: '3'
+        run: python -m ues.initial_lineage_retry_runtime RP03
