@@ -1,0 +1,69 @@
+name: UES RP03 Temporary Governed Relay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ues/rp03-temporary-relay-trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  rp03-governed-relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout governed UES runtime
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install UES
+        run: python -m pip install -e .
+      - name: Load exact RP03 Parent request from governed control ref
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin ues-parent-control --depth=1
+          git show FETCH_HEAD:.ues/parent-controller-requests/RP03.json > "$RUNNER_TEMP/rp03-request.json"
+          python - <<'PY'
+          import json, os
+          p=os.path.join(os.environ['RUNNER_TEMP'],'rp03-request.json')
+          d=json.load(open(p,encoding='utf-8'))
+          assert d['project']=='RP03'
+          assert d['current_authority']['authority_event_id']=='RP03-CE-20260829-22'
+          assert d['runtime_sha']=='2764b2a5d36cccb066eadfb8c4649e6a3854767a'
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('UES_CURRENT_AUTHORITY_JSON<<RP03EOF\n')
+              f.write(json.dumps(d['current_authority'],separators=(',',':'))+'\nRP03EOF\n')
+              f.write('UES_WAKEUP_EVENT_ID='+d['wakeup']['event_id']+'\n')
+          PY
+      - name: Enforce durable evidence transport byte attestation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: 'true'
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: python -m ues.evidence_transport_attestation_gate
+      - name: Run RP03 shared current-authority lifecycle
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: 'true'
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.actor }}
+          UES_WAKEUP_EVENT_TYPE: EXTERNAL_RECONCILIATION_REQUEST
+          UES_WAKEUP_EVENT_SOURCE: temporary-governed-relay
+          UES_WAKEUP_REPOSITORY: hamad933/BOOKING-SERVICES
+          UES_WAKEUP_WORKSTREAM: RP03-IPA-S02-EVIDENCE-SUPPLEMENT
+          UES_WAKEUP_SHA: 06d7e80af27232f416940d04dffe4a325b01e14d
+        run: python -m ues.rp_authority_runtime RP03
+      - name: Run guarded lineage continuation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: 'true'
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+          UES_AUTHORITY_TRANSPORT_ACTOR: ${{ github.actor }}
+        run: python -m ues.initial_lineage_runtime RP03
