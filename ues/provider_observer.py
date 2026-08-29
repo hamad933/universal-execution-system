@@ -28,11 +28,6 @@ PROJECTS: tuple[dict[str, str], ...] = (
         "route": "PERSONAL:CEP",
         "repository": "hamad933/Cybersecurity-Education-Platform",
     },
-    {
-        "project": "RP02",
-        "route": "RP02",
-        "repository": "hamad933/Enterprise-Operations-Control",
-    },
 )
 
 _LABEL_PATTERNS = (
