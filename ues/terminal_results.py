@@ -231,17 +231,22 @@ def lineage_index(store: Any, *, project: str, route: str) -> dict[str, list[dic
             continue
 
         bindings: list[tuple[str, int, str]] = []
-        current_fp = _valid_session_fingerprint(evidence.get("session_fingerprint"))
+        current_fp = str(evidence.get("session_fingerprint") or "").strip().lower()
         if current_fp and generation > 0:
             bindings.append((current_fp, generation, "EVIDENCE_BINDINGS"))
 
-        previous_fp = _valid_session_fingerprint(evidence.get("previous_session_fingerprint"))
-        if previous_fp and generation > 1:
+        previous_fp = str(evidence.get("previous_session_fingerprint") or "").strip().lower()
+        if (
+            previous_fp
+            and generation > 1
+            and len(previous_fp) == 64
+            and all(ch in "0123456789abcdef" for ch in previous_fp)
+        ):
             bindings.append((previous_fp, generation - 1, "PREVIOUS_SESSION_FINGERPRINT"))
 
         receipt_binding = _confirmed_receipt_binding(record)
         if receipt_binding:
-            receipt_fp = _valid_session_fingerprint(receipt_binding.get("session_fingerprint"))
+            receipt_fp = str(receipt_binding.get("session_fingerprint") or "").strip().lower()
             receipt_generation = int(receipt_binding.get("generation") or 0)
             if receipt_fp and receipt_generation > 0:
                 bindings.append((receipt_fp, receipt_generation, "CONFIRMED_CREATION_RECEIPT"))
