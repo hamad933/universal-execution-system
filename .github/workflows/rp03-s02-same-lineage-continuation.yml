@@ -1,0 +1,198 @@
+name: RP03 S02 Same-Lineage Continuation
+
+on:
+  push:
+    branches:
+      - ues-admin/rp03-s02-same-lineage-continuation-20260829
+
+permissions:
+  contents: write
+
+jobs:
+  continue-s02:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact UES runtime
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install UES
+        run: python -m pip install -e .
+      - name: Continue exact RP03 S02 logical lineage
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: 'true'
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from ues.binding_safe_generation import execute_binding_safe_generation
+          from ues.evidence_supplement_runtime import (
+              _SanitizedCreateClient,
+              _marker_matches,
+              _resolve_unique_source,
+              _sanitized_inventory,
+              _state_snapshot,
+          )
+          from ues.generation_transition import generation_transition_key
+          from ues.jules_lifecycle import JulesLifecycleClient
+          from ues.lifecycle_runtime import _provider_inventory
+          from ues.live_runtime import build_live_state_store
+
+          project = 'RP03'
+          route = 'RP03'
+          workstream = 'RP03-IPA-S02-EVIDENCE-SUPPLEMENT'
+          role = 'ASSURANCE'
+          candidate = '06d7e80af27232f416940d04dffe4a325b01e14d'
+          repository_alias = 'sha256:e15627d5b1034cfdca6f7abc37b1c114fff26612980b67553e1c219141575638'
+          transport_branch = 'ues-transport/rp03-evidence-supplement-20260827'
+          transport_head = '21516fdbce24933b869f31deb0a6c4091be43807'
+          evidence_sha = 'c2e8c69904a37fa472974e9ee70ed925497478cda9f0800ff6ea3a8507383384'
+          attestation_key = 'ues-v2:evidence-transport-attestation:16d9f5cb34470f2a4320e0d921b8e9d29e999351e6d803f6f5087d32d6b9ad29'
+          authority_event = 'RP03-CE-20260829-22'
+
+          store = build_live_state_store()
+          att = store.read_operation(attestation_key)
+          if att.status != 'OK' or att.record is None or att.record.state != 'CONFIRMED':
+              raise SystemExit('independent evidence transport attestation is not CONFIRMED')
+          receipt = att.record.receipt or {}
+          if not (
+              att.record.action == 'evidence-transport-byte-attestation'
+              and receipt.get('result') == 'EVIDENCE_TRANSPORT_BYTE_ATTESTATION_PASS'
+              and receipt.get('transport_repository_fingerprint') == repository_alias
+              and receipt.get('transport_head_sha') == transport_head
+              and receipt.get('decoded_evidence_sha256') == evidence_sha
+              and int(receipt.get('decoded_evidence_byte_count') or 0) == 14128
+              and receipt.get('provider_mutation') is False
+              and receipt.get('private_source_identity_persisted') is False
+          ):
+              raise SystemExit('attestation binding mismatch')
+
+          state = _state_snapshot(store, project=project, route=route, workstream=workstream)
+          if int(state.get('generation') or 0) != 1:
+              raise SystemExit(f"expected existing S02 generation 1, got {state.get('generation')}")
+          predecessor = str(state.get('session_fingerprint') or '').strip().lower()
+          if not predecessor or state.get('unknown_write_state'):
+              raise SystemExit('predecessor binding missing or UNKNOWN write state requires reconciliation')
+
+          key = str(os.environ.get('JULES_API_KEY') or '').strip()
+          if not key:
+              raise SystemExit('JULES_API_KEY required')
+          jules = JulesLifecycleClient(key)
+          source = _resolve_unique_source(jules, repository_alias)
+          if source is None:
+              raise SystemExit('unique private evidence source not proven')
+          actual_source_name, actual_repository = source
+          source_alias = 'sha256:' + hashlib.sha256(actual_source_name.encode('utf-8')).hexdigest()
+          sanitized_inventory = _sanitized_inventory(
+              _provider_inventory(jules), actual_repository=actual_repository, repository_alias=repository_alias
+          )
+
+          replacement_cause = 'TERMINAL_WITH_REMAINING_WORK'
+          transition_key = generation_transition_key(
+              project=project, route=route, workstream=workstream, role=role,
+              current_generation=1, predecessor_session_fingerprint=predecessor,
+              candidate_sha=candidate, replacement_cause=replacement_cause,
+          )
+          matches = _marker_matches(
+              sanitized_inventory,
+              repository_alias=repository_alias,
+              starting_branch=transport_branch,
+              marker=transition_key[:12],
+          )
+          if matches:
+              raise SystemExit('active/existing exact generation-2 provider marker requires reconciliation; no duplicate effect')
+
+          contract = {
+              'objective': 'Inspect only the repaired and independently byte-attested S02 governed evidence, then return a structured Parent-consumable verdict for the previously missing evidence dimension.',
+              'exact_baseline': 'main@' + candidate,
+              'role': 'ASSURANCE',
+              'logical_lineage': workstream,
+              'write_scope': [],
+              'prohibited_scope': ['product mutation','writer activity','release','deploy','publication','production activation','unrelated transport content'],
+              'dependencies': ['RP03-CE-20260829-22 / RP03-DEC-056','independent evidence transport attestation CONFIRMED'],
+              'validation': ['transport HEAD must equal ' + transport_head,'decoded visual evidence SHA-256 must equal ' + evidence_sha,'candidate_sha and reviewed_sha must equal ' + candidate],
+              'evidence': ['governed S02 evidence root only','independent transport attestation operation ' + attestation_key],
+              'handoff': 'Return one structured Parent-consumable terminal verdict for only the previously missing S02 evidence dimension.',
+              'stop_gate': 'READ_ONLY. Do not mutate product or transport; stop after the structured verdict.',
+          }
+          transport_contract = {
+              'evidence_supplement_only': True,
+              'target_product_candidate_sha': candidate,
+              'transport_checkout_expected_head': transport_head,
+              'evidence_root': 'rp03-evidence-supplement/RP03-S02',
+              'decoded_evidence_sha256': evidence_sha,
+              'evidence_semantics': [
+                  'The checked-out repository is private evidence transport only, not the RP03 product repository.',
+                  'Inspect only the previously missing governed S02 evidence.',
+                  'If evidence remains insufficient, return BLOCKED/UNKNOWN with MISSING_EVIDENCE; never guess.',
+                  'A supplement PASS applies only to the missing evidence dimension and does not replay unrelated repo-native checks.',
+              ],
+          }
+          prompt = (
+              'Execute the Parent-governed RP03 S02 evidence-supplement continuation. READ_ONLY; write_scope=[].\n'
+              + 'EVIDENCE_TRANSPORT_CONTRACT=' + json.dumps(transport_contract, sort_keys=True, separators=(',',':')) + '\n'
+              + 'PARENT_CONTROLLER_WORKSTREAM_CONTRACT_V1=' + json.dumps(contract, sort_keys=True, separators=(',',':')) + '\n'
+              + 'Return candidate_sha and reviewed_sha exactly ' + candidate + '. '
+              + 'Do not inspect or report unrelated transport-repository content.'
+          )
+
+          client = _SanitizedCreateClient(
+              jules,
+              actual_source_name=actual_source_name,
+              actual_repository=actual_repository,
+              source_alias=source_alias,
+              repository_alias=repository_alias,
+          )
+          current_policy = {
+              'necessary_generation_authorized': True,
+              'generation_effect_authorized': True,
+              'generation_budget_safe': True,
+              'budget': {'hard_ceiling_reached': False},
+              'provenance': {'authority_event_id': authority_event, 'decision_id': 'RP03-DEC-056'},
+          }
+          result = execute_binding_safe_generation(
+              store,
+              client,
+              project=project,
+              route=route,
+              workstream=workstream,
+              role=role,
+              prompt=prompt,
+              title='RP03 S02 ASSURANCE EVIDENCE SUPPLEMENT CONTINUATION',
+              source_name=source_alias,
+              starting_branch=transport_branch,
+              repository=repository_alias,
+              authority_event_id=authority_event,
+              current_policy=current_policy,
+              replacement_cause=replacement_cause,
+              candidate_sha=candidate,
+              work_remaining=True,
+              active_duplicate_absent=True,
+              exact_repository_binding=True,
+              exact_starting_ref_binding=True,
+          )
+          sanitized = {
+              'decision': result.get('decision'),
+              'generation': result.get('generation'),
+              'session_fingerprint': result.get('session_fingerprint'),
+              'operation_key': result.get('operation_key'),
+              'provider_write_attempted': result.get('provider_write_attempted'),
+              'external_effects_dispatched': result.get('external_effects_dispatched'),
+              'new_tasks_or_sessions_created': result.get('new_tasks_or_sessions_created'),
+              'safe_to_blind_retry': result.get('safe_to_blind_retry'),
+              'transition': result.get('transition'),
+              'private_source_identity_persisted': False,
+          }
+          print(json.dumps(sanitized, sort_keys=True))
+          if result.get('decision') not in {'NEXT_SESSION_GENERATION_CONFIRMED','IDEMPOTENT_REPLAY_CONFIRMED','IDEMPOTENT_GENERATION_TRANSITION_CONFIRMED'}:
+              raise SystemExit('same-lineage S02 continuation not confirmed')
+          post = _state_snapshot(build_live_state_store(), project=project, route=route, workstream=workstream)
+          if int(post.get('generation') or 0) != 2 or not post.get('session_fingerprint'):
+              raise SystemExit('generation-2 StateStore post-readback failed')
+          print(json.dumps({'post_readback_generation': 2, 'session_fingerprint': post.get('session_fingerprint'), 'private_source_identity_persisted': False}, sort_keys=True))
+          PY
