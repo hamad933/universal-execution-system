@@ -28,6 +28,11 @@ PROJECTS: tuple[dict[str, str], ...] = (
         "route": "PERSONAL:CEP",
         "repository": "hamad933/Cybersecurity-Education-Platform",
     },
+    {
+        "project": "RP02",
+        "route": "RP02",
+        "repository": "hamad933/Enterprise-Operations-Control",
+    },
 )
 
 _LABEL_PATTERNS = (
@@ -182,7 +187,7 @@ def collect_provider_observation(
     *,
     observed_at: str | None = None,
 ) -> dict[str, Any]:
-    """Read Jules account state and return a sanitized GS/CEP observation snapshot.
+    """Read Jules account state and return a sanitized project observation snapshot.
 
     This function performs GET-only provider reads. Raw Jules session identifiers and
     Activity bodies are intentionally excluded from the returned/persisted snapshot.
@@ -222,8 +227,6 @@ def collect_provider_observation(
 
         session_name = _resource_name(session.get("name"))
         if not session_name:
-            # Provider list identity is incomplete. Preserve a fail-closed observation
-            # without inventing an identity.
             projects[project["project"]]["sessions"].append(
                 {
                     "session_fingerprint": None,
