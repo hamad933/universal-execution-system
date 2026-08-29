@@ -27,6 +27,7 @@ from .terminal_results import extract_terminal_candidate, lineage_index, materia
 
 SCHEMA_VERSION = "1.0"
 TERMINAL_RESULT_KEY = "terminal_result_v1"
+HISTORICAL_TERMINAL_RESULTS_KEY = "historical_terminal_results_v1"
 TERMINAL_RESULT_SCHEMA = "UES_TERMINAL_RESULT_V1"
 _READ_ERRORS = (
     AuthenticationError,
@@ -167,13 +168,222 @@ def _public_safe_result(result: Mapping[str, Any], *, lane_id: str) -> dict[str,
     return safe
 
 
+def _expected_identity(result: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "session_fingerprint": str(result.get("session_fingerprint") or "").strip().lower(),
+        "role": str(result.get("role") or "").upper(),
+        "workstream": str(result.get("logical_workstream") or ""),
+        "generation": int(result.get("generation") or 0),
+    }
+
+
+def _current_identity_matches(evidence: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    return (
+        str(evidence.get("session_fingerprint") or "").strip().lower() == expected["session_fingerprint"]
+        and str(evidence.get("role") or "").upper() == expected["role"]
+        and str(evidence.get("workstream") or "") == expected["workstream"]
+        and int(evidence.get("generation") or 0) == expected["generation"]
+    )
+
+
+def _canonical_exact_lineage_proven(
+    store: Any,
+    *,
+    record: WorkstreamRuntimeRecord,
+    lane_id: str,
+    expected: Mapping[str, Any],
+) -> bool:
+    """Re-prove one historical identity from the canonical lineage index before write."""
+
+    if not record.project or not record.route or not expected["session_fingerprint"]:
+        return False
+    matches = lineage_index(store, project=record.project, route=record.route).get(
+        expected["session_fingerprint"], []
+    )
+    exact = [
+        item
+        for item in matches
+        if str(item.get("lane_id") or "") == lane_id
+        and str(item.get("role") or "").upper() == expected["role"]
+        and str(item.get("workstream") or "") == expected["workstream"]
+        and int(item.get("generation") or 0) == expected["generation"]
+    ]
+    return len(exact) == 1
+
+
+def _historical_identity_key(expected: Mapping[str, Any]) -> str:
+    return f'{int(expected["generation"])}:{expected["session_fingerprint"]}'
+
+
+def _historical_entry(
+    evidence: Mapping[str, Any],
+    identity_key: str,
+) -> Mapping[str, Any] | None:
+    history = evidence.get(HISTORICAL_TERMINAL_RESULTS_KEY)
+    if not isinstance(history, Mapping):
+        return None
+    entry = history.get(identity_key)
+    return entry if isinstance(entry, Mapping) else None
+
+
+def _persist_historical_terminal_result(
+    store: Any,
+    *,
+    read: Any,
+    record: WorkstreamRuntimeRecord,
+    evidence: dict[str, Any],
+    lane_id: str,
+    expected: Mapping[str, Any],
+    result: Mapping[str, Any],
+    lineage: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not _canonical_exact_lineage_proven(
+        store,
+        record=record,
+        lane_id=lane_id,
+        expected=expected,
+    ):
+        return {
+            "state": "HISTORICAL_TERMINAL_RESULT_IDENTITY_NOT_EXACT",
+            "cas_performed": False,
+            "authoritative_readback": True,
+            "safe_to_blind_retry": False,
+        }
+
+    safe = _public_safe_result(result, lane_id=lane_id)
+    result_fp = str(safe.get("result_fingerprint") or "") or _fingerprint(safe)
+    safe["result_fingerprint"] = result_fp
+    safe["persistence_scope"] = "HISTORICAL_EXACT_BOUND"
+    safe["identity_recovery_source"] = str(lineage.get("identity_recovery_source") or "") or None
+    identity_key = _historical_identity_key(expected)
+
+    history_raw = evidence.get(HISTORICAL_TERMINAL_RESULTS_KEY)
+    if history_raw is not None and not isinstance(history_raw, Mapping):
+        return {
+            "state": "HISTORICAL_TERMINAL_RESULT_STORE_INVALID",
+            "cas_performed": False,
+            "authoritative_readback": True,
+            "result_fingerprint": result_fp,
+            "safe_to_blind_retry": False,
+        }
+    history = dict(history_raw or {})
+    existing = history.get(identity_key)
+    if isinstance(existing, Mapping):
+        if str(existing.get("result_fingerprint") or "") == result_fp:
+            return {
+                "state": "HISTORICAL_TERMINAL_RESULT_ALREADY_PERSISTED",
+                "cas_performed": False,
+                "authoritative_readback": True,
+                "version": read.version,
+                "result_fingerprint": result_fp,
+                "safe_to_blind_retry": False,
+            }
+        return {
+            "state": "HISTORICAL_TERMINAL_RESULT_CONFLICT",
+            "cas_performed": False,
+            "authoritative_readback": True,
+            "version": read.version,
+            "result_fingerprint": result_fp,
+            "safe_to_blind_retry": False,
+        }
+
+    history[identity_key] = safe
+    evidence[HISTORICAL_TERMINAL_RESULTS_KEY] = history
+    record.evidence_bindings = evidence
+
+    try:
+        saved = store.compare_and_swap_workstream(lane_id, read.version, record)
+    except StateVersionConflict:
+        reconciled = store.read_workstream(lane_id)
+        if reconciled.status == "OK" and reconciled.record is not None:
+            observed = _historical_entry(
+                reconciled.record.evidence_bindings or {},
+                identity_key,
+            )
+            if isinstance(observed, Mapping) and str(observed.get("result_fingerprint") or "") == result_fp:
+                return {
+                    "state": "HISTORICAL_TERMINAL_RESULT_CONCURRENTLY_PERSISTED",
+                    "cas_performed": False,
+                    "authoritative_readback": True,
+                    "version": reconciled.version,
+                    "result_fingerprint": result_fp,
+                    "safe_to_blind_retry": False,
+                }
+        return {
+            "state": "HISTORICAL_TERMINAL_RESULT_CAS_CONFLICT",
+            "cas_performed": False,
+            "authoritative_readback": reconciled.status == "OK",
+            "result_fingerprint": result_fp,
+            "safe_to_blind_retry": False,
+        }
+    except StateUnavailable:
+        reconciled = store.read_workstream(lane_id)
+        if reconciled.status == "OK" and reconciled.record is not None:
+            observed = _historical_entry(
+                reconciled.record.evidence_bindings or {},
+                identity_key,
+            )
+            if isinstance(observed, Mapping) and str(observed.get("result_fingerprint") or "") == result_fp:
+                return {
+                    "state": "HISTORICAL_TERMINAL_RESULT_PERSISTED_READBACK_RECONCILED",
+                    "cas_performed": True,
+                    "authoritative_readback": True,
+                    "version": reconciled.version,
+                    "result_fingerprint": result_fp,
+                    "safe_to_blind_retry": False,
+                }
+        return {
+            "state": "HISTORICAL_TERMINAL_RESULT_PERSISTENCE_OUTCOME_RECONCILIATION_REQUIRED",
+            "cas_performed": True,
+            "authoritative_readback": False,
+            "result_fingerprint": result_fp,
+            "safe_to_blind_retry": False,
+        }
+
+    if saved.status != "OK" or saved.record is None:
+        return {
+            "state": "HISTORICAL_TERMINAL_RESULT_CAS_NOT_READABLE",
+            "cas_performed": True,
+            "authoritative_readback": False,
+            "result_fingerprint": result_fp,
+            "safe_to_blind_retry": False,
+        }
+    readback = store.read_workstream(lane_id)
+    if readback.status != "OK" or readback.record is None:
+        return {
+            "state": "HISTORICAL_TERMINAL_RESULT_PERSISTED_READBACK_TEMPORARILY_UNAVAILABLE",
+            "cas_performed": True,
+            "authoritative_readback": False,
+            "version": saved.version,
+            "result_fingerprint": result_fp,
+            "safe_to_blind_retry": False,
+        }
+    observed = _historical_entry(readback.record.evidence_bindings or {}, identity_key)
+    if not isinstance(observed, Mapping) or str(observed.get("result_fingerprint") or "") != result_fp:
+        return {
+            "state": "HISTORICAL_TERMINAL_RESULT_READBACK_MISMATCH",
+            "cas_performed": True,
+            "authoritative_readback": True,
+            "result_fingerprint": result_fp,
+            "safe_to_blind_retry": False,
+        }
+    return {
+        "state": "HISTORICAL_TERMINAL_RESULT_PERSISTED",
+        "cas_performed": True,
+        "authoritative_readback": True,
+        "version": readback.version,
+        "result_fingerprint": result_fp,
+        "safe_to_blind_retry": False,
+    }
+
+
 def persist_terminal_result(
     store: Any,
     *,
     result: Mapping[str, Any],
     lineage: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Persist one exact-bound terminal result with one CAS and readback reconciliation."""
+    """Persist one exact-bound current or historical result with CAS and readback."""
 
     lane_id = str(lineage.get("lane_id") or "").strip()
     if not lane_id or not _lineage_matches_result(lineage, result):
@@ -189,24 +399,19 @@ def persist_terminal_result(
         raise StateUnavailable(read.reason or "terminal result lineage unavailable before CAS")
     record = WorkstreamRuntimeRecord.from_dict(read.record.to_dict())
     evidence = dict(record.evidence_bindings or {})
-    expected = {
-        "session_fingerprint": str(result.get("session_fingerprint") or ""),
-        "role": str(result.get("role") or "").upper(),
-        "workstream": str(result.get("logical_workstream") or ""),
-        "generation": int(result.get("generation") or 0),
-    }
-    if (
-        str(evidence.get("session_fingerprint") or "") != expected["session_fingerprint"]
-        or str(evidence.get("role") or "").upper() != expected["role"]
-        or str(evidence.get("workstream") or "") != expected["workstream"]
-        or int(evidence.get("generation") or 0) != expected["generation"]
-    ):
-        return {
-            "state": "TERMINAL_RESULT_LINEAGE_MOVED_BEFORE_CAS",
-            "cas_performed": False,
-            "authoritative_readback": True,
-            "safe_to_blind_retry": False,
-        }
+    expected = _expected_identity(result)
+
+    if not _current_identity_matches(evidence, expected):
+        return _persist_historical_terminal_result(
+            store,
+            read=read,
+            record=record,
+            evidence=evidence,
+            lane_id=lane_id,
+            expected=expected,
+            result=result,
+            lineage=lineage,
+        )
 
     safe = _public_safe_result(result, lane_id=lane_id)
     result_fp = str(safe.get("result_fingerprint") or "") or _fingerprint(safe)
@@ -263,8 +468,6 @@ def persist_terminal_result(
             "safe_to_blind_retry": False,
         }
     except StateUnavailable:
-        # The backend may have committed the non-force CAS before its final readback
-        # became unavailable. Reconcile once by authoritative read; never repeat CAS.
         reconciled = store.read_workstream(lane_id)
         if reconciled.status == "OK" and reconciled.record is not None:
             observed = (reconciled.record.evidence_bindings or {}).get(TERMINAL_RESULT_KEY)
@@ -410,6 +613,39 @@ def _current_view(result: Mapping[str, Any], evidence: Mapping[str, Any], reposi
     return value
 
 
+def _historical_view(
+    stored: Mapping[str, Any],
+    *,
+    lane_id: str,
+    exact_index: Mapping[str, Sequence[Mapping[str, Any]]],
+    repository: str,
+) -> dict[str, Any]:
+    value = dict(stored)
+    fp = str(value.get("session_fingerprint") or "").strip().lower()
+    role = str(value.get("role") or "").upper()
+    workstream = str(value.get("logical_workstream") or "")
+    generation = int(value.get("generation") or 0)
+    matches = [
+        item
+        for item in exact_index.get(fp, [])
+        if str(item.get("lane_id") or "") == lane_id
+        and str(item.get("role") or "").upper() == role
+        and str(item.get("workstream") or "") == workstream
+        and int(item.get("generation") or 0) == generation
+    ]
+    exact = (
+        len(matches) == 1
+        and str(value.get("repository") or "").casefold() == repository.casefold()
+    )
+    if not exact:
+        value["result_state"] = "RESULT_IDENTITY_UNRESOLVED"
+        value["freshness_status"] = "UNBOUND"
+        value["parent_action_required"] = True
+    value["persistence_scope"] = "HISTORICAL_EXACT_BOUND"
+    value["current_view_fingerprint"] = _fingerprint(value)
+    return value
+
+
 def read_persisted_terminal_results(
     store: Any,
     *,
@@ -417,9 +653,10 @@ def read_persisted_terminal_results(
     route: str,
     repository: str,
 ) -> list[dict[str, Any]]:
-    """Read durable terminal results directly from lineage lanes, independent of observations."""
+    """Read durable current and exact-bound historical terminal results."""
 
     results: list[dict[str, Any]] = []
+    exact_index = lineage_index(store, project=project, route=route)
     for lane_id in store.discover_lane_ids():
         read = store.read_workstream(lane_id)
         if read.status != "OK" or read.record is None:
@@ -429,12 +666,25 @@ def read_persisted_terminal_results(
             continue
         evidence = record.evidence_bindings or {}
         stored = evidence.get(TERMINAL_RESULT_KEY)
-        if not isinstance(stored, Mapping):
-            continue
-        view = _current_view(stored, evidence, repository)
-        view["lane_id"] = lane_id
-        view["persistence_version"] = read.version
-        results.append(view)
+        if isinstance(stored, Mapping):
+            view = _current_view(stored, evidence, repository)
+            view["lane_id"] = lane_id
+            view["persistence_version"] = read.version
+            results.append(view)
+        history = evidence.get(HISTORICAL_TERMINAL_RESULTS_KEY)
+        if isinstance(history, Mapping):
+            for historical in history.values():
+                if not isinstance(historical, Mapping):
+                    continue
+                view = _historical_view(
+                    historical,
+                    lane_id=lane_id,
+                    exact_index=exact_index,
+                    repository=repository,
+                )
+                view["lane_id"] = lane_id
+                view["persistence_version"] = read.version
+                results.append(view)
     return sorted(
         results,
         key=lambda item: (
@@ -601,8 +851,6 @@ def run_read_only_backfill(
     project_by_repo = {item["repository"].casefold(): item for item in projects}
     try:
         live_store = store or build_live_state_store()
-        # Preload durable identities before provider content reads. If StateStore is
-        # unavailable here, no Jules read is attempted and the phase is explicit.
         indexes = {
             item["project"]: lineage_index(live_store, project=item["project"], route=item["route"])
             for item in projects
@@ -742,10 +990,15 @@ def run_read_only_backfill(
         lineage = matches[0]
         lane_read = live_store.read_workstream(str(lineage.get("lane_id") or ""))
         if lane_read.status == "OK" and lane_read.record is not None:
-            existing = (lane_read.record.evidence_bindings or {}).get(TERMINAL_RESULT_KEY)
+            lane_evidence = lane_read.record.evidence_bindings or {}
+            existing = lane_evidence.get(TERMINAL_RESULT_KEY)
             if isinstance(existing, Mapping):
-                current = _current_view(existing, lane_read.record.evidence_bindings or {}, repository)
-                if current.get("result_state") == "PARENT_CONSUMABLE":
+                current = _current_view(existing, lane_evidence, repository)
+                if (
+                    current.get("result_state") == "PARENT_CONSUMABLE"
+                    and int(current.get("generation") or 0) == int(lineage.get("generation") or 0)
+                    and str(current.get("session_fingerprint") or "").lower() == fp.lower()
+                ):
                     outcomes.append({
                         "project": project["project"],
                         "session_fingerprint": fp,
@@ -757,6 +1010,25 @@ def run_read_only_backfill(
                         "provider_activity_read": False,
                     })
                     continue
+            historical = _historical_entry(
+                lane_evidence,
+                _historical_identity_key({
+                    "generation": int(lineage.get("generation") or 0),
+                    "session_fingerprint": fp.lower(),
+                }),
+            )
+            if isinstance(historical, Mapping) and historical.get("result_state") == "PARENT_CONSUMABLE":
+                outcomes.append({
+                    "project": project["project"],
+                    "session_fingerprint": fp,
+                    "logical_workstream": historical.get("logical_workstream"),
+                    "role": historical.get("role"),
+                    "generation": historical.get("generation"),
+                    "result_state": "PARENT_CONSUMABLE",
+                    "persistence_state": "HISTORICAL_TERMINAL_RESULT_ALREADY_PERSISTED",
+                    "provider_activity_read": False,
+                })
+                continue
 
         try:
             activities = live_client.list_activities(session_name, page_size=100)
@@ -815,6 +1087,10 @@ def run_read_only_backfill(
             "TERMINAL_RESULT_ALREADY_PERSISTED",
             "TERMINAL_RESULT_CONCURRENTLY_PERSISTED",
             "TERMINAL_RESULT_PERSISTED_READBACK_RECONCILED",
+            "HISTORICAL_TERMINAL_RESULT_PERSISTED",
+            "HISTORICAL_TERMINAL_RESULT_ALREADY_PERSISTED",
+            "HISTORICAL_TERMINAL_RESULT_CONCURRENTLY_PERSISTED",
+            "HISTORICAL_TERMINAL_RESULT_PERSISTED_READBACK_RECONCILED",
         }:
             persistence_failures += 1
         outcomes.append({
