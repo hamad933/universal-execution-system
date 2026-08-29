@@ -17,6 +17,7 @@ class _Record:
     project: str
     route: str
     evidence_bindings: dict
+    operation_receipt: dict | None = None
 
 
 @dataclass
