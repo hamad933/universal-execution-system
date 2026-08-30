@@ -1,0 +1,55 @@
+name: UES RP03 Provider Observer Canary
+
+on:
+  push:
+    branches:
+      - fix/rp03-provider-observation-scope
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ues-rp03-provider-observer-canary-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Run RP03 scope unit test
+        run: python -m unittest tests.test_rp03_provider_observer_canary -v
+
+      - name: Run full repository tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run RP03 GET-only provider observation against isolated candidate StateStore
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/candidate/${{ github.ref_name }}
+        run: python -m ues.rp03_provider_observer_canary > rp03-provider-observer-canary.json
+
+      - name: Preserve sanitized canary receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-rp03-provider-observer-canary-${{ github.run_id }}
+          path: rp03-provider-observer-canary.json
+          if-no-files-found: warn
+          retention-days: 14
