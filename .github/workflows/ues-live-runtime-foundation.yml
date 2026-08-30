@@ -181,15 +181,61 @@ jobs:
         run: python -m pip install -e .
 
       - name: Observe Jules GS/CEP sessions read-only with durable health
+        id: provider_observer
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-        run: python -m ues.provider_observer_runtime observe
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=15s 720s \
+            python -m ues.provider_observer_runtime observe > provider-observer-result.json
+          rc=$?
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python - <<'PY' > provider-observer-result.json
+          import json
+          print(json.dumps({
+              "schema_version": "1.0",
+              "result": "JULES_PROVIDER_OBSERVATION_BUDGET_EXHAUSTED",
+              "cycle_status": "CONTROL_CYCLE_FAILED",
+              "scan_complete": False,
+              "provider_read_complete": False,
+              "state_persistence_complete": False,
+              "state_persistence_outcome": "UNKNOWN_REQUIRES_AUTHORITATIVE_POST_READBACK",
+              "provider_mutation_performed": False,
+              "external_effects_dispatched": 0,
+              "new_tasks_or_sessions_created": 0,
+              "safe_to_blind_retry": False,
+              "wall_clock_budget_seconds": 720,
+              "raw_activity_content_persisted": False,
+              "raw_session_ids_persisted": False,
+              "raw_titles_persisted": False,
+              "exception_text_persisted": False,
+          }, sort_keys=True))
+          PY
+            rc=2
+          fi
+          exit "$rc"
+
+      - name: Preserve provider observer execution receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-provider-observer-${{ github.run_id }}
+          path: provider-observer-result.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce provider observer result
+        if: steps.provider_observer.outcome != 'success'
+        run: |
+          echo "Provider observer did not complete successfully; durable receipt was preserved and authoritative audit/fallback may continue."
+          exit 1
 
   scheduled-lifecycle-health-fallback:
-    if: github.event_name == 'schedule'
+    if: always() && github.event_name == 'schedule' && needs.scheduled-provider-observer.result != 'success'
     needs: scheduled-provider-observer
     strategy:
       fail-fast: false
