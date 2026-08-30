@@ -1,0 +1,82 @@
+name: UES RP03 Provider Observer
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ues-rp03-provider-observer-main
+  cancel-in-progress: false
+
+jobs:
+  observe-rp03:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout governed default branch
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install UES
+        run: python -m pip install -e .
+
+      - name: Run RP03 GET-only provider observation
+        id: rp03_observer
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
+          UES_STATE_REF_PREFIX: ues-runtime/v2
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=15s 720s \
+            python -m ues.rp03_provider_observer_canary > rp03-provider-observer-result.json
+          rc=$?
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            python - <<'PY' > rp03-provider-observer-result.json
+          import json
+          print(json.dumps({
+              "schema_version": "1.0",
+              "result": "RP03_PROVIDER_OBSERVATION_BUDGET_EXHAUSTED",
+              "provider_read_complete": False,
+              "state_persistence_complete": False,
+              "provider_mutation_performed": False,
+              "external_effects_dispatched": 0,
+              "new_tasks_or_sessions_created": 0,
+              "safe_to_blind_retry": False,
+              "raw_session_ids_persisted": False,
+              "raw_activity_content_persisted": False,
+          }, sort_keys=True))
+          PY
+            rc=2
+          fi
+          exit "$rc"
+
+      - name: Preserve sanitized RP03 observer receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-rp03-provider-observer-${{ github.run_id }}
+          path: rp03-provider-observer-result.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce RP03 observer result
+        if: steps.rp03_observer.outcome != 'success'
+        run: |
+          echo "RP03 provider observation did not complete; durable zero-effect receipt was preserved."
+          exit 1
