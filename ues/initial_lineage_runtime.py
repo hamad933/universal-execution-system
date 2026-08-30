@@ -31,6 +31,9 @@ _PRE_EFFECT_PROVIDER_READ_OPERATIONS = frozenset({"jules.sessions.list", "jules.
 _PRE_EFFECT_PROVIDER_READ_ERRORS = (NetworkError, RateLimitError, ServerError)
 _PROVIDER_READ_UNAVAILABLE_RESULT = "INITIAL_LINEAGE_PROVIDER_READ_UNAVAILABLE_BEFORE_EFFECTS"
 _PROVIDER_READ_UNAVAILABLE_EXIT = 75
+_DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS = 2
+_MAX_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS = 3
+_PROVIDER_INVENTORY_ATTEMPTS_ENV = "UES_INITIAL_LINEAGE_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS"
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 _ALLOWED_TASK_FIELDS = frozenset(
@@ -306,6 +309,34 @@ def _is_pre_effect_provider_read_failure(exc: BaseException) -> bool:
     ) in _PRE_EFFECT_PROVIDER_READ_OPERATIONS
 
 
+def _provider_inventory_snapshot_attempts() -> int:
+    raw = str(os.environ.get(_PROVIDER_INVENTORY_ATTEMPTS_ENV) or "").strip()
+    if not raw:
+        return _DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS
+    try:
+        configured = int(raw)
+    except ValueError:
+        return _DEFAULT_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS
+    return max(1, min(configured, _MAX_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS))
+
+
+def _provider_inventory_with_retry(
+    client: object,
+    attempt_limit: int | None = None,
+) -> tuple[list[dict[str, Any]], int, int]:
+    limit = _provider_inventory_snapshot_attempts() if attempt_limit is None else int(attempt_limit)
+    limit = max(1, min(limit, _MAX_PROVIDER_INVENTORY_SNAPSHOT_ATTEMPTS))
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            inventory = legacy._provider_inventory(client)
+            return inventory, attempts, limit
+        except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
+            if not _is_pre_effect_provider_read_failure(exc) or attempts >= limit:
+                raise
+
+
 def _provider_read_unavailable_result(
     project: str,
     route: str,
@@ -376,7 +407,7 @@ def run(project: str) -> dict[str, Any]:
     jules = JulesLifecycleClient(key)
     github = GitHubClient(github_token)
     try:
-        inventory = legacy._provider_inventory(jules)
+        inventory, _, _ = _provider_inventory_with_retry(jules)
     except _PRE_EFFECT_PROVIDER_READ_ERRORS as exc:
         if not _is_pre_effect_provider_read_failure(exc):
             raise
