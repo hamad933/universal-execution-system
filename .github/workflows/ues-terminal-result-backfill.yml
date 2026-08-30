@@ -210,10 +210,9 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    # The current StateStore scan has now directly exceeded the 14-minute envelope.
-    # Keep a bounded 20-minute watchdog deadline and rely on this watchdog's
-    # non-cancelling concurrency group to serialize overlapping scheduled audits
-    # without replaying or cancelling already completed project backfill cells.
+    # Outer guard remains bounded. The watchdog command now owns a shorter
+    # internal deadline so GitHub cannot kill the job before a durable result
+    # is materialized and uploaded.
     timeout-minutes: 20
     concurrency:
       group: ues-terminal-result-watchdog
@@ -236,4 +235,45 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           UES_ALLOW_PUBLIC_SAME_REPO_STATE: "true"
           UES_STATE_REF_PREFIX: ues-runtime/v2
-        run: python -m ues.terminal_watchdog
+          UES_TERMINAL_WATCHDOG_WALL_CLOCK_BUDGET_SECONDS: "1020"
+        run: |
+          receipt="$RUNNER_TEMP/ues-terminal-watchdog.json"
+          set +e
+          timeout --signal=TERM "${UES_TERMINAL_WATCHDOG_WALL_CLOCK_BUDGET_SECONDS}s" \
+            python -m ues.terminal_watchdog > "$receipt"
+          status=$?
+          set -e
+          if [ "$status" -eq 124 ]; then
+            python - <<'PY' > "$receipt"
+          import json
+          import os
+
+          print(json.dumps({
+              "schema_version": "1.0",
+              "result": "TERMINAL_LIVENESS_WATCHDOG_BUDGET_EXHAUSTED",
+              "cycle_status": "CONTROL_CYCLE_FAILED",
+              "wall_clock_budget_seconds": int(os.environ["UES_TERMINAL_WATCHDOG_WALL_CLOCK_BUDGET_SECONDS"]),
+              "scan_complete": False,
+              "lanes": [],
+              "blocked_lane_freezes_independent_lanes": False,
+              "blocking_scope_default": "LANE",
+              "mutation_performed": False,
+              "provider_mutation_performed": False,
+              "external_effects_dispatched": 0,
+              "new_tasks_or_sessions_created": 0,
+              "safe_to_blind_retry": False,
+          }, sort_keys=True))
+          PY
+            status=2
+          fi
+          cat "$receipt"
+          exit "$status"
+
+      - name: Preserve terminal watchdog receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ues-terminal-watchdog-${{ github.run_id }}
+          path: ${{ runner.temp }}/ues-terminal-watchdog.json
+          retention-days: 7
+          if-no-files-found: error
