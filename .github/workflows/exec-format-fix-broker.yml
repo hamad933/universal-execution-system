@@ -1,9 +1,7 @@
 name: UES Format Fix Broker
 
 on:
-  workflow_run:
-    workflows: ["Validate Universal Core"]
-    types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read

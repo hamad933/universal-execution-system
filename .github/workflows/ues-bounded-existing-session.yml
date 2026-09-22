@@ -25,13 +25,6 @@ on:
         description: Stable upstream event id for coalescing
         required: false
         type: string
-  repository_dispatch:
-    types: [ues-lifecycle-wakeup]
-  push:
-    branches:
-      - main
-  schedule:
-    - cron: "*/5 * * * *"
 
 permissions:
   contents: write

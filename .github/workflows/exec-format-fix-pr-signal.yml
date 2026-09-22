@@ -1,8 +1,7 @@
 name: UES Format Fix PR Signal
 
 on:
-  pull_request_target:
-    types: [edited]
+  workflow_dispatch:
 
 permissions:
   contents: read

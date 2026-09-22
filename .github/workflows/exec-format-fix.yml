@@ -1,8 +1,7 @@
 name: UES Format Fix Write
 
 on:
-  issue_comment:
-    types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: read

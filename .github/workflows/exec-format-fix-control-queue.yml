@@ -1,8 +1,7 @@
 name: UES Format Fix Control Queue
 
 on:
-  pull_request_target:
-    types: [synchronize]
+  workflow_dispatch:
 
 permissions:
   contents: read

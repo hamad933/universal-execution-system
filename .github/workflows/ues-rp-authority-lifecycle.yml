@@ -27,8 +27,6 @@ on:
         description: Stable upstream event id for coalescing
         required: false
         type: string
-  repository_dispatch:
-    types: [ues-rp-lifecycle-wakeup]
 
 permissions:
   contents: write

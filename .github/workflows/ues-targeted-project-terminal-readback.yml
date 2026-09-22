@@ -1,8 +1,6 @@
 name: UES Targeted Project Terminal Readback
 
 on:
-  issue_comment:
-    types: [created]
   workflow_dispatch:
     inputs:
       project:
@@ -14,6 +12,7 @@ on:
         description: Optional exact durable logical workstream; blank means whole project
         required: false
         type: string
+
 
 permissions:
   contents: read

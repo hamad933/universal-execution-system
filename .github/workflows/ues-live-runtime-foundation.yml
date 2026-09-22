@@ -1,15 +1,7 @@
 name: UES Live Runtime Foundation
 
 on:
-  push:
-    branches:
-      - main
-      - work/ues-auto-v2-k-live-runtime-foundation
-      - work/ues-auto-v2-live-provider-observer-r1
-      - work/ues-auto-v2-provider-observer-recovery-r1
   workflow_dispatch:
-  schedule:
-    - cron: "*/15 * * * *"
 
 permissions:
   contents: read

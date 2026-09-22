@@ -1,10 +1,7 @@
 name: UES RP04 Reviewer Wave R10 Binding Repair 20260827
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/ues-rp04-reviewer-wave-r10-binding-repair-20260827.yml
+  workflow_dispatch:
 
 permissions:
   contents: write

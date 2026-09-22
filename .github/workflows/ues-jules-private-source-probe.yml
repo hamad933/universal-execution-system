@@ -2,13 +2,6 @@ name: UES Jules Private Source Probe
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ues/jules_source_probe.py
-      - tests/test_jules_source_probe.py
-      - .github/workflows/ues-jules-private-source-probe.yml
 
 permissions:
   contents: read
