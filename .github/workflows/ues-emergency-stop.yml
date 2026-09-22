@@ -9,18 +9,18 @@ permissions:
   contents: read
 
 jobs:
-  stop-all-other-runs:
+  force-stop-all-other-runs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Cancel every other active UES workflow run
+      - name: Force-cancel every other active UES workflow run
         uses: actions/github-script@v7
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const statuses = ['in_progress', 'queued', 'pending', 'waiting', 'requested'];
-            for (let pass = 0; pass < 5; pass++) {
+            for (let pass = 0; pass < 4; pass++) {
               const targets = [];
               for (const status of statuses) {
                 const response = await github.rest.actions.listWorkflowRunsForRepo({
@@ -34,14 +34,19 @@ jobs:
                 }
               }
               const unique = [...new Map(targets.map(run => [run.id, run])).values()];
-              core.info(`shutdown pass ${pass + 1}: ${unique.map(r => r.id + ':' + r.name + ':' + r.status).join(',') || 'none'}`);
+              core.info(`force-stop pass ${pass + 1}: ${unique.map(r => r.id + ':' + r.name + ':' + r.status).join(',') || 'none'}`);
               for (const run of unique) {
                 try {
-                  await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
-                  core.info(`cancel requested: ${run.id} ${run.name}`);
+                  await github.request('POST /repos/{owner}/{repo}/actions/runs/{run_id}/force-cancel', {
+                    owner,
+                    repo,
+                    run_id: run.id,
+                    headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+                  });
+                  core.info(`force-cancel requested: ${run.id} ${run.name}`);
                 } catch (error) {
                   if (error && (error.status === 409 || error.status === 404)) {
-                    core.info(`cancel raced terminal state: ${run.id}`);
+                    core.info(`force-cancel raced terminal state: ${run.id}`);
                   } else {
                     throw error;
                   }
