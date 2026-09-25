@@ -1,0 +1,41 @@
+name: CEP GAP-0720 GitHub-Hosted Runtime Evidence
+
+on:
+  push:
+    branches:
+      - control/gap0720-github-hosted-runtime-v1
+    paths:
+      - .github/workflows/cep-gap0720-github-hosted-runtime.yml
+      - tools/gap0720/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cep-gap0720-github-hosted-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-known-action-evidence:
+    name: Windows known-action 4-provider evidence
+    runs-on: windows-2025
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Execute bounded GAP-0720 evidence harness
+        shell: pwsh
+        run: ./tools/gap0720/github_hosted_evidence.ps1 -EvidenceRoot "$env:RUNNER_TEMP\gap0720-evidence"
+
+      - name: Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: CEP-GAP0720-GITHUB-HOSTED-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\gap0720-evidence\
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
